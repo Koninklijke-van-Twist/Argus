@@ -1,7 +1,5 @@
 <?php
 
-declare(strict_types=1);
-
 /**
  * Usage summary:
  * - Laad eerst auth.php en odata.php.
