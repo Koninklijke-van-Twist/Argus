@@ -20,11 +20,14 @@ class ProjectFinanceService
 {
     public const ROW_MODE_FIRST_NUMERIC = 'first_numeric';
     public const ROW_MODE_SUM = 'sum';
+    public const ROW_MODE_SUM_INVERT = 'sum_invert';
     public const REVENUE_ROW_MODE_FIRST_NUMERIC = self::ROW_MODE_FIRST_NUMERIC;
     public const REVENUE_ROW_MODE_SUM = self::ROW_MODE_SUM;
+    public const REVENUE_ROW_MODE_SUM_INVERT = self::ROW_MODE_SUM_INVERT;
     public const REVENUE_ROW_MODE_OPTIONS = [
         self::REVENUE_ROW_MODE_FIRST_NUMERIC,
         self::REVENUE_ROW_MODE_SUM,
+        self::REVENUE_ROW_MODE_SUM_INVERT,
     ];
 
     private string $company;
@@ -76,9 +79,9 @@ class ProjectFinanceService
                     'entity_set' => 'ProjectPosten',
                     'key_field' => 'Job_No',
                     'fields' => [
-                        'Total_Price',
+                        'Line_Amount',
                     ],
-                    'row_mode' => self::ROW_MODE_SUM,
+                    'row_mode' => self::ROW_MODE_SUM_INVERT,
                 ],
             ],
             'workorder' => [
@@ -96,9 +99,9 @@ class ProjectFinanceService
                     'key_field' => 'Job_Task_No',
                     'project_field' => 'Job_No',
                     'fields' => [
-                        'Total_Price',
+                        'Line_Amount',
                     ],
-                    'row_mode' => self::ROW_MODE_SUM,
+                    'row_mode' => self::ROW_MODE_SUM_INVERT,
                 ],
             ],
         ];
@@ -813,6 +816,9 @@ class ProjectFinanceService
         if ($normalized === self::ROW_MODE_SUM) {
             return self::ROW_MODE_SUM;
         }
+        if ($normalized === self::ROW_MODE_SUM_INVERT) {
+            return self::ROW_MODE_SUM_INVERT;
+        }
 
         return self::ROW_MODE_FIRST_NUMERIC;
     }
@@ -822,6 +828,30 @@ class ProjectFinanceService
      */
     private static function extractRowAmount(array $row, array $fields, string $mode): float
     {
+        if (self::normalizeRowMode($mode) === self::ROW_MODE_SUM_INVERT) {
+            $sum = 0.0;
+            $hasNegativeValue = false;
+            foreach ($fields as $field) {
+                if (!is_string($field) || $field === '' || !array_key_exists($field, $row)) {
+                    continue;
+                }
+
+                $raw = $row[$field];
+                if (!is_numeric($raw)) {
+                    continue;
+                }
+
+                $numeric = (float) $raw;
+                if ($numeric < 0.0) {
+                    $hasNegativeValue = true;
+                }
+
+                $sum += $numeric;
+            }
+
+            return $hasNegativeValue ? -$sum : $sum;
+        }
+
         if (self::normalizeRowMode($mode) === self::ROW_MODE_SUM) {
             $sum = 0.0;
             foreach ($fields as $field) {

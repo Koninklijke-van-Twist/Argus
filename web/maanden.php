@@ -118,14 +118,15 @@ function fetch_month_data(string $company, string $yearMonth, array $auth, int $
 {
     global $baseUrl, $environment;
 
-    // Build date range for the month
+    // Build date range: from 2024-01-01 up to and including the selected month
     $from = DateTimeImmutable::createFromFormat('!Y-m', $yearMonth);
     if (!$from instanceof DateTimeImmutable) {
         throw new Exception("Ongeldige maand: $yearMonth");
     }
     $to = $from->modify('+1 month');
 
-    $fromStr = $from->format('Y-m-d');
+    $fromStart = new DateTimeImmutable('2024-01-01');
+    $fromStr = $fromStart->format('Y-m-d');
     $toStr = $to->format('Y-m-d');
 
     // Fetch werkorders for the month
@@ -225,6 +226,13 @@ function fetch_month_data(string $company, string $yearMonth, array $auth, int $
         }
     }
 
+    $closedProjectStatuses = [
+        'completed',
+        'closed',
+        'afgesloten',
+        'gereed',
+    ];
+
     // Fetch project planning lines for expected revenue / extra work and provenance
     $planningTotalsByJob = [];
     $planningBreakdownByJob = [];
@@ -319,6 +327,11 @@ function fetch_month_data(string $company, string $yearMonth, array $auth, int $
 
         $jobNo = trim((string) ($wo['Job_No'] ?? ''));
         $normJob = strtolower($jobNo);
+        $projectStatus = strtolower(trim((string) (($projectDetails[$normJob]['Status'] ?? '') ?: '')));
+        if ($projectStatus !== '' && in_array($projectStatus, $closedProjectStatuses, true)) {
+            continue;
+        }
+
         $jobTaskNo = trim((string) ($wo['Job_Task_No'] ?? ''));
         $normWorkorder = strtolower($jobTaskNo);
         $workorderTotals = $workorderTotalsByNumber[$normWorkorder] ?? [
