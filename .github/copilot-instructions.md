@@ -61,6 +61,9 @@
 - Het bestand web/project_finance.php is de leidende authoriteit voor alle logica rond kosten, opbrengsten, resultaat en projectfacturen.
 - Dergelijke data moet ALTIJD via functies in web/project_finance.php worden opgehaald.
 - Het is NIET toegestaan om kosten/opbrengst/factuurdata buiten dit bestand om direct op te halen wanneer de data al binnen de scope van web/project_finance.php valt.
+- Complexe financiele berekeningen, en met name berekende kolommen, moeten in web/finance_calculations.php als kolom-specifieke functies staan.
+- Eenvoudige, lokale bewerkingen (zoals directe plus/min in een bestaande flow) hoeven niet geforceerd naar web/finance_calculations.php.
+- Elke functie in web/finance_calculations.php moet een `/** */` summary block hebben dat uitlegt welke financiele berekening voor welke kolom of uitkomst wordt uitgevoerd; ontbreekt dit of klopt het niet, dan moet dit direct gecorrigeerd worden.
 
 ## Wijzigingsplicht
 - Elke wijziging aan web/project_finance.php moet expliciet benoemd worden in communicatie en/of change notes.

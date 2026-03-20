@@ -9,6 +9,7 @@ error_reporting(E_ALL);
 require __DIR__ . '/auth.php';
 require_once __DIR__ . '/logincheck.php';
 require_once __DIR__ . '/odata.php';
+require_once __DIR__ . '/finance_calculations.php';
 
 /**
  * Functies
@@ -222,13 +223,85 @@ if (is_array($prevMonthData)) {
         if ($jNo === '') {
             continue;
         }
-        $costs = (float) ($row['Actual_Costs'] ?? 0);
-        $revenue = (float) ($row['Total_Revenue'] ?? 0);
+        $costs = finance_to_float($row['Actual_Costs'] ?? 0);
+        $revenue = finance_to_float($row['Total_Revenue'] ?? 0);
         if (!isset($prevProfitByProject[$jNo])) {
             $prevProfitByProject[$jNo] = ['revenue' => 0.0, 'costs' => 0.0];
         }
-        $prevProfitByProject[$jNo]['revenue'] += $revenue;
-        $prevProfitByProject[$jNo]['costs'] += $costs;
+        $prevProfitByProject[$jNo]['revenue'] = finance_add_amount(
+            (float) ($prevProfitByProject[$jNo]['revenue'] ?? 0.0),
+            $revenue
+        );
+        $prevProfitByProject[$jNo]['costs'] = finance_add_amount(
+            (float) ($prevProfitByProject[$jNo]['costs'] ?? 0.0),
+            $costs
+        );
+    }
+}
+
+$projectColumnValuesByJob = [];
+if (is_array($monthData)) {
+    $projectSummaries = is_array($monthData['project_summaries'] ?? null)
+        ? $monthData['project_summaries']
+        : [];
+    $projectDetails = is_array($monthData['project_details'] ?? null)
+        ? $monthData['project_details']
+        : [];
+    $workorderRows = is_array($monthData['workorder_rows'] ?? null)
+        ? $monthData['workorder_rows']
+        : [];
+
+    $projectSummaryByJob = [];
+    foreach ($projectSummaries as $summaryRow) {
+        if (!is_array($summaryRow)) {
+            continue;
+        }
+
+        $normJobNo = strtolower(trim((string) ($summaryRow['Job_No'] ?? '')));
+        if ($normJobNo === '') {
+            continue;
+        }
+
+        $projectSummaryByJob[$normJobNo] = $summaryRow;
+    }
+
+    $workordersByJob = [];
+    foreach ($workorderRows as $workorderRow) {
+        if (!is_array($workorderRow)) {
+            continue;
+        }
+
+        $normJobNo = strtolower(trim((string) ($workorderRow['Job_No'] ?? '')));
+        if ($normJobNo === '') {
+            continue;
+        }
+
+        if (!isset($workordersByJob[$normJobNo])) {
+            $workordersByJob[$normJobNo] = [];
+        }
+
+        $workordersByJob[$normJobNo][] = $workorderRow;
+    }
+
+    foreach ($workordersByJob as $normJobNo => $jobWorkorders) {
+        $totalCosts = finance_column_total_costs($jobWorkorders);
+        $totalRevenue = finance_column_total_revenue($jobWorkorders);
+        $summaryRow = $projectSummaryByJob[$normJobNo] ?? [];
+        $detailRow = is_array($projectDetails[$normJobNo] ?? null) ? $projectDetails[$normJobNo] : [];
+
+        $expectedRevenue = finance_to_float($summaryRow['Expected_Revenue'] ?? 0.0);
+        $pctCompleted = finance_to_float($detailRow['Percent_Completed'] ?? 0.0);
+        $winstOhw = finance_column_winst_ohw($expectedRevenue, $pctCompleted, $totalCosts);
+        $prevProfit = finance_column_prev_profit($prevProfitByProject[$normJobNo] ?? null);
+        $difference = finance_column_difference($totalRevenue, $totalCosts, $prevProfit);
+
+        $projectColumnValuesByJob[$normJobNo] = [
+            'total_costs' => $totalCosts,
+            'total_revenue' => $totalRevenue,
+            'winst_ohw' => $winstOhw,
+            'prev_profit' => $prevProfit,
+            'difference' => $difference,
+        ];
     }
 }
 
@@ -273,6 +346,7 @@ $initialData = [
     'prev_year_month' => $prevYearMonth,
     'prev_profit_by_project' => $prevProfitByProject,
     'month_data' => $monthData,
+    'project_column_values_by_job' => $projectColumnValuesByJob,
     'error' => $errorMessage,
     'default_columns' => $defaultColumns,
     'column_order' => $orderedColumns,

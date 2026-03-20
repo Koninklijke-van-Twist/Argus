@@ -9,6 +9,7 @@ error_reporting(E_ALL);
 require __DIR__ . '/auth.php';
 require_once __DIR__ . '/logincheck.php';
 require_once __DIR__ . '/odata.php';
+require_once __DIR__ . '/finance_calculations.php';
 require_once __DIR__ . '/project_finance.php';
 
 /**
@@ -226,13 +227,6 @@ function fetch_month_data(string $company, string $yearMonth, array $auth, int $
         }
     }
 
-    $closedProjectStatuses = [
-        'completed',
-        'closed',
-        'afgesloten',
-        'gereed',
-    ];
-
     // Fetch project planning lines for expected revenue / extra work and provenance
     $planningTotalsByJob = [];
     $planningBreakdownByJob = [];
@@ -304,7 +298,10 @@ function fetch_month_data(string $company, string $yearMonth, array $auth, int $
                 'Change_Order_No' => trim((string) ($planningRow['LVS_Job_Change_Order_No'] ?? '')),
             ];
 
-            $planningTotalsByJob[$normJob]['expected_revenue'] += $lineAmount;
+            $planningTotalsByJob[$normJob]['expected_revenue'] = finance_add_amount(
+                (float) ($planningTotalsByJob[$normJob]['expected_revenue'] ?? 0.0),
+                $lineAmount
+            );
             $planningBreakdownByJob[$normJob]['expected_revenue_lines'][] = $linePayload;
 
             $isExtraWorkLine = $linePayload['Change_Order_No'] !== ''
@@ -312,7 +309,10 @@ function fetch_month_data(string $company, string $yearMonth, array $auth, int $
                 || trim((string) ($planningRow['LVS_Value_Add_Job_Breakdown_2'] ?? '')) !== '';
 
             if ($isExtraWorkLine) {
-                $planningTotalsByJob[$normJob]['extra_work'] += $lineAmount;
+                $planningTotalsByJob[$normJob]['extra_work'] = finance_add_amount(
+                    (float) ($planningTotalsByJob[$normJob]['extra_work'] ?? 0.0),
+                    $lineAmount
+                );
                 $planningBreakdownByJob[$normJob]['extra_work_lines'][] = $linePayload;
             }
         }
@@ -328,7 +328,7 @@ function fetch_month_data(string $company, string $yearMonth, array $auth, int $
         $jobNo = trim((string) ($wo['Job_No'] ?? ''));
         $normJob = strtolower($jobNo);
         $projectStatus = strtolower(trim((string) (($projectDetails[$normJob]['Status'] ?? '') ?: '')));
-        if ($projectStatus !== '' && in_array($projectStatus, $closedProjectStatuses, true)) {
+        if ($projectStatus !== '' && finance_is_closed_project_status($projectStatus)) {
             continue;
         }
 
@@ -435,8 +435,8 @@ function fetch_month_data(string $company, string $yearMonth, array $auth, int $
             'Description' => (string) ($row['Description'] ?? ''),
             'Amount' => (float) ($row['Total_Revenue'] ?? 0),
         ];
-        $totalRevenue += (float) ($row['Total_Revenue'] ?? 0);
-        $totalCosts += (float) ($row['Actual_Costs'] ?? 0);
+        $totalRevenue = finance_add_amount($totalRevenue, $row['Total_Revenue'] ?? 0);
+        $totalCosts = finance_add_amount($totalCosts, $row['Actual_Costs'] ?? 0);
     }
 
     $projectBreakdowns = [];

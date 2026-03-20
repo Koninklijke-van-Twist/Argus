@@ -5,6 +5,8 @@
      */
     const payload = window.maandDetailData || {};
     const monthData = payload.month_data && typeof payload.month_data === 'object' ? payload.month_data : null;
+    const projectColumnValuesByJob = payload.project_column_values_by_job && typeof payload.project_column_values_by_job === 'object'
+        ? payload.project_column_values_by_job : {};
     const prevProfitByProject = typeof payload.prev_profit_by_project === 'object' && payload.prev_profit_by_project
         ? payload.prev_profit_by_project : {};
     const saveSettingsUrl = typeof payload.save_settings_url === 'string' ? payload.save_settings_url : 'maand-detail.php?action=save_user_settings';
@@ -583,16 +585,25 @@
     function renderProjectRow (proj, visibleWOs)
     {
         const normJob = proj.job_no.toLowerCase();
+        const columnValues = projectColumnValuesByJob[normJob] && typeof projectColumnValuesByJob[normJob] === 'object'
+            ? projectColumnValuesByJob[normJob]
+            : null;
         const totals = computeProjectTotals(proj);
-        const costs = totals.costs;
-        const revenue = totals.revenue;
+        const costs = columnValues ? parseDecimal(columnValues.total_costs) : totals.costs;
+        const revenue = columnValues ? parseDecimal(columnValues.total_revenue) : totals.revenue;
         const expected = parseDecimal(proj.expected_revenue);
         const extraWork = parseDecimal(proj.extra_work);
         const pctRaw = parseDecimal(proj.pct_completed);
-        const winstOhw = expected * (pctRaw / 100) - costs;
+        const winstOhw = columnValues
+            ? parseDecimal(columnValues.winst_ohw)
+            : (expected * (pctRaw / 100) - costs);
         const prevData = prevProfitByProject[normJob] || null;
-        const prevProfit = prevData ? ((prevData.revenue || 0) - (prevData.costs || 0)) : null;
-        const diff = prevProfit !== null ? ((revenue - costs) - prevProfit) : null;
+        const prevProfit = columnValues && columnValues.prev_profit !== null
+            ? parseDecimal(columnValues.prev_profit)
+            : (prevData ? ((prevData.revenue || 0) - (prevData.costs || 0)) : null);
+        const diff = columnValues && columnValues.difference !== null
+            ? parseDecimal(columnValues.difference)
+            : (prevProfit !== null ? ((revenue - costs) - prevProfit) : null);
 
         // Project main row
         const tr = document.createElement('tr');
