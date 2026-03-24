@@ -218,3 +218,22 @@ function finance_extract_row_amount(array $row, array $fields, string $mode): fl
 
     return finance_first_numeric_value($row, $fields);
 }
+
+/**
+ * Berekent kolomwaarde Actual_Costs voor één werkorderregel uit de twee BC kostenvelden.
+ */
+function finance_workorder_actual_costs(array $workorder): float
+{
+    $costItems = finance_to_float($workorder['KVT_Sum_Work_Order_Cost_Items'] ?? 0);
+    $costOther = finance_to_float($workorder['KVT_Sum_Work_Order_Cost_Other'] ?? 0);
+
+    return $costItems + $costOther;
+}
+
+/**
+ * Berekent kolomwaarde Total_Revenue voor één werkorderregel uit het BC opbrengstveld.
+ */
+function finance_workorder_total_revenue(array $workorder): float
+{
+    return finance_abs_amount($workorder['KVT_Sum_Work_Order_Revenue'] ?? 0);
+}

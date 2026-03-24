@@ -1,5 +1,7 @@
 <?php
 
+require_once __DIR__ . '/finance_calculations.php';
+
 /**
  * Usage summary:
  * - Laad eerst auth.php en odata.php.
@@ -73,6 +75,7 @@ class ProjectFinanceService
                     'fields' => [
                         'Total_Cost',
                     ],
+                    'filter' => '',
                     'row_mode' => self::ROW_MODE_SUM,
                 ],
                 'revenue_source' => [
@@ -81,6 +84,7 @@ class ProjectFinanceService
                     'fields' => [
                         'Line_Amount',
                     ],
+                    'filter' => "Entry_Type eq 'Verkoop'",
                     'row_mode' => self::ROW_MODE_SUM_INVERT,
                 ],
             ],
@@ -92,6 +96,7 @@ class ProjectFinanceService
                     'fields' => [
                         'Total_Cost',
                     ],
+                    'filter' => '',
                     'row_mode' => self::ROW_MODE_SUM,
                 ],
                 'revenue_source' => [
@@ -101,6 +106,7 @@ class ProjectFinanceService
                     'fields' => [
                         'Line_Amount',
                     ],
+                    'filter' => "Entry_Type eq 'Verkoop'",
                     'row_mode' => self::ROW_MODE_SUM_INVERT,
                 ],
             ],
@@ -135,6 +141,7 @@ class ProjectFinanceService
         $selected['entity_set'] = $entitySet;
         $selected['key_field'] = $keyField;
         $selected['fields'] = is_array($selected['fields'] ?? null) ? $selected['fields'] : [];
+        $selected['filter'] = trim((string) ($selected['filter'] ?? ''));
         $modeValue = $selected['row_mode'] ?? null;
         if ($modeValue === null && $sourceName === 'cost_source') {
             $modeValue = $selected['cost_row_mode'] ?? null;
@@ -371,7 +378,7 @@ class ProjectFinanceService
             'project_number' => $projectNumber,
             'costs' => $costs,
             'revenue' => $revenue,
-            'resultaat' => $revenue - $costs,
+            'resultaat' => finance_calculate_result($revenue, $costs),
         ];
     }
 
@@ -415,7 +422,7 @@ class ProjectFinanceService
             'project_number' => $projectNumber,
             'costs' => $costs,
             'revenue' => $revenue,
-            'resultaat' => $revenue - $costs,
+            'resultaat' => finance_calculate_result($revenue, $costs),
         ];
     }
 
@@ -501,7 +508,7 @@ class ProjectFinanceService
                 'number' => $workorderNo,
                 'revenue_wo' => $revenueWo,
                 'costs_wo' => $costsWo,
-                'resultaat' => $revenueWo - $costsWo,
+                'resultaat' => finance_calculate_result($revenueWo, $costsWo),
             ];
         }
 
@@ -518,7 +525,7 @@ class ProjectFinanceService
             'project_number' => $projectNumber,
             'project_costs' => $projectCosts,
             'project_revenue' => $projectRevenue,
-            'resultaat' => $projectRevenue - $projectCosts,
+            'resultaat' => finance_calculate_result($projectRevenue, $projectCosts),
             'workorders' => $workorders,
         ];
     }
@@ -578,20 +585,7 @@ class ProjectFinanceService
      */
     private static function firstNumericValue(array $details, array $fields): float
     {
-        foreach ($fields as $field) {
-            if (!is_string($field) || $field === '' || !array_key_exists($field, $details)) {
-                continue;
-            }
-
-            $raw = $details[$field];
-            if (!is_numeric($raw)) {
-                continue;
-            }
-
-            return abs((float) $raw);
-        }
-
-        return 0.0;
+        return finance_first_numeric_value($details, $fields);
     }
 
     /**
@@ -601,6 +595,7 @@ class ProjectFinanceService
     {
         $entitySet = (string) ($sourceConfig['entity_set'] ?? '');
         $keyField = (string) ($sourceConfig['key_field'] ?? '');
+        $sourceFilter = trim((string) ($sourceConfig['filter'] ?? ''));
         $fields = is_array($sourceConfig['fields'] ?? null) ? $sourceConfig['fields'] : [];
         $rowMode = (string) ($sourceConfig['row_mode'] ?? self::ROW_MODE_FIRST_NUMERIC);
 
@@ -620,10 +615,15 @@ class ProjectFinanceService
                 continue;
             }
 
+            $queryFilter = '(' . implode(' or ', $filterParts) . ')';
+            if ($sourceFilter !== '') {
+                $queryFilter .= ' and (' . $sourceFilter . ')';
+            }
+
             try {
                 $url = $this->companyEntityUrlWithQuery($entitySet, [
                     '$select' => implode(',', $selectFields),
-                    '$filter' => implode(' or ', $filterParts),
+                    '$filter' => $queryFilter,
                 ]);
                 $rows = odata_get_all($url, $this->auth, $ttl);
             } catch (Throwable $ignoredLoadError) {
@@ -650,6 +650,7 @@ class ProjectFinanceService
         $entitySet = (string) ($sourceConfig['entity_set'] ?? '');
         $keyField = (string) ($sourceConfig['key_field'] ?? '');
         $projectField = trim((string) ($sourceConfig['project_field'] ?? ''));
+        $sourceFilter = trim((string) ($sourceConfig['filter'] ?? ''));
         $fields = is_array($sourceConfig['fields'] ?? null) ? $sourceConfig['fields'] : [];
         $rowMode = (string) ($sourceConfig['row_mode'] ?? self::ROW_MODE_FIRST_NUMERIC);
 
@@ -662,9 +663,14 @@ class ProjectFinanceService
         })));
 
         try {
+            $queryFilter = $projectField . " eq '" . self::escapeOdataString($projectNumber) . "'";
+            if ($sourceFilter !== '') {
+                $queryFilter = '(' . $queryFilter . ') and (' . $sourceFilter . ')';
+            }
+
             $url = $this->companyEntityUrlWithQuery($entitySet, [
                 '$select' => implode(',', $selectFields),
-                '$filter' => $projectField . " eq '" . self::escapeOdataString($projectNumber) . "'",
+                '$filter' => $queryFilter,
             ]);
             $rows = odata_get_all($url, $this->auth, $ttl);
         } catch (Throwable $ignoredLoadError) {
@@ -742,7 +748,7 @@ class ProjectFinanceService
             $result[$normalizedKey] = [
                 'costs' => $costs,
                 'revenue' => $revenue,
-                'resultaat' => $revenue - $costs,
+                'resultaat' => finance_calculate_result($revenue, $costs),
             ];
         }
 
@@ -812,15 +818,7 @@ class ProjectFinanceService
      */
     private static function normalizeRowMode(string $mode): string
     {
-        $normalized = strtolower(trim($mode));
-        if ($normalized === self::ROW_MODE_SUM) {
-            return self::ROW_MODE_SUM;
-        }
-        if ($normalized === self::ROW_MODE_SUM_INVERT) {
-            return self::ROW_MODE_SUM_INVERT;
-        }
-
-        return self::ROW_MODE_FIRST_NUMERIC;
+        return finance_normalize_row_mode($mode);
     }
 
     /**
@@ -828,48 +826,6 @@ class ProjectFinanceService
      */
     private static function extractRowAmount(array $row, array $fields, string $mode): float
     {
-        if (self::normalizeRowMode($mode) === self::ROW_MODE_SUM_INVERT) {
-            $sum = 0.0;
-            $hasNegativeValue = false;
-            foreach ($fields as $field) {
-                if (!is_string($field) || $field === '' || !array_key_exists($field, $row)) {
-                    continue;
-                }
-
-                $raw = $row[$field];
-                if (!is_numeric($raw)) {
-                    continue;
-                }
-
-                $numeric = (float) $raw;
-                if ($numeric < 0.0) {
-                    $hasNegativeValue = true;
-                }
-
-                $sum += $numeric;
-            }
-
-            return $hasNegativeValue ? -$sum : $sum;
-        }
-
-        if (self::normalizeRowMode($mode) === self::ROW_MODE_SUM) {
-            $sum = 0.0;
-            foreach ($fields as $field) {
-                if (!is_string($field) || $field === '' || !array_key_exists($field, $row)) {
-                    continue;
-                }
-
-                $raw = $row[$field];
-                if (!is_numeric($raw)) {
-                    continue;
-                }
-
-                $sum += abs((float) $raw);
-            }
-
-            return $sum;
-        }
-
-        return self::firstNumericValue($row, $fields);
+        return finance_extract_row_amount($row, $fields, $mode);
     }
 }
