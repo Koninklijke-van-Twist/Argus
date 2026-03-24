@@ -62,12 +62,12 @@
         }
     }
 
-    function initBatchProgressList (allMonths)
+    function initProgressList (allItems)
     {
         if (!batchProgressList) { return {}; }
         batchProgressList.innerHTML = '';
         const items = {};
-        for (const bm of allMonths)
+        for (const item of allItems)
         {
             const li = document.createElement('li');
             li.className = 'batch-progress-item';
@@ -75,17 +75,26 @@
             icon.className = 'batch-progress-icon';
             icon.textContent = '○';
             const label = document.createElement('span');
-            label.textContent = formatMonth(bm);
+            label.textContent = item.label;
+            const pct = document.createElement('span');
+            pct.className = 'batch-progress-pct';
+            pct.textContent = '0%';
             li.appendChild(icon);
             li.appendChild(label);
+            li.appendChild(pct);
             batchProgressList.appendChild(li);
-            items[bm] = { li, icon };
+            items[item.key] = { li, icon, pct };
         }
         batchProgressList.classList.add('is-visible');
         return items;
     }
 
-    function markProgressLoading (items, bm)
+    function initBatchProgressList (allMonths)
+    {
+        return initProgressList(allMonths.map(function (bm) { return { key: bm, label: formatMonth(bm) }; }));
+    }
+
+    function markProgressLoading (items, bm, totalSteps, completedSteps)
     {
         const item = items[bm];
         if (!item) { return; }
@@ -94,7 +103,8 @@
         const spinner = document.createElement('span');
         spinner.className = 'batch-progress-item-spinner';
         item.icon.appendChild(spinner);
-        item.li.scrollIntoView({ block: 'nearest' });
+        const basePct = totalSteps > 0 ? Math.floor((completedSteps / totalSteps) * 100) : 0;
+        if (item.pct) { item.pct.textContent = String(basePct) + '%'; }
     }
 
     function markProgressDone (items, bm)
@@ -104,6 +114,7 @@
         item.li.classList.remove('is-loading');
         item.li.classList.add('is-done');
         item.icon.innerHTML = '✓';
+        if (item.pct) { item.pct.textContent = '100%'; }
     }
 
     function alignProgressWindow (orderedMonths, items, currentIndex)
@@ -569,62 +580,33 @@
 
     function addMonth (ym)
     {
-        const allBatchMonths = buildBatchMonths(ym);
+        const SUB_STEPS = [
+            { key: '_collect', label: 'Projectnummers verzamelen', url: 'maanden.php?action=fetch_sub_collect' },
+            { key: '_finance', label: 'Finance-data ophalen', url: 'maanden.php?action=fetch_sub_finance' },
+            { key: '_projects', label: 'Projectdetails ophalen', url: 'maanden.php?action=fetch_sub_projects' },
+            { key: '_planning', label: 'Planningsregels ophalen', url: 'maanden.php?action=fetch_sub_planning' },
+        ];
+
+        const allBatchMonths = buildBatchMonths(ym); // 36 maanden incl. doelmaand
+        const allProgressItems = allBatchMonths.map(function (bm) { return { key: bm, label: formatMonth(bm) }; })
+            .concat(SUB_STEPS.map(function (s) { return { key: s.key, label: s.label }; }));
+        const allProgressKeys = allProgressItems.map(function (i) { return i.key; });
+        const totalSteps = allProgressItems.length;
+        const progressItems = initProgressList(allProgressItems);
+
         let batchIndex = 0;
-        const totalSteps = allBatchMonths.length + 1;
-        const allProgressMonths = allBatchMonths.concat([ym]);
 
-        const progressItems = initBatchProgressList(allProgressMonths);
-
-    function runNextBatch ()
+        function runNextBatch ()
         {
             if (batchIndex >= allBatchMonths.length)
             {
-                // All batches done — now fetch the final snapshot
-                markProgressLoading(progressItems, ym);
-                if (pageLoaderText) { pageLoaderText.textContent = 'Ophalen ' + formatMonth(ym) + ' (' + totalSteps + '/' + totalSteps + ')'; }
-                fetchMonthPayloadWithRetry(
-                    ym,
-                    'Ophalen ' + formatMonth(ym) + '...',
-                    formatMonth(ym) + ' kost iets meer tijd. We proberen direct opnieuw...'
-                )
-                    .then(function (json)
-                    {
-                        markProgressDone(progressItems, ym);
-                        hideLoader();
-                        if (!json.ok)
-                        {
-                            toast('Fout: ' + (json.error || 'Onbekende fout'), true);
-                            return;
-                        }
-                        const data = json.data || {};
-                        const newSumm = {
-                            year_month: ym,
-                            data_start_month: typeof data.data_start_month === 'string' ? data.data_start_month : allBatchMonths[0],
-                            total_revenue: typeof data.total_revenue === 'number' ? data.total_revenue : 0,
-                            total_costs: typeof data.total_costs === 'number' ? data.total_costs : 0,
-                            fetched_at: data.fetched_at || new Date().toISOString(),
-                        };
-                        monthSummaries.push(newSumm);
-                        monthSummaries.sort(function (a, b)
-                        {
-                            return b.year_month.localeCompare(a.year_month);
-                        });
-                        addableMonths = addableMonths.filter(function (m) { return m !== ym; });
-                        renderGrid();
-                        toast(formatMonth(ym) + ' is toegevoegd.');
-                    })
-                    .catch(function (err)
-                    {
-                        hideLoader();
-                        toast('Netwerkfout: ' + err.message, true);
-                    });
+                runSubStep(0);
                 return;
             }
 
             const batchYm = allBatchMonths[batchIndex];
-            markProgressLoading(progressItems, batchYm);
-            alignProgressWindow(allProgressMonths, progressItems, batchIndex);
+            markProgressLoading(progressItems, batchYm, totalSteps, batchIndex);
+            alignProgressWindow(allProgressKeys, progressItems, batchIndex);
             if (pageLoaderText) { pageLoaderText.textContent = 'Ophalen ' + formatMonth(batchYm) + ' (' + (batchIndex + 1) + '/' + totalSteps + ')'; }
 
             const body = new URLSearchParams({ target_month: ym, batch_month: batchYm, company: selectedCompany });
@@ -649,6 +631,78 @@
                 });
         }
 
+        function runSubStep (idx)
+        {
+            if (idx >= SUB_STEPS.length)
+            {
+                buildSnapshot();
+                return;
+            }
+
+            const step = SUB_STEPS[idx];
+            const globalIndex = allBatchMonths.length + idx;
+            markProgressLoading(progressItems, step.key, totalSteps, globalIndex);
+            alignProgressWindow(allProgressKeys, progressItems, globalIndex);
+            if (pageLoaderText) { pageLoaderText.textContent = step.label + ' (' + (globalIndex + 1) + '/' + totalSteps + ')'; }
+
+            const body = new URLSearchParams({ target_month: ym, company: selectedCompany });
+            fetch(step.url, { method: 'POST', body: body })
+                .then(parseFetchResponse)
+                .then(function (json)
+                {
+                    if (!json.ok)
+                    {
+                        hideLoader();
+                        toast('Fout bij ' + step.label.toLowerCase() + ': ' + (json.error || 'Onbekende fout'), true);
+                        return;
+                    }
+                    markProgressDone(progressItems, step.key);
+                    runSubStep(idx + 1);
+                })
+                .catch(function (err)
+                {
+                    hideLoader();
+                    toast('Netwerkfout bij ' + step.label.toLowerCase() + ': ' + err.message, true);
+                });
+        }
+
+        function buildSnapshot ()
+        {
+            const body = new URLSearchParams({ target_month: ym, company: selectedCompany });
+            fetch('maanden.php?action=build_month_snapshot', { method: 'POST', body: body })
+                .then(parseFetchResponse)
+                .then(function (json)
+                {
+                    hideLoader();
+                    if (!json.ok)
+                    {
+                        toast('Fout: ' + (json.error || 'Onbekende fout'), true);
+                        return;
+                    }
+                    const data = json.data || {};
+                    const newSumm = {
+                        year_month: ym,
+                        data_start_month: typeof data.data_start_month === 'string' ? data.data_start_month : allBatchMonths[0],
+                        total_revenue: typeof data.total_revenue === 'number' ? data.total_revenue : 0,
+                        total_costs: typeof data.total_costs === 'number' ? data.total_costs : 0,
+                        fetched_at: data.fetched_at || new Date().toISOString(),
+                    };
+                    monthSummaries.push(newSumm);
+                    monthSummaries.sort(function (a, b)
+                    {
+                        return b.year_month.localeCompare(a.year_month);
+                    });
+                    addableMonths = addableMonths.filter(function (m) { return m !== ym; });
+                    renderGrid();
+                    toast(formatMonth(ym) + ' is toegevoegd.');
+                })
+                .catch(function (err)
+                {
+                    hideLoader();
+                    toast('Netwerkfout: ' + err.message, true);
+                });
+        }
+
         showLoader('Bezig met ophalen...');
         runNextBatch();
     }
@@ -658,10 +712,9 @@
         const parts = targetYm.split('-');
         const targetYear = parseInt(parts[0], 10);
         const targetMonth = parseInt(parts[1], 10);
-        // 36 months total: 35 before target + target itself; target itself is fetched by refresh_month
-        // so batch only the preceding 35 months
+        // 36 months total: 35 before target + target itself (all fetched via batchUrl)
         const result = [];
-        for (let i = 35; i >= 1; i--)
+        for (let i = 35; i >= 0; i--)
         {
             let m = targetMonth - i;
             let y = targetYear;
@@ -672,46 +725,46 @@
         return result;
     }
 
-    /**
-     * Page load
-     */
-    if (companySelect)
-    {
-        companySelect.addEventListener('change', function ()
+        /**
+         * Page load
+         */
+        if (companySelect)
         {
-            const company = companySelect.value;
-            window.location.href = 'maanden.php?company=' + encodeURIComponent(company);
-        });
-    }
-
-    if (confirmCancel)
-    {
-        confirmCancel.addEventListener('click', closeConfirm);
-    }
-
-    if (confirmOk)
-    {
-        confirmOk.addEventListener('click', function ()
-        {
-            const cb = confirmCallback;
-            closeConfirm();
-            if (typeof cb === 'function')
+            companySelect.addEventListener('change', function ()
             {
-                cb();
-            }
-        });
-    }
+                const company = companySelect.value;
+                window.location.href = 'maanden.php?company=' + encodeURIComponent(company);
+            });
+        }
 
-    if (confirmOverlay)
-    {
-        confirmOverlay.addEventListener('click', function (e)
+        if (confirmCancel)
         {
-            if (e.target === confirmOverlay)
+            confirmCancel.addEventListener('click', closeConfirm);
+        }
+
+        if (confirmOk)
+        {
+            confirmOk.addEventListener('click', function ()
             {
+                const cb = confirmCallback;
                 closeConfirm();
-            }
-        });
-    }
+                if (typeof cb === 'function')
+                {
+                    cb();
+                }
+            });
+        }
 
-    renderGrid();
-})();
+        if (confirmOverlay)
+        {
+            confirmOverlay.addEventListener('click', function (e)
+            {
+                if (e.target === confirmOverlay)
+                {
+                    closeConfirm();
+                }
+            });
+        }
+
+        renderGrid();
+    }) ();

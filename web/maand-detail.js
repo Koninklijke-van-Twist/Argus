@@ -67,20 +67,22 @@
     // Column label map
     const columnLabels = {
         workorders: 'Werkorder(s)',
-        total_costs: 'Kosten Ttl',
-        total_revenue: 'Opbr. Ttl',
+        total_costs: 'Kosten t/m heden',
+        total_revenue: 'Opbrengst. t/m heden',
+        // todo: Toevoegen: Gefact. t/m heden: totaal opbrengst gehaald uit alle gevonden facturen
         customer: 'Deb.',
         description: 'Beschr.',
         cost_center: 'Afd.',
-        expected_revenue: 'Ttl Opbr.',
-        extra_work: 'Meerwerk',
+        expected_revenue: 'Opbr. Ttl',
+        extra_work: 'Opbr. MW', // todo: dit zijn geen kosten, maar opbrengst. Dus niet rod weergeven, maar groen.
         pct_ready: '% Gereed',
         winst_ohw: 'Winst OHW',
-        prev_profit: 'Winst V. Periode',
-        difference: 'Verschil',
+        prev_profit: 'Winst V. Periode', //deze mag weg omdat we de vorige periode nu meerekenen
+        difference: 'Verschil', //deze mag weg omdat we de vorige periode nu meerekenen
         notes: 'Notities',
         project_manager: 'Projectmanager',
         invoices: 'Facturen',
+        // todo: Toevoegen: Berekende kolom, "Marge Ttl", <opbrengst ttl - kosten ttl>
     };
 
     // Status filter state

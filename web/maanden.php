@@ -203,9 +203,171 @@ function fetch_workorders_for_batch_month(string $company, string $batchYearMont
     return odata_get_all($workorderUrl, $auth, $ttl);
 }
 
+/**
+ * Bouwt werkorderrijen, projectsamenvattingen en totalen vanuit eerder opgehaalde data.
+ * Doet geen OData-calls; alle benodigde data wordt als parameter meegegeven.
+ */
+function build_month_rows(
+    string $company,
+    string $yearMonth,
+    array $workorders,
+    array $projectTotalsByJob,
+    array $invoiceIdsByJob,
+    array $invoicedTotalByJob,
+    array $invoiceDetailsById,
+    array $workorderTotalsByNumber,
+    array $projectDetails,
+    array $planningTotalsByJob,
+    array $planningBreakdownByJob
+): array {
+    $rows = [];
+    foreach ($workorders as $wo) {
+        if (!is_array($wo)) {
+            continue;
+        }
+
+        $jobNo = trim((string) ($wo['Job_No'] ?? ''));
+        $normJob = strtolower($jobNo);
+
+        $jobTaskNo = trim((string) ($wo['Job_Task_No'] ?? ''));
+        $normWorkorder = strtolower($jobTaskNo);
+        $workorderTotals = $workorderTotalsByNumber[$normWorkorder] ?? [
+            'costs' => 0.0,
+            'revenue' => 0.0,
+            'resultaat' => 0.0,
+        ];
+        $projectTotals = $projectTotalsByJob[$normJob] ?? [
+            'costs' => 0.0,
+            'revenue' => 0.0,
+            'resultaat' => 0.0,
+        ];
+        $costs = (float) ($workorderTotals['costs'] ?? 0.0);
+        $revenue = (float) ($workorderTotals['revenue'] ?? 0.0);
+        $projectCosts = (float) ($projectTotals['costs'] ?? 0.0);
+        $projectRevenue = (float) ($projectTotals['revenue'] ?? 0.0);
+        $invoicedTotal = (float) ($invoicedTotalByJob[$normJob] ?? 0.0);
+        $notesParts = [
+            ['label' => 'KVT_Memo', 'value' => trim((string) ($wo['Memo'] ?? ''))],
+            ['label' => 'KVT_Memo_Internal_Use_Only', 'value' => trim((string) ($wo['Memo_Internal_Use_Only'] ?? ''))],
+            ['label' => 'KVT_Memo_Invoice', 'value' => trim((string) ($wo['Memo_Invoice'] ?? ''))],
+            ['label' => 'KVT_Memo_Billing_Details', 'value' => trim((string) ($wo['KVT_Memo_Invoice_Details'] ?? ''))],
+            ['label' => 'KVT_Remarks_Invoicing', 'value' => trim((string) ($wo['KVT_Remarks_Invoicing'] ?? ''))],
+        ];
+        $rows[] = [
+            'No' => (string) ($wo['No'] ?? ''),
+            'Task_Code' => (string) ($wo['Task_Code'] ?? ''),
+            'Description' => (string) ($wo['Task_Description'] ?? ''),
+            'Status' => (string) ($wo['Status'] ?? ''),
+            'Document_Status' => (string) ($wo['KVT_Document_Status'] ?? ''),
+            'Job_No' => $jobNo,
+            'Job_Task_No' => $jobTaskNo,
+            'Contract_No' => (string) ($wo['Contract_No'] ?? ''),
+            'Start_Date' => (string) ($wo['Start_Date'] ?? ''),
+            'End_Date' => (string) ($wo['End_Date'] ?? ''),
+            'Customer_Id' => (string) ($wo['Bill_to_Customer_No'] ?? ''),
+            'Customer_Name' => (string) ($wo['Bill_to_Name'] ?? ''),
+            'Cost_Center' => (string) ($wo['Job_Dimension_1_Value'] ?? ''),
+            'Actual_Costs' => $costs,
+            'Total_Revenue' => $revenue,
+            'Project_Actual_Costs' => $projectCosts,
+            'Project_Total_Revenue' => $projectRevenue,
+            'Invoiced_Total' => $invoicedTotal,
+            'Invoice_Ids' => $invoiceIdsByJob[$normJob] ?? [],
+            'Notes' => $notesParts,
+        ];
+    }
+
+    $totalRevenue = 0.0;
+    $totalCosts = 0.0;
+    $projectRows = [];
+    $seenProjects = [];
+
+    foreach ($rows as $row) {
+        $jobNo = (string) ($row['Job_No'] ?? '');
+        $normJob = strtolower($jobNo);
+        $proj = $projectDetails[$normJob] ?? null;
+
+        if (!isset($seenProjects[$normJob])) {
+            $seenProjects[$normJob] = true;
+            $invoicedTotal = $invoicedTotalByJob[$normJob] ?? 0.0;
+            $planningTotals = $planningTotalsByJob[$normJob] ?? ['expected_revenue' => 0.0, 'extra_work' => 0.0];
+            $planningBreakdown = $planningBreakdownByJob[$normJob] ?? ['expected_revenue_lines' => [], 'extra_work_lines' => []];
+            $projectTotals = $projectTotalsByJob[$normJob] ?? ['costs' => 0.0, 'revenue' => 0.0, 'resultaat' => 0.0];
+            $projectRows[$normJob] = [
+                'Job_No' => $jobNo,
+                'Description' => (string) (($proj['Description'] ?? '') ?: ($row['Description'] ?? '')),
+                'Customer_Id' => (string) ($proj['Bill_to_Customer_No'] ?? $row['Customer_Id'] ?? ''),
+                'Customer_Name' => (string) ($proj['Bill_to_Name'] ?? $row['Customer_Name'] ?? ''),
+                'Project_Manager' => (string) ($proj['Project_Manager'] ?? $proj['Person_Responsible'] ?? ''),
+                'Cost_Center' => (string) ($proj['LVS_Global_Dimension_1_Code'] ?? $row['Cost_Center'] ?? ''),
+                'Project_Actual_Costs' => (float) ($projectTotals['costs'] ?? 0.0),
+                'Project_Total_Revenue' => (float) ($projectTotals['revenue'] ?? 0.0),
+                'Expected_Revenue' => (float) ($planningTotals['expected_revenue'] ?? 0),
+                'Extra_Work' => (float) ($planningTotals['extra_work'] ?? 0),
+                'Invoiced_Total' => $invoicedTotal,
+                'Invoice_Ids' => $invoiceIdsByJob[$normJob] ?? [],
+                'Workorders' => [],
+                'Breakdown' => [
+                    'total_costs_lines' => [],
+                    'total_revenue_lines' => [],
+                    'expected_revenue_lines' => is_array($planningBreakdown['expected_revenue_lines'] ?? null) ? $planningBreakdown['expected_revenue_lines'] : [],
+                    'extra_work_lines' => is_array($planningBreakdown['extra_work_lines'] ?? null) ? $planningBreakdown['extra_work_lines'] : [],
+                ],
+            ];
+        }
+
+        $projectRows[$normJob]['Workorders'][] = $row;
+        $projectRows[$normJob]['Breakdown']['total_costs_lines'][] = [
+            'Workorder_No' => (string) ($row['No'] ?? ''),
+            'Status' => (string) ($row['Status'] ?? ''),
+            'Description' => (string) ($row['Description'] ?? ''),
+            'Amount' => (float) ($row['Actual_Costs'] ?? 0),
+        ];
+        $projectRows[$normJob]['Breakdown']['total_revenue_lines'][] = [
+            'Workorder_No' => (string) ($row['No'] ?? ''),
+            'Status' => (string) ($row['Status'] ?? ''),
+            'Description' => (string) ($row['Description'] ?? ''),
+            'Amount' => (float) ($row['Total_Revenue'] ?? 0),
+        ];
+        $totalRevenue = finance_add_amount($totalRevenue, $row['Total_Revenue'] ?? 0);
+        $totalCosts = finance_add_amount($totalCosts, $row['Actual_Costs'] ?? 0);
+    }
+
+    $projectBreakdowns = [];
+    foreach ($projectRows as $normJob => $projectRow) {
+        if (!is_array($projectRow)) {
+            continue;
+        }
+        $projectBreakdowns[$normJob] = is_array($projectRow['Breakdown'] ?? null)
+            ? $projectRow['Breakdown']
+            : [
+                'total_costs_lines' => [],
+                'total_revenue_lines' => [],
+                'expected_revenue_lines' => [],
+                'extra_work_lines' => [],
+            ];
+    }
+
+    return [
+        'year_month' => $yearMonth,
+        'data_start_month' => data_start_month_for_target($yearMonth),
+        'company' => $company,
+        'fetched_at' => gmdate('c'),
+        'total_revenue' => $totalRevenue,
+        'total_costs' => $totalCosts,
+        'project_details' => $projectDetails,
+        'project_summaries' => array_values($projectRows),
+        'project_breakdowns' => $projectBreakdowns,
+        'workorder_rows' => $rows,
+        'invoice_details_by_id' => $invoiceDetailsById,
+    ];
+}
+
 function fetch_month_data(string $company, string $yearMonth, array $auth, int $ttl): array
 {
     global $baseUrl, $environment;
+    @set_time_limit(0);
+    @ini_set('max_execution_time', '0');
 
     // Collect all workorders from WIP cache (already fetched batch months) plus current month
     $wip = batch_wip_load($company, $yearMonth);
@@ -400,151 +562,19 @@ function fetch_month_data(string $company, string $yearMonth, array $auth, int $
         }
     }
 
-    // Build rows
-    $rows = [];
-    foreach ($workorders as $wo) {
-        if (!is_array($wo)) {
-            continue;
-        }
-
-        $jobNo = trim((string) ($wo['Job_No'] ?? ''));
-        $normJob = strtolower($jobNo);
-
-        $jobTaskNo = trim((string) ($wo['Job_Task_No'] ?? ''));
-        $normWorkorder = strtolower($jobTaskNo);
-        $workorderTotals = $workorderTotalsByNumber[$normWorkorder] ?? [
-            'costs' => 0.0,
-            'revenue' => 0.0,
-            'resultaat' => 0.0,
-        ];
-        $projectTotals = $projectTotalsByJob[$normJob] ?? [
-            'costs' => 0.0,
-            'revenue' => 0.0,
-            'resultaat' => 0.0,
-        ];
-        $costs = (float) ($workorderTotals['costs'] ?? 0.0);
-        $revenue = (float) ($workorderTotals['revenue'] ?? 0.0);
-        $projectCosts = (float) ($projectTotals['costs'] ?? 0.0);
-        $projectRevenue = (float) ($projectTotals['revenue'] ?? 0.0);
-        $invoicedTotal = (float) ($invoicedTotalByJob[$normJob] ?? 0.0);
-
-        $notesParts = [
-            ['label' => 'KVT_Memo', 'value' => trim((string) ($wo['Memo'] ?? ''))],
-            ['label' => 'KVT_Memo_Internal_Use_Only', 'value' => trim((string) ($wo['Memo_Internal_Use_Only'] ?? ''))],
-            ['label' => 'KVT_Memo_Invoice', 'value' => trim((string) ($wo['Memo_Invoice'] ?? ''))],
-            ['label' => 'KVT_Memo_Billing_Details', 'value' => trim((string) ($wo['KVT_Memo_Invoice_Details'] ?? ''))],
-            ['label' => 'KVT_Remarks_Invoicing', 'value' => trim((string) ($wo['KVT_Remarks_Invoicing'] ?? ''))],
-        ];
-
-        $rows[] = [
-            'No' => (string) ($wo['No'] ?? ''),
-            'Task_Code' => (string) ($wo['Task_Code'] ?? ''),
-            'Description' => (string) ($wo['Task_Description'] ?? ''),
-            'Status' => (string) ($wo['Status'] ?? ''),
-            'Document_Status' => (string) ($wo['KVT_Document_Status'] ?? ''),
-            'Job_No' => $jobNo,
-            'Job_Task_No' => $jobTaskNo,
-            'Contract_No' => (string) ($wo['Contract_No'] ?? ''),
-            'Start_Date' => (string) ($wo['Start_Date'] ?? ''),
-            'End_Date' => (string) ($wo['End_Date'] ?? ''),
-            'Customer_Id' => (string) ($wo['Bill_to_Customer_No'] ?? ''),
-            'Customer_Name' => (string) ($wo['Bill_to_Name'] ?? ''),
-            'Cost_Center' => (string) ($wo['Job_Dimension_1_Value'] ?? ''),
-            'Actual_Costs' => $costs,
-            'Total_Revenue' => $revenue,
-            'Project_Actual_Costs' => $projectCosts,
-            'Project_Total_Revenue' => $projectRevenue,
-            'Invoiced_Total' => $invoicedTotal,
-            'Invoice_Ids' => $invoiceIdsByJob[$normJob] ?? [],
-            'Notes' => $notesParts,
-        ];
-    }
-
-    // Summaries per project
-    $totalRevenue = 0.0;
-    $totalCosts = 0.0;
-    $projectRows = [];
-    $seenProjects = [];
-
-    foreach ($rows as $row) {
-        $jobNo = (string) ($row['Job_No'] ?? '');
-        $normJob = strtolower($jobNo);
-        $proj = $projectDetails[$normJob] ?? null;
-
-        if (!isset($seenProjects[$normJob])) {
-            $seenProjects[$normJob] = true;
-            $invoicedTotal = $invoicedTotalByJob[$normJob] ?? 0.0;
-            $planningTotals = $planningTotalsByJob[$normJob] ?? ['expected_revenue' => 0.0, 'extra_work' => 0.0];
-            $planningBreakdown = $planningBreakdownByJob[$normJob] ?? ['expected_revenue_lines' => [], 'extra_work_lines' => []];
-            $projectTotals = $projectTotalsByJob[$normJob] ?? ['costs' => 0.0, 'revenue' => 0.0, 'resultaat' => 0.0];
-            $projectRows[$normJob] = [
-                'Job_No' => $jobNo,
-                'Description' => (string) (($proj['Description'] ?? '') ?: ($row['Description'] ?? '')),
-                'Customer_Id' => (string) ($proj['Bill_to_Customer_No'] ?? $row['Customer_Id'] ?? ''),
-                'Customer_Name' => (string) ($proj['Bill_to_Name'] ?? $row['Customer_Name'] ?? ''),
-                'Project_Manager' => (string) ($proj['Project_Manager'] ?? $proj['Person_Responsible'] ?? ''),
-                'Cost_Center' => (string) ($proj['LVS_Global_Dimension_1_Code'] ?? $row['Cost_Center'] ?? ''),
-                'Project_Actual_Costs' => (float) ($projectTotals['costs'] ?? 0.0),
-                'Project_Total_Revenue' => (float) ($projectTotals['revenue'] ?? 0.0),
-                'Expected_Revenue' => (float) ($planningTotals['expected_revenue'] ?? 0),
-                'Extra_Work' => (float) ($planningTotals['extra_work'] ?? 0),
-                'Invoiced_Total' => $invoicedTotal,
-                'Invoice_Ids' => $invoiceIdsByJob[$normJob] ?? [],
-                'Workorders' => [],
-                'Breakdown' => [
-                    'total_costs_lines' => [],
-                    'total_revenue_lines' => [],
-                    'expected_revenue_lines' => is_array($planningBreakdown['expected_revenue_lines'] ?? null) ? $planningBreakdown['expected_revenue_lines'] : [],
-                    'extra_work_lines' => is_array($planningBreakdown['extra_work_lines'] ?? null) ? $planningBreakdown['extra_work_lines'] : [],
-                ],
-            ];
-        }
-
-        $projectRows[$normJob]['Workorders'][] = $row;
-        $projectRows[$normJob]['Breakdown']['total_costs_lines'][] = [
-            'Workorder_No' => (string) ($row['No'] ?? ''),
-            'Status' => (string) ($row['Status'] ?? ''),
-            'Description' => (string) ($row['Description'] ?? ''),
-            'Amount' => (float) ($row['Actual_Costs'] ?? 0),
-        ];
-        $projectRows[$normJob]['Breakdown']['total_revenue_lines'][] = [
-            'Workorder_No' => (string) ($row['No'] ?? ''),
-            'Status' => (string) ($row['Status'] ?? ''),
-            'Description' => (string) ($row['Description'] ?? ''),
-            'Amount' => (float) ($row['Total_Revenue'] ?? 0),
-        ];
-        $totalRevenue = finance_add_amount($totalRevenue, $row['Total_Revenue'] ?? 0);
-        $totalCosts = finance_add_amount($totalCosts, $row['Actual_Costs'] ?? 0);
-    }
-
-    $projectBreakdowns = [];
-    foreach ($projectRows as $normJob => $projectRow) {
-        if (!is_array($projectRow)) {
-            continue;
-        }
-        $projectBreakdowns[$normJob] = is_array($projectRow['Breakdown'] ?? null)
-            ? $projectRow['Breakdown']
-            : [
-                'total_costs_lines' => [],
-                'total_revenue_lines' => [],
-                'expected_revenue_lines' => [],
-                'extra_work_lines' => [],
-            ];
-    }
-
-    $result = [
-        'year_month' => $yearMonth,
-        'data_start_month' => data_start_month_for_target($yearMonth),
-        'company' => $company,
-        'fetched_at' => gmdate('c'),
-        'total_revenue' => $totalRevenue,
-        'total_costs' => $totalCosts,
-        'project_details' => $projectDetails,
-        'project_summaries' => array_values($projectRows),
-        'project_breakdowns' => $projectBreakdowns,
-        'workorder_rows' => $rows,
-        'invoice_details_by_id' => $invoiceDetailsById,
-    ];
+    $result = build_month_rows(
+        $company,
+        $yearMonth,
+        $workorders,
+        $projectTotalsByJob,
+        $invoiceIdsByJob,
+        $invoicedTotalByJob,
+        $invoiceDetailsById,
+        $workorderTotalsByNumber,
+        $projectDetails,
+        $planningTotalsByJob,
+        $planningBreakdownByJob
+    );
 
     // Clean up WIP cache now that the full snapshot is built
     batch_wip_delete($company, $yearMonth);
@@ -629,9 +659,11 @@ if (!in_array($selectedCompany, $companies, true)) {
 // Ophalen werkorders voor één batch-maand (stap in de progressieve laadflow)
 if (($_GET['action'] ?? '') === 'fetch_workorders_batch') {
     header('Content-Type: application/json; charset=utf-8');
+    @set_time_limit(0);
+    @ini_set('max_execution_time', '0');
 
     $targetYm = trim((string) ($_POST['target_month'] ?? ''));
-    $batchYm  = trim((string) ($_POST['batch_month'] ?? ''));
+    $batchYm = trim((string) ($_POST['batch_month'] ?? ''));
     if (!preg_match('/^\d{4}-\d{2}$/', $targetYm) || !preg_match('/^\d{4}-\d{2}$/', $batchYm)) {
         http_response_code(400);
         echo json_encode(['ok' => false, 'error' => 'Ongeldige maand'], JSON_UNESCAPED_UNICODE);
@@ -682,9 +714,354 @@ if (($_GET['action'] ?? '') === 'fetch_workorders_batch') {
     exit;
 }
 
+// Sub-stap 1: projectnummers verzamelen uit WIP-werkorders
+if (($_GET['action'] ?? '') === 'fetch_sub_collect') {
+    header('Content-Type: application/json; charset=utf-8');
+    @set_time_limit(0);
+    @ini_set('max_execution_time', '0');
+
+    $targetYm = trim((string) ($_POST['target_month'] ?? ''));
+    if (!preg_match('/^\d{4}-\d{2}$/', $targetYm)) {
+        http_response_code(400);
+        echo json_encode(['ok' => false, 'error' => 'Ongeldige maand'], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+
+    $company = trim((string) ($_POST['company'] ?? $companies[0]));
+    if (!in_array($company, $companies, true)) {
+        $company = $companies[0];
+    }
+
+    try {
+        $wip = batch_wip_load($company, $targetYm);
+        $wipWorkorders = is_array($wip['workorders'] ?? null) ? $wip['workorders'] : [];
+        $projectNumbers = [];
+        $seenProjectNos = [];
+        $workorderNumbers = [];
+        $seenWorkorderNos = [];
+
+        foreach ($wipWorkorders as $wo) {
+            if (!is_array($wo)) {
+                continue;
+            }
+            $jNo = trim((string) ($wo['Job_No'] ?? ''));
+            if ($jNo !== '' && !isset($seenProjectNos[$jNo])) {
+                $seenProjectNos[$jNo] = true;
+                $projectNumbers[] = $jNo;
+            }
+            $jobTaskNo = trim((string) ($wo['Job_Task_No'] ?? ''));
+            if ($jobTaskNo !== '' && !isset($seenWorkorderNos[$jobTaskNo])) {
+                $seenWorkorderNos[$jobTaskNo] = true;
+                $workorderNumbers[] = $jobTaskNo;
+            }
+        }
+
+        $wip['project_numbers'] = $projectNumbers;
+        $wip['workorder_numbers'] = $workorderNumbers;
+        batch_wip_save($company, $targetYm, $wip);
+
+        echo json_encode([
+            'ok' => true,
+            'project_count' => count($projectNumbers),
+            'workorder_count' => count($workorderNumbers),
+        ], JSON_UNESCAPED_UNICODE);
+    } catch (Throwable $e) {
+        http_response_code(500);
+        echo json_encode(['ok' => false, 'error' => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+    }
+    exit;
+}
+
+// Sub-stap 2: finance-data ophalen voor verzamelde projecten
+if (($_GET['action'] ?? '') === 'fetch_sub_finance') {
+    header('Content-Type: application/json; charset=utf-8');
+    @set_time_limit(0);
+    @ini_set('max_execution_time', '0');
+
+    $targetYm = trim((string) ($_POST['target_month'] ?? ''));
+    if (!preg_match('/^\d{4}-\d{2}$/', $targetYm)) {
+        http_response_code(400);
+        echo json_encode(['ok' => false, 'error' => 'Ongeldige maand'], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+
+    $company = trim((string) ($_POST['company'] ?? $companies[0]));
+    if (!in_array($company, $companies, true)) {
+        $company = $companies[0];
+    }
+
+    try {
+        $ttl = $hour;
+        $wip = batch_wip_load($company, $targetYm);
+        $projectNumbers = is_array($wip['project_numbers'] ?? null) ? $wip['project_numbers'] : [];
+        $workorderNumbers = is_array($wip['workorder_numbers'] ?? null) ? $wip['workorder_numbers'] : [];
+
+        $financeService = new ProjectFinanceService($company);
+        $projectFinance = [
+            'project_totals_by_job' => [],
+            'invoice_details_by_id' => [],
+            'project_invoice_ids_by_job' => [],
+            'project_invoiced_total_by_job' => [],
+        ];
+        $workorderFinance = ['workorder_totals_by_number' => []];
+
+        if ($projectNumbers !== []) {
+            $projectFinance = $financeService->collectProjectFinanceForProjects($projectNumbers, $ttl);
+        }
+        if ($workorderNumbers !== []) {
+            $workorderFinance = $financeService->collectWorkorderFinanceForWorkorders($workorderNumbers, $ttl);
+        }
+
+        $wip['project_finance'] = $projectFinance;
+        $wip['workorder_finance'] = $workorderFinance;
+        batch_wip_save($company, $targetYm, $wip);
+
+        echo json_encode(['ok' => true], JSON_UNESCAPED_UNICODE);
+    } catch (Throwable $e) {
+        http_response_code(500);
+        echo json_encode(['ok' => false, 'error' => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+    }
+    exit;
+}
+
+// Sub-stap 3: projectdetails ophalen voor verzamelde projecten
+if (($_GET['action'] ?? '') === 'fetch_sub_projects') {
+    header('Content-Type: application/json; charset=utf-8');
+    @set_time_limit(0);
+    @ini_set('max_execution_time', '0');
+
+    $targetYm = trim((string) ($_POST['target_month'] ?? ''));
+    if (!preg_match('/^\d{4}-\d{2}$/', $targetYm)) {
+        http_response_code(400);
+        echo json_encode(['ok' => false, 'error' => 'Ongeldige maand'], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+
+    $company = trim((string) ($_POST['company'] ?? $companies[0]));
+    if (!in_array($company, $companies, true)) {
+        $company = $companies[0];
+    }
+
+    try {
+        $ttl = $hour;
+        $wip = batch_wip_load($company, $targetYm);
+        $projectNumbers = is_array($wip['project_numbers'] ?? null) ? $wip['project_numbers'] : [];
+        $projectDetails = [];
+        $projectChunks = array_chunk(array_unique($projectNumbers), 20);
+
+        foreach ($projectChunks as $chunk) {
+            $filterParts = array_map(fn($no) => "No eq '" . str_replace("'", "''", $no) . "'", $chunk);
+            $filter = implode(' or ', $filterParts);
+            try {
+                $projectUrl = company_entity_url_with_query($baseUrl, $environment, $company, 'Projecten', [
+                    '$select' => 'No,Description,Sell_to_Customer_No,Sell_to_Customer_Name,Bill_to_Customer_No,Bill_to_Name,Person_Responsible,Project_Manager,LVS_Global_Dimension_1_Code,Status,Percent_Completed,Total_WIP_Cost_Amount,Total_WIP_Sales_Amount,Recog_Costs_Amount,Recog_Sales_Amount,Calc_Recog_Costs_Amount,Calc_Recog_Sales_Amount,Acc_WIP_Costs_Amount,Acc_WIP_Sales_Amount,LVS_No_Of_Job_Change_Orders,External_Document_No,Your_Reference',
+                    '$filter' => $filter,
+                ]);
+                $batchProjects = odata_get_all($projectUrl, $auth, $ttl);
+            } catch (Throwable $e) {
+                continue;
+            }
+            foreach ($batchProjects as $proj) {
+                if (!is_array($proj)) {
+                    continue;
+                }
+                $no = trim((string) ($proj['No'] ?? ''));
+                if ($no !== '') {
+                    $projectDetails[strtolower($no)] = $proj;
+                }
+            }
+        }
+
+        $wip['project_details'] = $projectDetails;
+        batch_wip_save($company, $targetYm, $wip);
+
+        echo json_encode(['ok' => true], JSON_UNESCAPED_UNICODE);
+    } catch (Throwable $e) {
+        http_response_code(500);
+        echo json_encode(['ok' => false, 'error' => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+    }
+    exit;
+}
+
+// Sub-stap 4: planningsregels ophalen voor verzamelde projecten
+if (($_GET['action'] ?? '') === 'fetch_sub_planning') {
+    header('Content-Type: application/json; charset=utf-8');
+    @set_time_limit(0);
+    @ini_set('max_execution_time', '0');
+
+    $targetYm = trim((string) ($_POST['target_month'] ?? ''));
+    if (!preg_match('/^\d{4}-\d{2}$/', $targetYm)) {
+        http_response_code(400);
+        echo json_encode(['ok' => false, 'error' => 'Ongeldige maand'], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+
+    $company = trim((string) ($_POST['company'] ?? $companies[0]));
+    if (!in_array($company, $companies, true)) {
+        $company = $companies[0];
+    }
+
+    try {
+        $ttl = $hour;
+        $wip = batch_wip_load($company, $targetYm);
+        $projectNumbers = is_array($wip['project_numbers'] ?? null) ? $wip['project_numbers'] : [];
+        $planningTotalsByJob = [];
+        $planningBreakdownByJob = [];
+        $projectChunks = array_chunk(array_unique($projectNumbers), 20);
+
+        foreach ($projectChunks as $chunk) {
+            $jobFilters = array_map(fn($no) => "Job_No eq '" . str_replace("'", "''", $no) . "'", $chunk);
+            if ($jobFilters === []) {
+                continue;
+            }
+            try {
+                $planningUrl = company_entity_url_with_query($baseUrl, $environment, $company, 'LVS_JobPlanningLinesSub', [
+                    '$select' => 'Job_No,Job_Task_No,Line_No,Type,No,Description,Description_2,Total_Price,Line_Amount,Line_Amount_LCY,Remaining_Line_Amount,Remaining_Line_Amount_LCY,LVS_Job_Change_Order_No,LVS_Value_Add_Job_Breakdown_1,LVS_Value_Add_Job_Breakdown_2',
+                    '$filter' => implode(' or ', $jobFilters),
+                ]);
+                $planningRows = odata_get_all($planningUrl, $auth, $ttl);
+            } catch (Throwable $e) {
+                continue;
+            }
+
+            foreach ($planningRows as $planningRow) {
+                if (!is_array($planningRow)) {
+                    continue;
+                }
+                $jobNo = trim((string) ($planningRow['Job_No'] ?? ''));
+                if ($jobNo === '') {
+                    continue;
+                }
+                $normJob = strtolower($jobNo);
+
+                if (!isset($planningTotalsByJob[$normJob])) {
+                    $planningTotalsByJob[$normJob] = ['expected_revenue' => 0.0, 'extra_work' => 0.0];
+                }
+                if (!isset($planningBreakdownByJob[$normJob])) {
+                    $planningBreakdownByJob[$normJob] = ['expected_revenue_lines' => [], 'extra_work_lines' => []];
+                }
+
+                $lineAmount = 0.0;
+                foreach (['Total_Price', 'Line_Amount', 'Line_Amount_LCY', 'Remaining_Line_Amount', 'Remaining_Line_Amount_LCY'] as $amountField) {
+                    $rawAmount = $planningRow[$amountField] ?? null;
+                    if (!is_numeric($rawAmount)) {
+                        continue;
+                    }
+                    $lineAmount = (float) $rawAmount;
+                    break;
+                }
+
+                $lineDescription = trim((string) ($planningRow['Description'] ?? ''));
+                $lineDescription2 = trim((string) ($planningRow['Description_2'] ?? ''));
+                if ($lineDescription2 !== '') {
+                    $lineDescription = trim($lineDescription . ' / ' . $lineDescription2);
+                }
+
+                $linePayload = [
+                    'Job_Task_No' => (string) ($planningRow['Job_Task_No'] ?? ''),
+                    'Line_No' => (int) ($planningRow['Line_No'] ?? 0),
+                    'Type' => (string) ($planningRow['Type'] ?? ''),
+                    'No' => (string) ($planningRow['No'] ?? ''),
+                    'Description' => $lineDescription,
+                    'Line_Amount' => $lineAmount,
+                    'Change_Order_No' => trim((string) ($planningRow['LVS_Job_Change_Order_No'] ?? '')),
+                ];
+
+                $planningTotalsByJob[$normJob]['expected_revenue'] = finance_add_amount(
+                    (float) ($planningTotalsByJob[$normJob]['expected_revenue'] ?? 0.0),
+                    $lineAmount
+                );
+                $planningBreakdownByJob[$normJob]['expected_revenue_lines'][] = $linePayload;
+
+                $isExtraWorkLine = $linePayload['Change_Order_No'] !== ''
+                    || trim((string) ($planningRow['LVS_Value_Add_Job_Breakdown_1'] ?? '')) !== ''
+                    || trim((string) ($planningRow['LVS_Value_Add_Job_Breakdown_2'] ?? '')) !== '';
+
+                if ($isExtraWorkLine) {
+                    $planningTotalsByJob[$normJob]['extra_work'] = finance_add_amount(
+                        (float) ($planningTotalsByJob[$normJob]['extra_work'] ?? 0.0),
+                        $lineAmount
+                    );
+                    $planningBreakdownByJob[$normJob]['extra_work_lines'][] = $linePayload;
+                }
+            }
+        }
+
+        $wip['planning_totals_by_job'] = $planningTotalsByJob;
+        $wip['planning_breakdown_by_job'] = $planningBreakdownByJob;
+        batch_wip_save($company, $targetYm, $wip);
+
+        echo json_encode(['ok' => true], JSON_UNESCAPED_UNICODE);
+    } catch (Throwable $e) {
+        http_response_code(500);
+        echo json_encode(['ok' => false, 'error' => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+    }
+    exit;
+}
+
+// Bouw definitieve snapshot vanuit WIP-gegevens (na alle sub-stappen)
+if (($_GET['action'] ?? '') === 'build_month_snapshot') {
+    header('Content-Type: application/json; charset=utf-8');
+    @set_time_limit(0);
+    @ini_set('max_execution_time', '0');
+
+    $targetYm = trim((string) ($_POST['target_month'] ?? ''));
+    if (!preg_match('/^\d{4}-\d{2}$/', $targetYm)) {
+        http_response_code(400);
+        echo json_encode(['ok' => false, 'error' => 'Ongeldige maand'], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+
+    $company = trim((string) ($_POST['company'] ?? $companies[0]));
+    if (!in_array($company, $companies, true)) {
+        $company = $companies[0];
+    }
+
+    try {
+        $wip = batch_wip_load($company, $targetYm);
+        $workorders = is_array($wip['workorders'] ?? null) ? $wip['workorders'] : [];
+        $projectFinance = is_array($wip['project_finance'] ?? null) ? $wip['project_finance'] : [];
+        $workorderFinance = is_array($wip['workorder_finance'] ?? null) ? $wip['workorder_finance'] : [];
+        $projectDetails = is_array($wip['project_details'] ?? null) ? $wip['project_details'] : [];
+        $planningTotalsByJob = is_array($wip['planning_totals_by_job'] ?? null) ? $wip['planning_totals_by_job'] : [];
+        $planningBreakdownByJob = is_array($wip['planning_breakdown_by_job'] ?? null) ? $wip['planning_breakdown_by_job'] : [];
+
+        $projectTotalsByJob = is_array($projectFinance['project_totals_by_job'] ?? null) ? $projectFinance['project_totals_by_job'] : [];
+        $invoiceIdsByJob = is_array($projectFinance['project_invoice_ids_by_job'] ?? null) ? $projectFinance['project_invoice_ids_by_job'] : [];
+        $invoicedTotalByJob = is_array($projectFinance['project_invoiced_total_by_job'] ?? null) ? $projectFinance['project_invoiced_total_by_job'] : [];
+        $invoiceDetailsById = is_array($projectFinance['invoice_details_by_id'] ?? null) ? $projectFinance['invoice_details_by_id'] : [];
+        $workorderTotalsByNumber = is_array($workorderFinance['workorder_totals_by_number'] ?? null) ? $workorderFinance['workorder_totals_by_number'] : [];
+
+        $data = build_month_rows(
+            $company,
+            $targetYm,
+            $workorders,
+            $projectTotalsByJob,
+            $invoiceIdsByJob,
+            $invoicedTotalByJob,
+            $invoiceDetailsById,
+            $workorderTotalsByNumber,
+            $projectDetails,
+            $planningTotalsByJob,
+            $planningBreakdownByJob
+        );
+
+        maand_save($company, $targetYm, $data);
+        batch_wip_delete($company, $targetYm);
+
+        echo json_encode(['ok' => true, 'data' => $data], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    } catch (Throwable $e) {
+        http_response_code(500);
+        echo json_encode(['ok' => false, 'error' => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+    }
+    exit;
+}
+
 // Verversen / aanmaken van een maand
 if (($_GET['action'] ?? '') === 'refresh_month') {
     header('Content-Type: application/json; charset=utf-8');
+    @set_time_limit(0);
+    @ini_set('max_execution_time', '0');
 
     $ym = trim((string) ($_POST['year_month'] ?? $_GET['year_month'] ?? ''));
     if (!preg_match('/^\d{4}-\d{2}$/', $ym)) {
@@ -927,7 +1304,7 @@ function format_month_nl(string $yearMonth): string
             flex-direction: column;
             font-size: 13px;
             font-weight: 400;
-            box-shadow: 0 4px 12px rgba(15,23,42,.10);
+            box-shadow: 0 4px 12px rgba(15, 23, 42, .10);
             -ms-overflow-style: none;
             scrollbar-width: none;
         }
@@ -953,6 +1330,19 @@ function format_month_nl(string $yearMonth): string
 
         .batch-progress-item:last-child {
             border-bottom: none;
+        }
+
+        .batch-progress-item span:nth-child(2) {
+            flex: 1 1 auto;
+            min-width: 0;
+        }
+
+        .batch-progress-pct {
+            flex-shrink: 0;
+            font-variant-numeric: tabular-nums;
+            color: #64748b;
+            min-width: 38px;
+            text-align: right;
         }
 
         .batch-progress-item.is-done {
