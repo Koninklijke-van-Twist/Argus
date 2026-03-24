@@ -78,7 +78,7 @@
             label.textContent = item.label;
             const pct = document.createElement('span');
             pct.className = 'batch-progress-pct';
-            pct.textContent = '0%';
+            pct.textContent = '';
             li.appendChild(icon);
             li.appendChild(label);
             li.appendChild(pct);
@@ -114,7 +114,7 @@
         item.li.classList.remove('is-loading');
         item.li.classList.add('is-done');
         item.icon.innerHTML = '✓';
-        if (item.pct) { item.pct.textContent = '100%'; }
+        if (item.pct) { item.pct.textContent = ''; }
     }
 
     function alignProgressWindow (orderedMonths, items, currentIndex)
