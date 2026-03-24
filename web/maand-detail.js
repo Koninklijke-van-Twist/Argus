@@ -69,20 +69,18 @@
         workorders: 'Werkorder(s)',
         total_costs: 'Kosten t/m heden',
         total_revenue: 'Opbrengst. t/m heden',
-        // todo: Toevoegen: Gefact. t/m heden: totaal opbrengst gehaald uit alle gevonden facturen
+        invoiced_total: 'Gefact. t/m heden',
         customer: 'Deb.',
         description: 'Beschr.',
         cost_center: 'Afd.',
-        expected_revenue: 'Opbr. Ttl',
-        extra_work: 'Opbr. MW', // todo: dit zijn geen kosten, maar opbrengst. Dus niet rod weergeven, maar groen.
+        expected_revenue: 'Opbr. Ttl Verw.',
+        extra_work: 'Opbr. MW',
+        margin_total: 'Marge Ttl',
         pct_ready: '% Gereed',
         winst_ohw: 'Winst OHW',
-        prev_profit: 'Winst V. Periode', //deze mag weg omdat we de vorige periode nu meerekenen
-        difference: 'Verschil', //deze mag weg omdat we de vorige periode nu meerekenen
         notes: 'Notities',
         project_manager: 'Projectmanager',
         invoices: 'Facturen',
-        // todo: Toevoegen: Berekende kolom, "Marge Ttl", <opbrengst ttl - kosten ttl>
     };
 
     // Status filter state
@@ -113,6 +111,7 @@
                 customer_name: (projDetail.Bill_to_Name || row.Customer_Name || '').trim(),
                 project_manager: (projDetail.Project_Manager || projDetail.Person_Responsible || '').trim(),
                 cost_center: (projDetail.LVS_Global_Dimension_1_Code || row.Cost_Center || '').trim(),
+                invoiced_total: parseDecimal(projSummary.Invoiced_Total || row.Invoiced_Total || 0),
                 expected_revenue: expectedRevenueFromBreakdown !== 0 ? expectedRevenueFromBreakdown : expectedRevenueFallback,
                 extra_work: extraWorkFromBreakdown !== 0 ? extraWorkFromBreakdown : extraWorkFallback,
                 pct_completed: parseDecimal(projDetail.Percent_Completed),
@@ -412,9 +411,15 @@
                     case 'customer': return p.customer_name || '';
                     case 'total_costs': return computeProjectTotals(p).costs;
                     case 'total_revenue': return computeProjectTotals(p).revenue;
+                    case 'invoiced_total': return parseDecimal(p.invoiced_total);
+                    case 'margin_total':
+                        {
+                            const totals = computeProjectTotals(p);
+                            return totals.revenue - totals.costs;
+                        }
                     case 'project_manager': return p.project_manager || '';
                     case 'cost_center': return p.cost_center || '';
-                    case 'pct_ready': return p.pct_completed;
+                    case 'pct_ready': return Math.max(0, parseDecimal(p.pct_completed));
                     default: return p.job_no || '';
                 }
             }
@@ -518,13 +523,13 @@
             th.textContent = lbl;
 
             // Sortable columns
-            if (['description', 'customer', 'total_costs', 'total_revenue', 'project_manager', 'cost_center', 'pct_ready'].includes(colKey))
+            if (['description', 'customer', 'total_costs', 'total_revenue', 'invoiced_total', 'margin_total', 'project_manager', 'cost_center', 'pct_ready'].includes(colKey))
             {
                 th.className = 'sortable';
                 th.dataset.sortKey = colKey;
             }
 
-            if (['total_costs', 'total_revenue', 'expected_revenue', 'extra_work', 'winst_ohw', 'prev_profit', 'difference'].includes(colKey))
+            if (['total_costs', 'total_revenue', 'invoiced_total', 'expected_revenue', 'extra_work', 'margin_total', 'winst_ohw'].includes(colKey))
             {
                 th.style.minWidth = '100px';
                 th.style.textAlign = 'right';
@@ -597,17 +602,16 @@
         const revenue = columnValues ? parseDecimal(columnValues.total_revenue) : totals.revenue;
         const expected = parseDecimal(proj.expected_revenue);
         const extraWork = parseDecimal(proj.extra_work);
+        const invoicedTotal = parseDecimal(proj.invoiced_total);
         const pctRaw = parseDecimal(proj.pct_completed);
+        const pctDisplay = Math.max(0, pctRaw);
+        const isPctOverrun = pctDisplay > 100;
+        const marginTotal = columnValues && columnValues.margin_total !== null && columnValues.margin_total !== undefined
+            ? parseDecimal(columnValues.margin_total)
+            : (revenue - costs);
         const winstOhw = columnValues
             ? parseDecimal(columnValues.winst_ohw)
             : (expected * (pctRaw / 100) - costs);
-        const prevData = prevProfitByProject[normJob] || null;
-        const prevProfit = columnValues && columnValues.prev_profit !== null
-            ? parseDecimal(columnValues.prev_profit)
-            : (prevData ? ((prevData.revenue || 0) - (prevData.costs || 0)) : null);
-        const diff = columnValues && columnValues.difference !== null
-            ? parseDecimal(columnValues.difference)
-            : (prevProfit !== null ? ((revenue - costs) - prevProfit) : null);
 
         // Project main row
         const tr = document.createElement('tr');
@@ -683,6 +687,10 @@
                         );
                     });
                     break;
+                case 'invoiced_total':
+                    td.style.textAlign = 'right';
+                    td.innerHTML = '<span class="' + amountClass(invoicedTotal) + '">' + escapeHtml(fmtCurrency(invoicedTotal)) + '</span>';
+                    break;
                 case 'customer':
                     td.textContent = proj.customer_name || proj.customer_id || '';
                     break;
@@ -716,7 +724,7 @@
                     break;
                 case 'extra_work':
                     td.style.textAlign = 'right';
-                    td.innerHTML = '<span class="aggregate-source-link ' + amountClass(extraWork) + '">' + escapeHtml(fmtCurrency(extraWork)) + '</span>';
+                    td.innerHTML = '<span class="aggregate-source-link ' + (extraWork > 0.005 ? 'amount-pos' : 'amount-neutral') + '">' + escapeHtml(fmtCurrency(extraWork)) + '</span>';
                     td.addEventListener('click', function ()
                     {
                         showSourceModal(
@@ -736,37 +744,24 @@
                         );
                     });
                     break;
+                case 'margin_total':
+                    td.style.textAlign = 'right';
+                    td.innerHTML = '<span class="' + amountClass(marginTotal) + '">' + escapeHtml(fmtCurrency(marginTotal)) + '</span>';
+                    break;
                 case 'pct_ready':
                     td.style.textAlign = 'right';
-                    td.textContent = fmtPct(pctRaw);
+                    if (isPctOverrun)
+                    {
+                        td.innerHTML = '<span class="amount-neg" title="Let op: kosten zijn hoger dan oorspronkelijk gecalculeerd.">' + escapeHtml(fmtPct(pctDisplay)) + '</span>';
+                    }
+                    else
+                    {
+                        td.textContent = fmtPct(pctDisplay);
+                    }
                     break;
                 case 'winst_ohw':
                     td.style.textAlign = 'right';
                     td.innerHTML = '<span class="' + amountClass(winstOhw) + '">' + escapeHtml(fmtCurrency(winstOhw)) + '</span>';
-                    break;
-                case 'prev_profit':
-                    td.style.textAlign = 'right';
-                    if (prevProfit !== null)
-                    {
-                        td.innerHTML = '<span class="' + amountClass(prevProfit) + '">' + escapeHtml(fmtCurrency(prevProfit)) + '</span>';
-                    }
-                    else
-                    {
-                        td.textContent = '–';
-                        td.style.color = '#94a3b8';
-                    }
-                    break;
-                case 'difference':
-                    td.style.textAlign = 'right';
-                    if (diff !== null)
-                    {
-                        td.innerHTML = '<span class="' + amountClass(diff) + '">' + escapeHtml(fmtCurrency(diff)) + '</span>';
-                    }
-                    else
-                    {
-                        td.textContent = '–';
-                        td.style.color = '#94a3b8';
-                    }
                     break;
                 case 'notes':
                     {

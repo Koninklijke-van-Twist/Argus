@@ -80,6 +80,14 @@ function finance_column_difference(float $currentRevenue, float $currentCosts, ?
 }
 
 /**
+ * Berekent kolomwaarde Marge Totaal als totale opbrengst minus totale kosten.
+ */
+function finance_column_margin_total(float $totalRevenue, float $totalCosts): float
+{
+    return finance_calculate_result($totalRevenue, $totalCosts);
+}
+
+/**
  * Zet een inkomende waarde veilig om naar een numeriek bedrag.
  */
 function finance_to_float(mixed $value): float

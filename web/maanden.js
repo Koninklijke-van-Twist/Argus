@@ -725,46 +725,46 @@
         return result;
     }
 
-        /**
-         * Page load
-         */
-        if (companySelect)
+    /**
+     * Page load
+     */
+    if (companySelect)
+    {
+        companySelect.addEventListener('change', function ()
         {
-            companySelect.addEventListener('change', function ()
-            {
-                const company = companySelect.value;
-                window.location.href = 'maanden.php?company=' + encodeURIComponent(company);
-            });
-        }
+            const company = companySelect.value;
+            window.location.href = 'maanden.php?company=' + encodeURIComponent(company);
+        });
+    }
 
-        if (confirmCancel)
-        {
-            confirmCancel.addEventListener('click', closeConfirm);
-        }
+    if (confirmCancel)
+    {
+        confirmCancel.addEventListener('click', closeConfirm);
+    }
 
-        if (confirmOk)
+    if (confirmOk)
+    {
+        confirmOk.addEventListener('click', function ()
         {
-            confirmOk.addEventListener('click', function ()
+            const cb = confirmCallback;
+            closeConfirm();
+            if (typeof cb === 'function')
             {
-                const cb = confirmCallback;
+                cb();
+            }
+        });
+    }
+
+    if (confirmOverlay)
+    {
+        confirmOverlay.addEventListener('click', function (e)
+        {
+            if (e.target === confirmOverlay)
+            {
                 closeConfirm();
-                if (typeof cb === 'function')
-                {
-                    cb();
-                }
-            });
-        }
+            }
+        });
+    }
 
-        if (confirmOverlay)
-        {
-            confirmOverlay.addEventListener('click', function (e)
-            {
-                if (e.target === confirmOverlay)
-                {
-                    closeConfirm();
-                }
-            });
-        }
-
-        renderGrid();
-    }) ();
+    renderGrid();
+})();

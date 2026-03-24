@@ -294,6 +294,7 @@ if (is_array($monthData)) {
 
         $expectedRevenue = finance_to_float($summaryRow['Expected_Revenue'] ?? 0.0);
         $pctCompleted = finance_to_float($detailRow['Percent_Completed'] ?? 0.0);
+        $marginTotal = finance_column_margin_total($totalRevenue, $totalCosts);
         $winstOhw = finance_column_winst_ohw($expectedRevenue, $pctCompleted, $totalCosts);
         $prevProfit = finance_column_prev_profit($prevProfitByProject[$normJobNo] ?? null);
         $difference = finance_column_difference($totalRevenue, $totalCosts, $prevProfit);
@@ -301,6 +302,7 @@ if (is_array($monthData)) {
         $projectColumnValuesByJob[$normJobNo] = [
             'total_costs' => $totalCosts,
             'total_revenue' => $totalRevenue,
+            'margin_total' => $marginTotal,
             'winst_ohw' => $winstOhw,
             'prev_profit' => $prevProfit,
             'difference' => $difference,
@@ -318,15 +320,15 @@ $defaultColumns = [
     'workorders',
     'total_costs',
     'total_revenue',
+    'invoiced_total',
     'customer',
     'description',
     'cost_center',
     'expected_revenue',
     'extra_work',
+    'margin_total',
     'pct_ready',
     'winst_ohw',
-    'prev_profit',
-    'difference',
     'notes',
     'project_manager',
     'invoices',
