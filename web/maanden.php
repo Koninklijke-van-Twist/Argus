@@ -66,6 +66,7 @@ function maand_save(string $company, string $yearMonth, array $data): bool
 function maand_delete(string $company, string $yearMonth): bool
 {
     $path = maand_cache_path($company, $yearMonth);
+    batch_wip_delete($company, $yearMonth);
     if (is_file($path)) {
         return @unlink($path);
     }

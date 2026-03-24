@@ -5,7 +5,6 @@
      */
     const payload = window.maandenData || {};
     const companies = Array.isArray(payload.companies) ? payload.companies : [];
-    const refreshUrl = typeof payload.refresh_url === 'string' ? payload.refresh_url : 'maanden.php?action=refresh_month';
     const batchUrl = typeof payload.batch_url === 'string' ? payload.batch_url : 'maanden.php?action=fetch_workorders_batch';
     const deleteUrl = typeof payload.delete_url === 'string' ? payload.delete_url : 'maanden.php?action=delete_month';
     const detailUrl = typeof payload.detail_url === 'string' ? payload.detail_url : 'maand-detail.php';
@@ -260,48 +259,6 @@
         return /maximum execution time/i.test(text);
     }
 
-    function fetchMonthPayloadWithRetry (ym, loaderText, retryLoaderText)
-    {
-        const body = new URLSearchParams({ year_month: ym, company: selectedCompany });
-        let attempt = 0;
-        const maxAttempts = 3;
-
-        function runAttempt ()
-        {
-            attempt += 1;
-            showLoader(attempt === 1 ? loaderText : retryLoaderText);
-
-            return fetch(refreshUrl, { method: 'POST', body: body })
-                .then(parseFetchResponse)
-                .then(function (json)
-                {
-                    if (json && json.ok === false && isExecutionTimeoutError({ message: json.error || '' }) && attempt < maxAttempts)
-                    {
-                        return runAttempt();
-                    }
-
-                    return json;
-                })
-                .catch(function (error)
-                {
-                    if (isExecutionTimeoutError(error) && attempt < maxAttempts)
-                    {
-                        return new Promise(function (resolve)
-                        {
-                            window.setTimeout(function ()
-                            {
-                                resolve(runAttempt());
-                            }, 250);
-                        });
-                    }
-
-                    throw error;
-                });
-        }
-
-        return runAttempt();
-    }
-
     function confirm (title, text, callback)
     {
         if (!confirmOverlay)
@@ -359,6 +316,63 @@
         return d.toLocaleDateString('nl-NL', {
             year: 'numeric', month: 'long', day: 'numeric',
             hour: '2-digit', minute: '2-digit'
+        });
+    }
+
+    function createMonthSummary (ym, data, fallbackStartMonth)
+    {
+        const payloadData = data && typeof data === 'object' ? data : {};
+        return {
+            year_month: ym,
+            data_start_month: typeof payloadData.data_start_month === 'string' ? payloadData.data_start_month : fallbackStartMonth,
+            total_revenue: typeof payloadData.total_revenue === 'number' ? payloadData.total_revenue : 0,
+            total_costs: typeof payloadData.total_costs === 'number' ? payloadData.total_costs : 0,
+            fetched_at: payloadData.fetched_at || new Date().toISOString(),
+        };
+    }
+
+    function upsertMonthSummary (summary)
+    {
+        const idx = monthSummaries.findIndex(function (item) { return item.year_month === summary.year_month; });
+        if (idx >= 0)
+        {
+            monthSummaries[idx] = summary;
+        }
+        else
+        {
+            monthSummaries.push(summary);
+        }
+        monthSummaries.sort(function (a, b)
+        {
+            return b.year_month.localeCompare(a.year_month);
+        });
+    }
+
+    function removeMonthSummary (ym)
+    {
+        monthSummaries = monthSummaries.filter(function (summary)
+        {
+            return summary.year_month !== ym;
+        });
+    }
+
+    function ensureAddableMonth (ym)
+    {
+        if (addableMonths.indexOf(ym) === -1)
+        {
+            addableMonths.push(ym);
+            addableMonths.sort(function (a, b)
+            {
+                return b.localeCompare(a);
+            });
+        }
+    }
+
+    function removeAddableMonth (ym)
+    {
+        addableMonths = addableMonths.filter(function (month)
+        {
+            return month !== ym;
         });
     }
 
@@ -438,7 +452,7 @@
                 'Weet u zeker dat u ' + formatMonth(ym) + ' wilt verversen? De bestaande data wordt overschreven.',
                 function ()
                 {
-                    refreshMonth(ym, card, summary);
+                    refreshMonth(ym);
                 }
             );
         });
@@ -528,57 +542,7 @@
         monthGrid.appendChild(buildAddCard());
     }
 
-    function refreshMonth (ym, cardEl, oldSummary)
-    {
-        fetchMonthPayloadWithRetry(
-            ym,
-            'Maand verversen...',
-            'Het duurt iets langer dan verwacht. We proberen direct opnieuw met de deels opgebouwde cache...'
-        )
-            .then(function (json)
-            {
-                hideLoader();
-                if (!json.ok)
-                {
-                    toast('Fout: ' + (json.error || 'Onbekende fout'), true);
-                    return;
-                }
-                const data = json.data || {};
-                const newSumm = {
-                    year_month: ym,
-                    data_start_month: typeof data.data_start_month === 'string' ? data.data_start_month : buildBatchMonths(ym)[0],
-                    total_revenue: typeof data.total_revenue === 'number' ? data.total_revenue : 0,
-                    total_costs: typeof data.total_costs === 'number' ? data.total_costs : 0,
-                    fetched_at: data.fetched_at || new Date().toISOString(),
-                };
-                // Update or insert in monthSummaries
-                const idx = monthSummaries.findIndex(function (s) { return s.year_month === ym; });
-                if (idx >= 0)
-                {
-                    monthSummaries[idx] = newSumm;
-                }
-                else
-                {
-                    // Insert sorted (newest first)
-                    monthSummaries.push(newSumm);
-                    monthSummaries.sort(function (a, b)
-                    {
-                        return b.year_month.localeCompare(a.year_month);
-                    });
-                    // Remove from addable months
-                    addableMonths = addableMonths.filter(function (m) { return m !== ym; });
-                }
-                renderGrid();
-                toast(formatMonth(ym) + ' is ververst.');
-            })
-            .catch(function (err)
-            {
-                hideLoader();
-                toast('Netwerkfout: ' + err.message, true);
-            });
-    }
-
-    function addMonth (ym)
+    function runMonthBuildFlow (ym, successMessage)
     {
         const SUB_STEPS = [
             { key: '_collect', label: 'Projectnummers verzamelen', url: 'maanden.php?action=fetch_sub_collect' },
@@ -680,21 +644,11 @@
                         return;
                     }
                     const data = json.data || {};
-                    const newSumm = {
-                        year_month: ym,
-                        data_start_month: typeof data.data_start_month === 'string' ? data.data_start_month : allBatchMonths[0],
-                        total_revenue: typeof data.total_revenue === 'number' ? data.total_revenue : 0,
-                        total_costs: typeof data.total_costs === 'number' ? data.total_costs : 0,
-                        fetched_at: data.fetched_at || new Date().toISOString(),
-                    };
-                    monthSummaries.push(newSumm);
-                    monthSummaries.sort(function (a, b)
-                    {
-                        return b.year_month.localeCompare(a.year_month);
-                    });
-                    addableMonths = addableMonths.filter(function (m) { return m !== ym; });
+                    const newSumm = createMonthSummary(ym, data, allBatchMonths[0]);
+                    upsertMonthSummary(newSumm);
+                    removeAddableMonth(ym);
                     renderGrid();
-                    toast(formatMonth(ym) + ' is toegevoegd.');
+                    toast(formatMonth(ym) + ' ' + successMessage);
                 })
                 .catch(function (err)
                 {
@@ -705,6 +659,39 @@
 
         showLoader('Bezig met ophalen...');
         runNextBatch();
+    }
+
+    function refreshMonth (ym)
+    {
+        showLoader('Bestaande maand verwijderen...');
+
+        const body = new URLSearchParams({ year_month: ym, company: selectedCompany });
+        fetch(deleteUrl, { method: 'POST', body: body })
+            .then(parseFetchResponse)
+            .then(function (json)
+            {
+                if (!json.ok)
+                {
+                    hideLoader();
+                    toast('Fout bij verwijderen van ' + formatMonth(ym) + ': ' + (json.error || 'Onbekende fout'), true);
+                    return;
+                }
+
+                removeMonthSummary(ym);
+                ensureAddableMonth(ym);
+                renderGrid();
+                runMonthBuildFlow(ym, 'is ververst.');
+            })
+            .catch(function (err)
+            {
+                hideLoader();
+                toast('Netwerkfout bij verwijderen van ' + formatMonth(ym) + ': ' + err.message, true);
+            });
+    }
+
+    function addMonth (ym)
+    {
+        runMonthBuildFlow(ym, 'is toegevoegd.');
     }
 
     function buildBatchMonths (targetYm)
