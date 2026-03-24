@@ -14,7 +14,9 @@
     const appEl = document.getElementById('app');
     const summaryBar = document.getElementById('summaryBar');
     const statusFilterBar = document.getElementById('statusFilterBar');
+    const departmentFilterBar = document.getElementById('departmentFilterBar');
     const searchInput = document.getElementById('searchInput');
+    const exportCsvBtn = document.getElementById('exportCsvBtn');
     const notesOverlay = document.getElementById('notesOverlay');
     const notesModalTitle = document.getElementById('notesModalTitle');
     const notesModalBody = document.getElementById('notesModalBody');
@@ -85,6 +87,7 @@
 
     // Status filter state
     const hiddenStatuses = new Set();
+    const hiddenCostCenters = new Set();
     let appliedSearch = '';
     let sortKey = 'job_no';
     let sortDir = 'asc';
@@ -93,7 +96,7 @@
     const projectMap = {};
     for (const row of workorderRows)
     {
-        const jNo = (row.Job_No || '').trim();
+        const jNo = toTrimmedString(row.Job_No || '');
         const normJob = jNo.toLowerCase();
         if (!projectMap[normJob])
         {
@@ -106,11 +109,11 @@
             const extraWorkFallback = parseDecimal(projSummary.Extra_Work || computeExtraWork(projDetail) || 0);
             projectMap[normJob] = {
                 job_no: jNo,
-                description: (projDetail.Description || row.Description || '').trim(),
-                customer_id: (projDetail.Bill_to_Customer_No || row.Customer_Id || '').trim(),
-                customer_name: (projDetail.Bill_to_Name || row.Customer_Name || '').trim(),
-                project_manager: (projDetail.Project_Manager || projDetail.Person_Responsible || '').trim(),
-                cost_center: (projDetail.LVS_Global_Dimension_1_Code || row.Cost_Center || '').trim(),
+                description: toTrimmedString(projDetail.Description || row.Description || ''),
+                customer_id: toTrimmedString(projDetail.Bill_to_Customer_No || row.Customer_Id || ''),
+                customer_name: toTrimmedString(projDetail.Bill_to_Name || row.Customer_Name || ''),
+                project_manager: toTrimmedString(projDetail.Project_Manager || projDetail.Person_Responsible || ''),
+                cost_center: toTrimmedString(projDetail.LVS_Global_Dimension_1_Code || row.Cost_Center || ''),
                 invoiced_total: parseDecimal(projSummary.Invoiced_Total || row.Invoiced_Total || 0),
                 expected_revenue: expectedRevenueFromBreakdown !== 0 ? expectedRevenueFromBreakdown : expectedRevenueFallback,
                 extra_work: extraWorkFromBreakdown !== 0 ? extraWorkFromBreakdown : extraWorkFallback,
@@ -144,6 +147,11 @@
     function parseDecimal (v)
     {
         return typeof v === 'number' ? v : (parseFloat(v) || 0);
+    }
+
+    function toTrimmedString (value)
+    {
+        return String(value === null || value === undefined ? '' : value).trim();
     }
 
     function computeExtraWork (projDetail)
@@ -239,7 +247,7 @@
         const statuses = new Set();
         for (const row of workorderRows)
         {
-            const s = (row.Status || '').trim();
+            const s = toTrimmedString(row.Status || '');
             if (s !== '')
             {
                 statuses.add(s);
@@ -353,6 +361,121 @@
         return 'background:' + bg + ';';
     }
 
+    function normalizeCostCenterToken (value)
+    {
+        const text = String(value === null || value === undefined ? '' : value).trim();
+        return text === '' ? '__EMPTY__' : text;
+    }
+
+    function costCenterLabelFromToken (token)
+    {
+        return token === '__EMPTY__' ? '(Geen afdeling)' : token;
+    }
+
+    function collectAllCostCenters ()
+    {
+        const tokens = new Set();
+        for (const proj of Object.values(projectMap))
+        {
+            if (!proj || typeof proj !== 'object')
+            {
+                continue;
+            }
+            tokens.add(normalizeCostCenterToken(proj.cost_center || ''));
+        }
+        return [...tokens].sort(function (a, b)
+        {
+            return costCenterLabelFromToken(a).localeCompare(costCenterLabelFromToken(b), 'nl');
+        });
+    }
+
+    function renderDepartmentFilterBar ()
+    {
+        if (!departmentFilterBar)
+        {
+            return;
+        }
+        departmentFilterBar.innerHTML = '';
+
+        const departments = collectAllCostCenters();
+        if (departments.length === 0)
+        {
+            return;
+        }
+
+        const title = document.createElement('span');
+        title.className = 'status-filter-title';
+        title.textContent = 'Afdeling:';
+        departmentFilterBar.appendChild(title);
+
+        const toggleAll = document.createElement('button');
+        toggleAll.type = 'button';
+        toggleAll.className = 'status-toggle-all-btn';
+        toggleAll.textContent = hiddenCostCenters.size > 0 ? 'Alles aan' : 'Alles uit';
+        toggleAll.addEventListener('click', function ()
+        {
+            if (hiddenCostCenters.size > 0)
+            {
+                hiddenCostCenters.clear();
+            }
+            else
+            {
+                for (const deptToken of departments)
+                {
+                    hiddenCostCenters.add(deptToken);
+                }
+            }
+            renderDepartmentFilterBar();
+            renderTable();
+            updateSummary();
+        });
+        departmentFilterBar.appendChild(toggleAll);
+
+        for (const deptToken of departments)
+        {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'status-filter-btn' + (hiddenCostCenters.has(deptToken) ? ' is-off' : '');
+            btn.textContent = costCenterLabelFromToken(deptToken);
+
+            btn.addEventListener('click', function (e)
+            {
+                if (e.detail === 2)
+                {
+                    return;
+                }
+                if (hiddenCostCenters.has(deptToken))
+                {
+                    hiddenCostCenters.delete(deptToken);
+                }
+                else
+                {
+                    hiddenCostCenters.add(deptToken);
+                }
+                renderDepartmentFilterBar();
+                renderTable();
+                updateSummary();
+            });
+
+            btn.addEventListener('dblclick', function ()
+            {
+                for (const d of departments)
+                {
+                    if (d !== deptToken)
+                    {
+                        hiddenCostCenters.add(d);
+                    }
+                }
+                hiddenCostCenters.delete(deptToken);
+                renderDepartmentFilterBar();
+                renderTable();
+                updateSummary();
+            });
+
+            departmentFilterBar.appendChild(btn);
+        }
+    }
+
     /**
      * Functies: Project filtering
      */
@@ -364,9 +487,15 @@
 
         for (const proj of projects)
         {
+            const deptToken = normalizeCostCenterToken(proj.cost_center || '');
+            if (hiddenCostCenters.has(deptToken))
+            {
+                continue;
+            }
+
             const visibleWOs = proj.workorders.filter(function (wo)
             {
-                const status = (wo.Status || '').trim();
+                const status = toTrimmedString(wo.Status || '');
                 return !hiddenStatuses.has(status);
             });
 
@@ -447,13 +576,105 @@
         let costs = 0, revenue = 0;
         for (const wo of wos)
         {
-            if (!hiddenStatuses.has((wo.Status || '').trim()))
+            if (!hiddenStatuses.has(toTrimmedString(wo.Status || '')))
             {
                 costs += parseDecimal(wo.Actual_Costs || 0);
                 revenue += parseDecimal(wo.Total_Revenue || 0);
             }
         }
         return { costs, revenue };
+    }
+
+    function getProjectComputedValues (proj)
+    {
+        const normJob = (proj.job_no || '').toLowerCase();
+        const columnValues = projectColumnValuesByJob[normJob] && typeof projectColumnValuesByJob[normJob] === 'object'
+            ? projectColumnValuesByJob[normJob]
+            : null;
+        const totals = computeProjectTotals(proj);
+        const costs = columnValues ? parseDecimal(columnValues.total_costs) : totals.costs;
+        const revenue = columnValues ? parseDecimal(columnValues.total_revenue) : totals.revenue;
+        const expected = parseDecimal(proj.expected_revenue);
+        const extraWork = parseDecimal(proj.extra_work);
+        const invoicedTotal = parseDecimal(proj.invoiced_total);
+        const pctRaw = parseDecimal(proj.pct_completed);
+        const pctDisplay = Math.max(0, pctRaw);
+        const isPctOverrun = pctDisplay > 100;
+        const marginTotal = columnValues && columnValues.margin_total !== null && columnValues.margin_total !== undefined
+            ? parseDecimal(columnValues.margin_total)
+            : (revenue - costs);
+        const winstOhw = columnValues
+            ? parseDecimal(columnValues.winst_ohw)
+            : (expected * (pctRaw / 100) - costs);
+
+        return {
+            costs,
+            revenue,
+            expected,
+            extraWork,
+            invoicedTotal,
+            pctDisplay,
+            isPctOverrun,
+            marginTotal,
+            winstOhw,
+        };
+    }
+
+    function formatInvoicePreviewText (ids)
+    {
+        const safeIds = Array.isArray(ids) ? ids : [];
+        if (safeIds.length === 0)
+        {
+            return '–';
+        }
+        const maxVisibleInvoiceIds = 3;
+        const visibleIds = safeIds.slice(0, maxVisibleInvoiceIds);
+        const remainingCount = safeIds.length - visibleIds.length;
+        return visibleIds.join(', ') + (remainingCount > 0 ? ' +' + remainingCount : '');
+    }
+
+    function getVisibleColumnKeys ()
+    {
+        return columnOrder.filter(function (colKey) { return !hiddenColumns.has(colKey); });
+    }
+
+    function getProjectCellDisplayText (proj, visibleWOs, computed, colKey)
+    {
+        switch (colKey)
+        {
+            case 'workorders':
+                return visibleWOs.length + ' WO' + (visibleWOs.length !== 1 ? '\'s' : '');
+            case 'total_costs':
+                return fmtCurrency(computed.costs);
+            case 'total_revenue':
+                return fmtCurrency(computed.revenue);
+            case 'invoiced_total':
+                return fmtCurrency(computed.invoicedTotal);
+            case 'customer':
+                return proj.customer_name || proj.customer_id || '';
+            case 'description':
+                return proj.description || '';
+            case 'cost_center':
+                return proj.cost_center || '';
+            case 'expected_revenue':
+                return fmtCurrency(computed.expected);
+            case 'extra_work':
+                return fmtCurrency(computed.extraWork);
+            case 'margin_total':
+                return fmtCurrency(computed.marginTotal);
+            case 'pct_ready':
+                return fmtPct(computed.pctDisplay);
+            case 'winst_ohw':
+                return fmtCurrency(computed.winstOhw);
+            case 'notes':
+                return 'Notities';
+            case 'project_manager':
+                return proj.project_manager || '';
+            case 'invoices':
+                return formatInvoicePreviewText(proj.invoice_ids || []);
+            default:
+                return '';
+        }
     }
 
     /**
@@ -593,25 +814,8 @@
 
     function renderProjectRow (proj, visibleWOs)
     {
-        const normJob = proj.job_no.toLowerCase();
-        const columnValues = projectColumnValuesByJob[normJob] && typeof projectColumnValuesByJob[normJob] === 'object'
-            ? projectColumnValuesByJob[normJob]
-            : null;
-        const totals = computeProjectTotals(proj);
-        const costs = columnValues ? parseDecimal(columnValues.total_costs) : totals.costs;
-        const revenue = columnValues ? parseDecimal(columnValues.total_revenue) : totals.revenue;
-        const expected = parseDecimal(proj.expected_revenue);
-        const extraWork = parseDecimal(proj.extra_work);
-        const invoicedTotal = parseDecimal(proj.invoiced_total);
-        const pctRaw = parseDecimal(proj.pct_completed);
-        const pctDisplay = Math.max(0, pctRaw);
-        const isPctOverrun = pctDisplay > 100;
-        const marginTotal = columnValues && columnValues.margin_total !== null && columnValues.margin_total !== undefined
-            ? parseDecimal(columnValues.margin_total)
-            : (revenue - costs);
-        const winstOhw = columnValues
-            ? parseDecimal(columnValues.winst_ohw)
-            : (expected * (pctRaw / 100) - costs);
+        const normJob = toTrimmedString(proj.job_no || '').toLowerCase();
+        const computed = getProjectComputedValues(proj);
 
         // Project main row
         const tr = document.createElement('tr');
@@ -647,7 +851,7 @@
                     }
                 case 'total_costs':
                     td.style.textAlign = 'right';
-                    td.innerHTML = '<span class="aggregate-source-link ' + amountClass(-costs) + '">' + escapeHtml(fmtCurrency(costs)) + '</span>';
+                    td.innerHTML = '<span class="aggregate-source-link ' + amountClass(-computed.costs) + '">' + escapeHtml(fmtCurrency(computed.costs)) + '</span>';
                     td.addEventListener('click', function ()
                     {
                         const costSourceRows = visibleWOs.map(function (wo)
@@ -668,7 +872,7 @@
                     break;
                 case 'total_revenue':
                     td.style.textAlign = 'right';
-                    td.innerHTML = '<span class="aggregate-source-link ' + amountClass(revenue) + '">' + escapeHtml(fmtCurrency(revenue)) + '</span>';
+                    td.innerHTML = '<span class="aggregate-source-link ' + amountClass(computed.revenue) + '">' + escapeHtml(fmtCurrency(computed.revenue)) + '</span>';
                     td.addEventListener('click', function ()
                     {
                         const revenueSourceRows = visibleWOs.map(function (wo)
@@ -689,7 +893,7 @@
                     break;
                 case 'invoiced_total':
                     td.style.textAlign = 'right';
-                    td.innerHTML = '<span class="' + amountClass(invoicedTotal) + '">' + escapeHtml(fmtCurrency(invoicedTotal)) + '</span>';
+                    td.innerHTML = '<span class="' + amountClass(computed.invoicedTotal) + '">' + escapeHtml(fmtCurrency(computed.invoicedTotal)) + '</span>';
                     break;
                 case 'customer':
                     td.textContent = proj.customer_name || proj.customer_id || '';
@@ -702,7 +906,7 @@
                     break;
                 case 'expected_revenue':
                     td.style.textAlign = 'right';
-                    td.innerHTML = '<span class="aggregate-source-link amount-neutral">' + escapeHtml(fmtCurrency(expected)) + '</span>';
+                    td.innerHTML = '<span class="aggregate-source-link amount-neutral">' + escapeHtml(fmtCurrency(computed.expected)) + '</span>';
                     td.addEventListener('click', function ()
                     {
                         showSourceModal(
@@ -724,7 +928,7 @@
                     break;
                 case 'extra_work':
                     td.style.textAlign = 'right';
-                    td.innerHTML = '<span class="aggregate-source-link ' + (extraWork > 0.005 ? 'amount-pos' : 'amount-neutral') + '">' + escapeHtml(fmtCurrency(extraWork)) + '</span>';
+                    td.innerHTML = '<span class="aggregate-source-link ' + (computed.extraWork > 0.005 ? 'amount-pos' : 'amount-neutral') + '">' + escapeHtml(fmtCurrency(computed.extraWork)) + '</span>';
                     td.addEventListener('click', function ()
                     {
                         showSourceModal(
@@ -746,22 +950,22 @@
                     break;
                 case 'margin_total':
                     td.style.textAlign = 'right';
-                    td.innerHTML = '<span class="' + amountClass(marginTotal) + '">' + escapeHtml(fmtCurrency(marginTotal)) + '</span>';
+                    td.innerHTML = '<span class="' + amountClass(computed.marginTotal) + '">' + escapeHtml(fmtCurrency(computed.marginTotal)) + '</span>';
                     break;
                 case 'pct_ready':
                     td.style.textAlign = 'right';
-                    if (isPctOverrun)
+                    if (computed.isPctOverrun)
                     {
-                        td.innerHTML = '<span class="amount-neg" title="Let op: kosten zijn hoger dan oorspronkelijk gecalculeerd.">' + escapeHtml(fmtPct(pctDisplay)) + '</span>';
+                        td.innerHTML = '<span class="amount-neg" title="Let op: kosten zijn hoger dan oorspronkelijk gecalculeerd.">' + escapeHtml(fmtPct(computed.pctDisplay)) + '</span>';
                     }
                     else
                     {
-                        td.textContent = fmtPct(pctDisplay);
+                        td.textContent = fmtPct(computed.pctDisplay);
                     }
                     break;
                 case 'winst_ohw':
                     td.style.textAlign = 'right';
-                    td.innerHTML = '<span class="' + amountClass(winstOhw) + '">' + escapeHtml(fmtCurrency(winstOhw)) + '</span>';
+                    td.innerHTML = '<span class="' + amountClass(computed.winstOhw) + '">' + escapeHtml(fmtCurrency(computed.winstOhw)) + '</span>';
                     break;
                 case 'notes':
                     {
@@ -824,6 +1028,56 @@
         }
 
         tbodyEl.appendChild(tr);
+    }
+
+    function csvEscape (value)
+    {
+        const text = value === null || value === undefined ? '' : String(value);
+        if (!/[";\r\n]/.test(text))
+        {
+            return text;
+        }
+        return '"' + text.replace(/"/g, '""') + '"';
+    }
+
+    function exportVisibleTableToCsv ()
+    {
+        const visibleProjects = getVisibleProjects();
+        const visibleColKeys = getVisibleColumnKeys();
+
+        const headers = ['Project'].concat(visibleColKeys.map(function (colKey)
+        {
+            return columnLabels[colKey] || colKey;
+        }));
+
+        const lines = [];
+        lines.push(headers.map(csvEscape).join(';'));
+
+        for (const entry of visibleProjects)
+        {
+            const proj = entry.proj;
+            const visibleWOs = entry.visibleWOs;
+            const computed = getProjectComputedValues(proj);
+
+            const row = [proj.job_no || ''];
+            for (const colKey of visibleColKeys)
+            {
+                row.push(getProjectCellDisplayText(proj, visibleWOs, computed, colKey));
+            }
+            lines.push(row.map(csvEscape).join(';'));
+        }
+
+        const csvText = '\uFEFF' + lines.join('\r\n');
+        const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        const ym = String(payload.year_month || 'maanddetail');
+        link.href = url;
+        link.download = 'maanddetail_' + ym + '.csv';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
     }
 
     /**
@@ -1584,6 +1838,11 @@
         });
     }
 
+    if (exportCsvBtn)
+    {
+        exportCsvBtn.addEventListener('click', exportVisibleTableToCsv);
+    }
+
     // Window resize: re-sync table height
     window.addEventListener('resize', function ()
     {
@@ -1594,6 +1853,7 @@
     if (appEl && workorderRows.length > 0)
     {
         renderStatusFilterBar();
+        renderDepartmentFilterBar();
         renderTable();
         updateSummary();
     }

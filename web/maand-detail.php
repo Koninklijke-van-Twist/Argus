@@ -1223,8 +1223,10 @@ $initialData = [
     </div>
 
     <div id="statusFilterBar" class="status-filter-bar"></div>
+    <div id="departmentFilterBar" class="status-filter-bar"></div>
     <div class="search-bar">
         <input type="search" id="searchInput" placeholder="Zoeken in projecten / werkorders...">
+        <button type="button" id="exportCsvBtn" class="status-toggle-all-btn">CSV export</button>
     </div>
 
     <div id="summaryBar" class="summary-bar"></div>
