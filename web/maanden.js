@@ -6,11 +6,13 @@
     const payload = window.maandenData || {};
     const companies = Array.isArray(payload.companies) ? payload.companies : [];
     const refreshUrl = typeof payload.refresh_url === 'string' ? payload.refresh_url : 'maanden.php?action=refresh_month';
+    const batchUrl = typeof payload.batch_url === 'string' ? payload.batch_url : 'maanden.php?action=fetch_workorders_batch';
     const deleteUrl = typeof payload.delete_url === 'string' ? payload.delete_url : 'maanden.php?action=delete_month';
     const detailUrl = typeof payload.detail_url === 'string' ? payload.detail_url : 'maand-detail.php';
     const saveSettingsUrl = typeof payload.save_settings_url === 'string' ? payload.save_settings_url : 'maanden.php?action=save_user_settings';
     const pageLoader = document.getElementById('pageLoader');
     const pageLoaderText = document.getElementById('pageLoaderText');
+    const batchProgressList = document.getElementById('batchProgressList');
     const confirmOverlay = document.getElementById('confirmOverlay');
     const confirmTitle = document.getElementById('confirmTitle');
     const confirmText = document.getElementById('confirmText');
@@ -53,6 +55,68 @@
         {
             pageLoader.classList.remove('is-visible');
         }
+        if (batchProgressList)
+        {
+            batchProgressList.innerHTML = '';
+            batchProgressList.classList.remove('is-visible');
+        }
+    }
+
+    function initBatchProgressList (allMonths)
+    {
+        if (!batchProgressList) { return {}; }
+        batchProgressList.innerHTML = '';
+        const items = {};
+        for (const bm of allMonths)
+        {
+            const li = document.createElement('li');
+            li.className = 'batch-progress-item';
+            const icon = document.createElement('span');
+            icon.className = 'batch-progress-icon';
+            icon.textContent = '○';
+            const label = document.createElement('span');
+            label.textContent = formatMonth(bm);
+            li.appendChild(icon);
+            li.appendChild(label);
+            batchProgressList.appendChild(li);
+            items[bm] = { li, icon };
+        }
+        batchProgressList.classList.add('is-visible');
+        return items;
+    }
+
+    function markProgressLoading (items, bm)
+    {
+        const item = items[bm];
+        if (!item) { return; }
+        item.li.classList.add('is-loading');
+        item.icon.innerHTML = '';
+        const spinner = document.createElement('span');
+        spinner.className = 'batch-progress-item-spinner';
+        item.icon.appendChild(spinner);
+        item.li.scrollIntoView({ block: 'nearest' });
+    }
+
+    function markProgressDone (items, bm)
+    {
+        const item = items[bm];
+        if (!item) { return; }
+        item.li.classList.remove('is-loading');
+        item.li.classList.add('is-done');
+        item.icon.innerHTML = '✓';
+    }
+
+    function alignProgressWindow (orderedMonths, items, currentIndex)
+    {
+        if (!batchProgressList) { return; }
+        if (!Array.isArray(orderedMonths) || orderedMonths.length === 0) { return; }
+        const safeIndex = Math.max(0, Math.min(currentIndex, orderedMonths.length - 1));
+        const nextIndex = safeIndex + 1;
+        const anchorMonth = nextIndex < orderedMonths.length ? orderedMonths[nextIndex] : orderedMonths[safeIndex];
+        const anchorItem = items[anchorMonth];
+        if (!anchorItem || !anchorItem.li) { return; }
+        // Keep one upcoming month visible at the bottom whenever possible.
+        anchorItem.li.scrollIntoView({ block: 'end', inline: 'nearest' });
     }
 
     function removeErrorToasts ()
@@ -290,6 +354,9 @@
     function buildMonthCard (summary)
     {
         const ym = summary.year_month;
+        const dataStartMonth = typeof summary.data_start_month === 'string' && summary.data_start_month !== ''
+            ? summary.data_start_month
+            : ym;
         const revenue = typeof summary.total_revenue === 'number' ? summary.total_revenue : 0;
         const costs = typeof summary.total_costs === 'number' ? summary.total_costs : 0;
         const profit = revenue - costs;
@@ -301,6 +368,7 @@
         const title = document.createElement('div');
         title.className = 'month-card-title';
         title.textContent = formatMonth(ym);
+        title.title = 'Data vanaf ' + formatMonth(dataStartMonth);
         card.appendChild(title);
 
         const stats = document.createElement('div');
@@ -467,6 +535,7 @@
                 const data = json.data || {};
                 const newSumm = {
                     year_month: ym,
+                    data_start_month: typeof data.data_start_month === 'string' ? data.data_start_month : buildBatchMonths(ym)[0],
                     total_revenue: typeof data.total_revenue === 'number' ? data.total_revenue : 0,
                     total_costs: typeof data.total_costs === 'number' ? data.total_costs : 0,
                     fetched_at: data.fetched_at || new Date().toISOString(),
@@ -500,40 +569,107 @@
 
     function addMonth (ym)
     {
-        fetchMonthPayloadWithRetry(
-            ym,
-            formatMonth(ym) + ' ophalen...',
-            formatMonth(ym) + ' kost iets meer tijd. We proberen direct opnieuw met de deels opgebouwde cache...'
-        )
-            .then(function (json)
+        const allBatchMonths = buildBatchMonths(ym);
+        let batchIndex = 0;
+        const totalSteps = allBatchMonths.length + 1;
+        const allProgressMonths = allBatchMonths.concat([ym]);
+
+        const progressItems = initBatchProgressList(allProgressMonths);
+
+    function runNextBatch ()
+        {
+            if (batchIndex >= allBatchMonths.length)
             {
-                hideLoader();
-                if (!json.ok)
+                // All batches done — now fetch the final snapshot
+                markProgressLoading(progressItems, ym);
+                if (pageLoaderText) { pageLoaderText.textContent = 'Ophalen ' + formatMonth(ym) + ' (' + totalSteps + '/' + totalSteps + ')'; }
+                fetchMonthPayloadWithRetry(
+                    ym,
+                    'Ophalen ' + formatMonth(ym) + '...',
+                    formatMonth(ym) + ' kost iets meer tijd. We proberen direct opnieuw...'
+                )
+                    .then(function (json)
+                    {
+                        markProgressDone(progressItems, ym);
+                        hideLoader();
+                        if (!json.ok)
+                        {
+                            toast('Fout: ' + (json.error || 'Onbekende fout'), true);
+                            return;
+                        }
+                        const data = json.data || {};
+                        const newSumm = {
+                            year_month: ym,
+                            data_start_month: typeof data.data_start_month === 'string' ? data.data_start_month : allBatchMonths[0],
+                            total_revenue: typeof data.total_revenue === 'number' ? data.total_revenue : 0,
+                            total_costs: typeof data.total_costs === 'number' ? data.total_costs : 0,
+                            fetched_at: data.fetched_at || new Date().toISOString(),
+                        };
+                        monthSummaries.push(newSumm);
+                        monthSummaries.sort(function (a, b)
+                        {
+                            return b.year_month.localeCompare(a.year_month);
+                        });
+                        addableMonths = addableMonths.filter(function (m) { return m !== ym; });
+                        renderGrid();
+                        toast(formatMonth(ym) + ' is toegevoegd.');
+                    })
+                    .catch(function (err)
+                    {
+                        hideLoader();
+                        toast('Netwerkfout: ' + err.message, true);
+                    });
+                return;
+            }
+
+            const batchYm = allBatchMonths[batchIndex];
+            markProgressLoading(progressItems, batchYm);
+            alignProgressWindow(allProgressMonths, progressItems, batchIndex);
+            if (pageLoaderText) { pageLoaderText.textContent = 'Ophalen ' + formatMonth(batchYm) + ' (' + (batchIndex + 1) + '/' + totalSteps + ')'; }
+
+            const body = new URLSearchParams({ target_month: ym, batch_month: batchYm, company: selectedCompany });
+            fetch(batchUrl, { method: 'POST', body: body })
+                .then(parseFetchResponse)
+                .then(function (json)
                 {
-                    toast('Fout: ' + (json.error || 'Onbekende fout'), true);
-                    return;
-                }
-                const data = json.data || {};
-                const newSumm = {
-                    year_month: ym,
-                    total_revenue: typeof data.total_revenue === 'number' ? data.total_revenue : 0,
-                    total_costs: typeof data.total_costs === 'number' ? data.total_costs : 0,
-                    fetched_at: data.fetched_at || new Date().toISOString(),
-                };
-                monthSummaries.push(newSumm);
-                monthSummaries.sort(function (a, b)
+                    if (!json.ok)
+                    {
+                        hideLoader();
+                        toast('Fout bij ophalen ' + formatMonth(batchYm) + ': ' + (json.error || 'Onbekende fout'), true);
+                        return;
+                    }
+                    markProgressDone(progressItems, batchYm);
+                    batchIndex++;
+                    runNextBatch();
+                })
+                .catch(function (err)
                 {
-                    return b.year_month.localeCompare(a.year_month);
+                    hideLoader();
+                    toast('Netwerkfout bij ophalen ' + formatMonth(batchYm) + ': ' + err.message, true);
                 });
-                addableMonths = addableMonths.filter(function (m) { return m !== ym; });
-                renderGrid();
-                toast(formatMonth(ym) + ' is toegevoegd.');
-            })
-            .catch(function (err)
-            {
-                hideLoader();
-                toast('Netwerkfout: ' + err.message, true);
-            });
+        }
+
+        showLoader('Bezig met ophalen...');
+        runNextBatch();
+    }
+
+    function buildBatchMonths (targetYm)
+    {
+        const parts = targetYm.split('-');
+        const targetYear = parseInt(parts[0], 10);
+        const targetMonth = parseInt(parts[1], 10);
+        // 36 months total: 35 before target + target itself; target itself is fetched by refresh_month
+        // so batch only the preceding 35 months
+        const result = [];
+        for (let i = 35; i >= 1; i--)
+        {
+            let m = targetMonth - i;
+            let y = targetYear;
+            while (m <= 0) { m += 12; y--; }
+            const ym = y + '-' + String(m).padStart(2, '0');
+            result.push(ym);
+        }
+        return result;
     }
 
     /**

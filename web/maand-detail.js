@@ -62,20 +62,21 @@
 
     // Column order state (mutable)
     let columnOrder = Array.isArray(payload.column_order) ? payload.column_order.slice() : defaultColumns.slice();
+    let hiddenColumns = new Set(Array.isArray(payload.hidden_columns) ? payload.hidden_columns : []);
 
     // Column label map
     const columnLabels = {
         workorders: 'Werkorder(s)',
-        total_costs: 'Totale Kosten',
-        total_revenue: 'Totale Opbrengst',
-        customer: 'Debiteur',
-        description: 'Beschrijving',
-        cost_center: 'Afdelingscode',
-        expected_revenue: 'Verwachte Opbrengst',
-        extra_work: 'Meerwerk Kosten',
+        total_costs: 'Kosten Ttl',
+        total_revenue: 'Opbr. Ttl',
+        customer: 'Deb.',
+        description: 'Beschr.',
+        cost_center: 'Afd.',
+        expected_revenue: 'Ttl Opbr.',
+        extra_work: 'Meerwerk',
         pct_ready: '% Gereed',
         winst_ohw: 'Winst OHW',
-        prev_profit: 'Winst Vorige Periode',
+        prev_profit: 'Winst V. Periode',
         difference: 'Verschil',
         notes: 'Notities',
         project_manager: 'Projectmanager',
@@ -509,6 +510,7 @@
 
         for (const colKey of columnOrder)
         {
+            if (hiddenColumns.has(colKey)) { continue; }
             const th = document.createElement('th');
             const lbl = columnLabels[colKey] || colKey;
             th.textContent = lbl;
@@ -619,6 +621,7 @@
 
         for (const colKey of columnOrder)
         {
+            if (hiddenColumns.has(colKey)) { continue; }
             const td = document.createElement('td');
 
             switch (colKey)
@@ -1264,6 +1267,24 @@
             li.dataset.index = String(i);
             li.dataset.colKey = key;
 
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.className = 'col-reorder-checkbox';
+            checkbox.checked = !hiddenColumns.has(key);
+            checkbox.setAttribute('aria-label', 'Kolom ' + (columnLabels[key] || key) + ' zichtbaar');
+            checkbox.addEventListener('change', function ()
+            {
+                if (checkbox.checked)
+                {
+                    li.classList.remove('col-hidden');
+                }
+                else
+                {
+                    li.classList.add('col-hidden');
+                }
+            });
+            checkbox.addEventListener('mousedown', function (e) { e.stopPropagation(); });
+
             const handle = document.createElement('span');
             handle.className = 'col-reorder-handle';
             handle.textContent = '⣿';
@@ -1272,6 +1293,12 @@
             const label = document.createElement('span');
             label.textContent = columnLabels[key] || key;
 
+            if (!checkbox.checked)
+            {
+                li.classList.add('col-hidden');
+            }
+
+            li.appendChild(checkbox);
             li.appendChild(handle);
             li.appendChild(label);
             colReorderList.appendChild(li);
@@ -1343,13 +1370,22 @@
         }
         const items = Array.from(colReorderList.querySelectorAll('.col-reorder-item'));
         const newOrder = items.map(function (el) { return el.dataset.colKey; }).filter(Boolean);
+        const newHidden = items
+            .filter(function (el)
+            {
+                const cb = el.querySelector('.col-reorder-checkbox');
+                return cb && !cb.checked;
+            })
+            .map(function (el) { return el.dataset.colKey; })
+            .filter(Boolean);
         columnOrder = newOrder;
+        hiddenColumns = new Set(newHidden);
 
         // Persist to server
         fetch(saveSettingsUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ detail_column_order: newOrder }),
+            body: JSON.stringify({ detail_column_order: newOrder, detail_hidden_columns: newHidden }),
         }).catch(function () { }); // best-effort
 
         closeColReorder();

@@ -193,6 +193,9 @@ if (($_GET['action'] ?? '') === 'save_user_settings') {
     if (isset($decoded['detail_column_order']) && is_array($decoded['detail_column_order'])) {
         $patch['detail_column_order'] = array_values(array_filter($decoded['detail_column_order'], 'is_string'));
     }
+    if (isset($decoded['detail_hidden_columns']) && is_array($decoded['detail_hidden_columns'])) {
+        $patch['detail_hidden_columns'] = array_values(array_filter($decoded['detail_hidden_columns'], 'is_string'));
+    }
     $ok = save_user_settings_d($currentUserEmail, $patch);
     echo json_encode(['ok' => $ok], JSON_UNESCAPED_UNICODE);
     exit;
@@ -308,6 +311,7 @@ if (is_array($monthData)) {
 // Load user settings
 $userSettings = load_user_settings_d($currentUserEmail);
 $savedColumnOrder = is_array($userSettings['detail_column_order'] ?? null) ? $userSettings['detail_column_order'] : [];
+$savedHiddenColumns = is_array($userSettings['detail_hidden_columns'] ?? null) ? $userSettings['detail_hidden_columns'] : [];
 
 // Default columns definition (keys)
 $defaultColumns = [
@@ -350,6 +354,7 @@ $initialData = [
     'error' => $errorMessage,
     'default_columns' => $defaultColumns,
     'column_order' => $orderedColumns,
+    'hidden_columns' => $savedHiddenColumns,
     'save_settings_url' => 'maand-detail.php?action=save_user_settings',
 ];
 ?>
@@ -1014,6 +1019,23 @@ $initialData = [
         .col-reorder-item.dragging {
             opacity: .45;
             border-style: dashed;
+        }
+
+        .col-reorder-item.col-hidden {
+            background: #6b7280;
+            border-color: #4b5563;
+            color: #f3f4f6;
+        }
+
+        .col-reorder-item.col-hidden .col-reorder-handle {
+            color: #d1d5db;
+        }
+
+        .col-reorder-checkbox {
+            flex-shrink: 0;
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
         }
 
         .col-reorder-handle {

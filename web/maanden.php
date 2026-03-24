@@ -115,28 +115,110 @@ function company_entity_url_with_query(string $baseUrl, string $environment, str
     return $url;
 }
 
-function fetch_month_data(string $company, string $yearMonth, array $auth, int $ttl): array
+function batch_wip_path(string $company, string $targetYearMonth): string
+{
+    $safeCompany = preg_replace('/[^a-z0-9_-]/i', '_', strtolower(trim($company)));
+    $safeYM = preg_replace('/[^0-9-]/', '', $targetYearMonth);
+    return maanden_cache_dir() . DIRECTORY_SEPARATOR . $safeCompany . '_wip_' . $safeYM . '.json';
+}
+
+function batch_wip_load(string $company, string $targetYearMonth): array
+{
+    $path = batch_wip_path($company, $targetYearMonth);
+    if (!is_file($path)) {
+        return [];
+    }
+    $raw = @file_get_contents($path);
+    $data = is_string($raw) ? json_decode($raw, true) : null;
+    return is_array($data) ? $data : [];
+}
+
+function batch_wip_save(string $company, string $targetYearMonth, array $data): void
+{
+    $path = batch_wip_path($company, $targetYearMonth);
+    $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if (is_string($json)) {
+        file_put_contents($path, $json, LOCK_EX);
+    }
+}
+
+function batch_wip_delete(string $company, string $targetYearMonth): void
+{
+    $path = batch_wip_path($company, $targetYearMonth);
+    if (is_file($path)) {
+        @unlink($path);
+    }
+}
+
+/**
+ * Geeft lijst van alle te ophalen maanden voor de gegeven doelmaand (3 jaar terug t/m doelmaand),
+ * gesorteerd van oud naar nieuw.
+ */
+function batch_months_for_target(string $targetYearMonth): array
+{
+    $target = DateTimeImmutable::createFromFormat('!Y-m', $targetYearMonth);
+    if (!$target instanceof DateTimeImmutable) {
+        return [];
+    }
+    $start = $target->modify('-35 months'); // 36 maanden totaal incl. doelmaand
+    $months = [];
+    $cursor = $start;
+    while ($cursor <= $target) {
+        $months[] = $cursor->format('Y-m');
+        $cursor = $cursor->modify('+1 month');
+    }
+    return $months;
+}
+
+function data_start_month_for_target(string $targetYearMonth): string
+{
+    $target = DateTimeImmutable::createFromFormat('!Y-m', $targetYearMonth);
+    if (!$target instanceof DateTimeImmutable) {
+        return $targetYearMonth;
+    }
+    return $target->modify('-35 months')->format('Y-m');
+}
+
+/**
+ * Haalt werkorders op voor één maand en voegt ze toe aan de WIP-cache.
+ * Retourneert de werkorder-array voor die maand.
+ */
+function fetch_workorders_for_batch_month(string $company, string $batchYearMonth, array $auth, int $ttl): array
 {
     global $baseUrl, $environment;
 
-    // Build date range: from 2024-01-01 up to and including the selected month
-    $from = DateTimeImmutable::createFromFormat('!Y-m', $yearMonth);
+    $from = DateTimeImmutable::createFromFormat('!Y-m', $batchYearMonth);
     if (!$from instanceof DateTimeImmutable) {
-        throw new Exception("Ongeldige maand: $yearMonth");
+        return [];
     }
     $to = $from->modify('+1 month');
-
-    $fromStart = new DateTimeImmutable('2024-01-01');
-    $fromStr = $fromStart->format('Y-m-d');
+    $fromStr = $from->format('Y-m-d');
     $toStr = $to->format('Y-m-d');
 
-    // Fetch werkorders for the month
     $workorderUrl = company_entity_url_with_query($baseUrl, $environment, $company, 'Werkorders', [
         '$select' => 'No,Task_Code,Task_Description,Status,KVT_Document_Status,Job_No,Job_Task_No,Contract_No,Start_Date,End_Date,Bill_to_Customer_No,Bill_to_Name,Sell_to_Customer_No,Sell_to_Name,Job_Dimension_1_Value,Memo,Memo_Internal_Use_Only,Memo_Invoice,KVT_Memo_Invoice_Details,KVT_Remarks_Invoicing,LVS_Show_on_Planboard,LVS_Fixed_Planned',
         '$filter' => 'Start_Date ge ' . $fromStr . ' and Start_Date lt ' . $toStr,
     ]);
 
-    $workorders = odata_get_all($workorderUrl, $auth, $ttl);
+    return odata_get_all($workorderUrl, $auth, $ttl);
+}
+
+function fetch_month_data(string $company, string $yearMonth, array $auth, int $ttl): array
+{
+    global $baseUrl, $environment;
+
+    // Collect all workorders from WIP cache (already fetched batch months) plus current month
+    $wip = batch_wip_load($company, $yearMonth);
+    $wipWorkorders = is_array($wip['workorders'] ?? null) ? $wip['workorders'] : [];
+    $wipDone = is_array($wip['done_months'] ?? null) ? $wip['done_months'] : [];
+
+    // Also fetch the target month itself (may already be in WIP if batch completed)
+    if (!in_array($yearMonth, $wipDone, true)) {
+        $targetMonthWOs = fetch_workorders_for_batch_month($company, $yearMonth, $auth, $ttl);
+        $wipWorkorders = array_merge($wipWorkorders, $targetMonthWOs);
+    }
+
+    $workorders = $wipWorkorders;
 
     // Collect project and workorder numbers
     $projectNumbers = [];
@@ -327,10 +409,6 @@ function fetch_month_data(string $company, string $yearMonth, array $auth, int $
 
         $jobNo = trim((string) ($wo['Job_No'] ?? ''));
         $normJob = strtolower($jobNo);
-        $projectStatus = strtolower(trim((string) (($projectDetails[$normJob]['Status'] ?? '') ?: '')));
-        if ($projectStatus !== '' && finance_is_closed_project_status($projectStatus)) {
-            continue;
-        }
 
         $jobTaskNo = trim((string) ($wo['Job_Task_No'] ?? ''));
         $normWorkorder = strtolower($jobTaskNo);
@@ -454,8 +532,9 @@ function fetch_month_data(string $company, string $yearMonth, array $auth, int $
             ];
     }
 
-    return [
+    $result = [
         'year_month' => $yearMonth,
+        'data_start_month' => data_start_month_for_target($yearMonth),
         'company' => $company,
         'fetched_at' => gmdate('c'),
         'total_revenue' => $totalRevenue,
@@ -466,6 +545,11 @@ function fetch_month_data(string $company, string $yearMonth, array $auth, int $
         'workorder_rows' => $rows,
         'invoice_details_by_id' => $invoiceDetailsById,
     ];
+
+    // Clean up WIP cache now that the full snapshot is built
+    batch_wip_delete($company, $yearMonth);
+
+    return $result;
 }
 
 function current_user_email_or_fallback_m(): string
@@ -541,6 +625,62 @@ if (!in_array($selectedCompany, $companies, true)) {
 }
 
 // --- AJAX endpoints ---
+
+// Ophalen werkorders voor één batch-maand (stap in de progressieve laadflow)
+if (($_GET['action'] ?? '') === 'fetch_workorders_batch') {
+    header('Content-Type: application/json; charset=utf-8');
+
+    $targetYm = trim((string) ($_POST['target_month'] ?? ''));
+    $batchYm  = trim((string) ($_POST['batch_month'] ?? ''));
+    if (!preg_match('/^\d{4}-\d{2}$/', $targetYm) || !preg_match('/^\d{4}-\d{2}$/', $batchYm)) {
+        http_response_code(400);
+        echo json_encode(['ok' => false, 'error' => 'Ongeldige maand'], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+
+    $company = trim((string) ($_POST['company'] ?? $companies[0]));
+    if (!in_array($company, $companies, true)) {
+        $company = $companies[0];
+    }
+
+    try {
+        $ttl = $hour;
+        $batchWorkorders = fetch_workorders_for_batch_month($company, $batchYm, $auth, $ttl);
+
+        // Merge into WIP cache
+        $wip = batch_wip_load($company, $targetYm);
+        $existing = is_array($wip['workorders'] ?? null) ? $wip['workorders'] : [];
+        $done = is_array($wip['done_months'] ?? null) ? $wip['done_months'] : [];
+
+        if (!in_array($batchYm, $done, true)) {
+            $existing = array_merge($existing, $batchWorkorders);
+            $done[] = $batchYm;
+        }
+
+        $allBatchMonths = batch_months_for_target($targetYm);
+        $remaining = array_values(array_filter($allBatchMonths, fn($m) => !in_array($m, $done, true)));
+
+        batch_wip_save($company, $targetYm, [
+            'workorders' => $existing,
+            'done_months' => $done,
+        ]);
+
+        $nextBatch = $remaining[0] ?? null;
+        $isDone = $nextBatch === null;
+
+        echo json_encode([
+            'ok' => true,
+            'batch_month' => $batchYm,
+            'next_batch' => $nextBatch,
+            'done' => $isDone,
+            'batches_remaining' => count($remaining),
+        ], JSON_UNESCAPED_UNICODE);
+    } catch (Throwable $e) {
+        http_response_code(500);
+        echo json_encode(['ok' => false, 'error' => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+    }
+    exit;
+}
 
 // Verversen / aanmaken van een maand
 if (($_GET['action'] ?? '') === 'refresh_month') {
@@ -622,6 +762,7 @@ foreach ($savedMonths as $ym) {
     }
     $monthSummaries[] = [
         'year_month' => $ym,
+        'data_start_month' => (string) ($data['data_start_month'] ?? data_start_month_for_target($ym)),
         'total_revenue' => (float) ($data['total_revenue'] ?? 0),
         'total_costs' => (float) ($data['total_costs'] ?? 0),
         'fetched_at' => (string) ($data['fetched_at'] ?? ''),
@@ -666,6 +807,7 @@ $initialData = [
     'addable_months' => $addableMonths,
     'saved_column_order' => $savedColumnOrder,
     'refresh_url' => 'maanden.php?action=refresh_month',
+    'batch_url' => 'maanden.php?action=fetch_workorders_batch',
     'delete_url' => 'maanden.php?action=delete_month',
     'detail_url' => 'maand-detail.php',
     'save_settings_url' => 'maanden.php?action=save_user_settings',
@@ -758,12 +900,84 @@ function format_month_nl(string $yearMonth): string
             gap: 10px;
             color: #203a63;
             font-weight: 600;
+            max-height: 90vh;
         }
 
         .page-loader-spinner {
             width: 34px;
             height: 34px;
             border: 3px solid #c8d3e1;
+            border-top-color: #1f4ea6;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            flex-shrink: 0;
+        }
+
+        .batch-progress-list {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+            width: min(300px, 88vw);
+            max-height: 55vh;
+            overflow-y: auto;
+            background: #fff;
+            border: 1px solid #dbe3ee;
+            border-radius: 10px;
+            display: none;
+            flex-direction: column;
+            font-size: 13px;
+            font-weight: 400;
+            box-shadow: 0 4px 12px rgba(15,23,42,.10);
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+
+        .batch-progress-list::-webkit-scrollbar {
+            width: 0;
+            height: 0;
+            display: none;
+        }
+
+        .batch-progress-list.is-visible {
+            display: flex;
+        }
+
+        .batch-progress-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 7px 12px;
+            border-bottom: 1px solid #f1f5fb;
+            color: #94a3b8;
+        }
+
+        .batch-progress-item:last-child {
+            border-bottom: none;
+        }
+
+        .batch-progress-item.is-done {
+            color: #0b6b2f;
+        }
+
+        .batch-progress-item.is-loading {
+            color: #1f4ea6;
+            font-weight: 600;
+        }
+
+        .batch-progress-icon {
+            flex-shrink: 0;
+            width: 16px;
+            text-align: center;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .batch-progress-item-spinner {
+            width: 12px;
+            height: 12px;
+            border: 2px solid #c8d3e1;
             border-top-color: #1f4ea6;
             border-radius: 50%;
             animation: spin 0.8s linear infinite;
@@ -1085,6 +1299,7 @@ function format_month_nl(string $yearMonth): string
         <div class="page-loader-content">
             <div class="page-loader-spinner" aria-hidden="true"></div>
             <div id="pageLoaderText">Bezig...</div>
+            <ul class="batch-progress-list" id="batchProgressList"></ul>
         </div>
     </div>
 
