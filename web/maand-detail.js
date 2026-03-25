@@ -73,7 +73,7 @@
         total_costs: 'Kosten t/m heden',
         total_revenue: 'Opbrengst. t/m heden',
         customer: 'Deb.',
-        description: 'Beschr.',
+        description: 'Proj. Beschr.',
         cost_center: 'Afd.',
         expected_revenue: 'Opbr. Ttl Verw.',
         costs_vc: 'Kosten VC',
