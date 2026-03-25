@@ -41,13 +41,11 @@ function finance_column_total_revenue(array $workorders): float
 }
 
 /**
- * Berekent kolomwaarde Winst OHW met de formule: verwachte opbrengst x % gereed - totale kosten.
+ * Berekent kolomwaarde Winst OHW met de formule: Marge Ttl x % gereed.
  */
-function finance_column_winst_ohw(float $expectedRevenue, float $percentCompleted, float $totalCosts): float
+function finance_column_winst_ohw(float $marginTotal, float $percentCompleted): float
 {
-    $recognizedRevenue = $expectedRevenue * ($percentCompleted / 100.0);
-
-    return finance_calculate_result($recognizedRevenue, $totalCosts);
+    return $marginTotal * ($percentCompleted / 100.0);
 }
 
 /**
@@ -80,11 +78,11 @@ function finance_column_difference(float $currentRevenue, float $currentCosts, ?
 }
 
 /**
- * Berekent kolomwaarde Marge Totaal als totale opbrengst minus totale kosten.
+ * Berekent kolomwaarde Marge Totaal als verwachte opbrengst minus verwachte kosten VC.
  */
-function finance_column_margin_total(float $totalRevenue, float $totalCosts): float
+function finance_column_margin_total(float $expectedRevenue, float $expectedCostsVc): float
 {
-    return finance_calculate_result($totalRevenue, $totalCosts);
+    return finance_calculate_result($expectedRevenue, $expectedCostsVc);
 }
 
 /**
@@ -135,6 +133,9 @@ function finance_is_closed_project_status(string $status): bool
 function finance_normalize_row_mode(string $mode): string
 {
     $normalized = strtolower(trim($mode));
+    if ($normalized === 'sum_raw') {
+        return 'sum_raw';
+    }
     if ($normalized === 'sum') {
         return 'sum';
     }
@@ -167,11 +168,30 @@ function finance_first_numeric_value(array $details, array $fields): float
 }
 
 /**
- * Berekent een regelbedrag op basis van row mode (som, omgekeerde som of eerste numerieke waarde).
+ * Berekent een regelbedrag op basis van row mode.
  */
 function finance_extract_row_amount(array $row, array $fields, string $mode): float
 {
     $normalizedMode = finance_normalize_row_mode($mode);
+
+    if ($normalizedMode === 'sum_raw') {
+        $sum = 0.0;
+
+        foreach ($fields as $field) {
+            if (!is_string($field) || $field === '' || !array_key_exists($field, $row)) {
+                continue;
+            }
+
+            $raw = $row[$field];
+            if (!is_numeric($raw)) {
+                continue;
+            }
+
+            $sum += (float) $raw;
+        }
+
+        return $sum;
+    }
 
     if ($normalizedMode === 'sum_invert') {
         $sum = 0.0;

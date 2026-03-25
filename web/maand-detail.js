@@ -40,6 +40,7 @@
     const memoMenuWrap = document.getElementById('memoMenuWrap');
     const companySelect = document.getElementById('companySelect');
     const pageLoader = document.getElementById('pageLoader');
+    const pageLoaderText = document.getElementById('pageLoaderText');
 
     const workorderRows = monthData && Array.isArray(monthData.workorder_rows) ? monthData.workorder_rows : [];
     const projectDetails = monthData && typeof monthData.project_details === 'object' ? monthData.project_details : {};
@@ -71,11 +72,11 @@
         workorders: 'Werkorder(s)',
         total_costs: 'Kosten t/m heden',
         total_revenue: 'Opbrengst. t/m heden',
-        invoiced_total: 'Gefact. t/m heden',
         customer: 'Deb.',
         description: 'Beschr.',
         cost_center: 'Afd.',
         expected_revenue: 'Opbr. Ttl Verw.',
+        costs_vc: 'Kosten VC',
         extra_work: 'Opbr. MW',
         margin_total: 'Marge Ttl',
         pct_ready: '% Gereed',
@@ -91,54 +92,139 @@
     let appliedSearch = '';
     let sortKey = 'job_no';
     let sortDir = 'asc';
+    const expandedProjectJobs = new Set();
+    let visibleProjectsCacheKey = '';
+    let visibleProjectsCache = [];
+
+    function showFatalLoadingError (message, details)
+    {
+        if (!pageLoader)
+        {
+            return;
+        }
+
+        pageLoader.classList.add('is-visible');
+        pageLoader.classList.add('is-error');
+
+        if (pageLoaderText)
+        {
+            pageLoaderText.textContent = message || 'JavaScript-fout tijdens laden';
+        }
+
+        const contentEl = pageLoader.querySelector('.page-loader-content');
+        if (!contentEl)
+        {
+            return;
+        }
+
+        let errorEl = document.getElementById('pageLoaderError');
+        if (!errorEl)
+        {
+            errorEl = document.createElement('pre');
+            errorEl.id = 'pageLoaderError';
+            errorEl.className = 'page-loader-error';
+            contentEl.appendChild(errorEl);
+        }
+        errorEl.textContent = details || 'Onbekende fout';
+    }
+
+    window.addEventListener('error', function (event)
+    {
+        const message = event && event.message ? event.message : 'Onbekende fout';
+        const stack = event && event.error && event.error.stack ? String(event.error.stack) : '';
+        const details = stack ? (message + '\n\n' + stack) : message;
+        showFatalLoadingError('JavaScript-fout tijdens laden', details);
+    });
+
+    window.addEventListener('unhandledrejection', function (event)
+    {
+        const reason = event && event.reason ? event.reason : null;
+        const message = reason && reason.message ? String(reason.message) : String(reason || 'Onbekende Promise-fout');
+        const stack = reason && reason.stack ? String(reason.stack) : '';
+        const details = stack ? (message + '\n\n' + stack) : message;
+        showFatalLoadingError('Promise-fout tijdens laden', details);
+    });
 
     // Group workorders by project
     const projectMap = {};
+
+    function ensureProjectMapEntry (normJob, seedRow)
+    {
+        if (!normJob)
+        {
+            return null;
+        }
+
+        if (!projectMap[normJob])
+        {
+            const row = seedRow && typeof seedRow === 'object' ? seedRow : {};
+            const projDetail = projectDetails[normJob] || {};
+            const projSummary = projectSummaryByJob[normJob] || {};
+            const breakdown = normalizeProjectBreakdown(projectBreakdowns[normJob]);
+            const expectedRevenueFromBreakdown = sumAmountField(breakdown.expected_revenue_lines, 'Line_Amount');
+            const extraWorkFromBreakdown = sumAmountField(breakdown.extra_work_lines, 'Line_Amount');
+            const expectedRevenueFallback = parseDecimal(projSummary.Expected_Revenue || projDetail.Recog_Sales_Amount || projDetail.Calc_Recog_Sales_Amount || projDetail.Total_WIP_Sales_Amount || 0);
+            const expectedCostsVcFallback = parseDecimal(projSummary.Expected_Costs_VC || 0);
+            const extraWorkFallback = parseDecimal(projSummary.Extra_Work || computeExtraWork(projDetail) || 0);
+            const projectTotalCosts = parseDecimal(projSummary.Project_Actual_Costs || row.Project_Actual_Costs || 0);
+            const projectTotalRevenue = parseDecimal(projSummary.Project_Total_Revenue || row.Project_Total_Revenue || 0);
+            const jobNo = toTrimmedString(projSummary.Job_No || projDetail.No || row.Job_No || '');
+
+            projectMap[normJob] = {
+                job_no: jobNo,
+                description: toTrimmedString(projDetail.Description || projSummary.Description || row.Description || ''),
+                customer_id: toTrimmedString(projDetail.Bill_to_Customer_No || projSummary.Customer_Id || row.Customer_Id || ''),
+                customer_name: toTrimmedString(projDetail.Bill_to_Name || projSummary.Customer_Name || row.Customer_Name || ''),
+                project_manager: toTrimmedString(projDetail.Project_Manager || projSummary.Project_Manager || projDetail.Person_Responsible || ''),
+                cost_center: toTrimmedString(projDetail.LVS_Global_Dimension_1_Code || projSummary.Cost_Center || row.Cost_Center || ''),
+                project_total_costs: projectTotalCosts,
+                project_total_revenue: projectTotalRevenue,
+                expected_revenue: expectedRevenueFromBreakdown !== 0 ? expectedRevenueFromBreakdown : expectedRevenueFallback,
+                expected_costs_vc: expectedCostsVcFallback,
+                extra_work: extraWorkFromBreakdown !== 0 ? extraWorkFromBreakdown : extraWorkFallback,
+                pct_completed: parseDecimal(projDetail.Percent_Completed),
+                invoice_ids: Array.isArray(projSummary.Invoice_Ids) ? projSummary.Invoice_Ids.slice() : (row.Invoice_Ids && Array.isArray(row.Invoice_Ids) ? row.Invoice_Ids : []),
+                workorders: [],
+                breakdown: breakdown,
+            };
+        }
+
+        return projectMap[normJob];
+    }
+
+    for (const summaryRow of projectSummaries)
+    {
+        const summaryJobNo = toTrimmedString(summaryRow.Job_No || '').toLowerCase();
+        ensureProjectMapEntry(summaryJobNo, summaryRow);
+    }
+
     for (const row of workorderRows)
     {
         const jNo = toTrimmedString(row.Job_No || '');
         const normJob = jNo.toLowerCase();
-        if (!projectMap[normJob])
+
+        if (normJob === '')
         {
-            const projDetail = projectDetails[normJob] || {};
-            const projSummary = projectSummaryByJob[normJob] || {};
-            const breakdown = projectBreakdowns[normJob] || {};
-            const expectedRevenueFromBreakdown = sumAmountField(breakdown.expected_revenue_lines, 'Line_Amount');
-            const extraWorkFromBreakdown = sumAmountField(breakdown.extra_work_lines, 'Line_Amount');
-            const expectedRevenueFallback = parseDecimal(projSummary.Expected_Revenue || projDetail.Recog_Sales_Amount || projDetail.Calc_Recog_Sales_Amount || projDetail.Total_WIP_Sales_Amount || 0);
-            const extraWorkFallback = parseDecimal(projSummary.Extra_Work || computeExtraWork(projDetail) || 0);
-            projectMap[normJob] = {
-                job_no: jNo,
-                description: toTrimmedString(projDetail.Description || row.Description || ''),
-                customer_id: toTrimmedString(projDetail.Bill_to_Customer_No || row.Customer_Id || ''),
-                customer_name: toTrimmedString(projDetail.Bill_to_Name || row.Customer_Name || ''),
-                project_manager: toTrimmedString(projDetail.Project_Manager || projDetail.Person_Responsible || ''),
-                cost_center: toTrimmedString(projDetail.LVS_Global_Dimension_1_Code || row.Cost_Center || ''),
-                invoiced_total: parseDecimal(projSummary.Invoiced_Total || row.Invoiced_Total || 0),
-                expected_revenue: expectedRevenueFromBreakdown !== 0 ? expectedRevenueFromBreakdown : expectedRevenueFallback,
-                extra_work: extraWorkFromBreakdown !== 0 ? extraWorkFromBreakdown : extraWorkFallback,
-                pct_completed: parseDecimal(projDetail.Percent_Completed),
-                invoice_ids: (row.Invoice_Ids && Array.isArray(row.Invoice_Ids) ? row.Invoice_Ids : []),
-                workorders: [],
-                breakdown: {
-                    total_costs_lines: Array.isArray(breakdown.total_costs_lines) ? breakdown.total_costs_lines : [],
-                    total_revenue_lines: Array.isArray(breakdown.total_revenue_lines) ? breakdown.total_revenue_lines : [],
-                    expected_revenue_lines: Array.isArray(breakdown.expected_revenue_lines) ? breakdown.expected_revenue_lines : [],
-                    extra_work_lines: Array.isArray(breakdown.extra_work_lines) ? breakdown.extra_work_lines : [],
-                },
-            };
+            continue;
         }
-        projectMap[normJob].workorders.push(row);
+
+        const projectEntry = ensureProjectMapEntry(normJob, row);
+        if (!projectEntry)
+        {
+            continue;
+        }
+
+        projectEntry.workorders.push(row);
         // Merge invoice ids
         if (Array.isArray(row.Invoice_Ids))
         {
-            const seen = new Set(projectMap[normJob].invoice_ids);
+            const seen = new Set(projectEntry.invoice_ids);
             for (const id of row.Invoice_Ids)
             {
                 if (!seen.has(id))
                 {
                     seen.add(id);
-                    projectMap[normJob].invoice_ids.push(id);
+                    projectEntry.invoice_ids.push(id);
                 }
             }
         }
@@ -147,6 +233,29 @@
     function parseDecimal (v)
     {
         return typeof v === 'number' ? v : (parseFloat(v) || 0);
+    }
+
+    function getEmptyBreakdown ()
+    {
+        return {
+            total_costs_lines: [],
+            total_revenue_lines: [],
+            expected_revenue_lines: [],
+            expected_costs_lines: [],
+            extra_work_lines: [],
+        };
+    }
+
+    function normalizeProjectBreakdown (breakdown)
+    {
+        const safeBreakdown = breakdown && typeof breakdown === 'object' ? breakdown : {};
+        return {
+            total_costs_lines: Array.isArray(safeBreakdown.total_costs_lines) ? safeBreakdown.total_costs_lines : [],
+            total_revenue_lines: Array.isArray(safeBreakdown.total_revenue_lines) ? safeBreakdown.total_revenue_lines : [],
+            expected_revenue_lines: Array.isArray(safeBreakdown.expected_revenue_lines) ? safeBreakdown.expected_revenue_lines : [],
+            expected_costs_lines: Array.isArray(safeBreakdown.expected_costs_lines) ? safeBreakdown.expected_costs_lines : [],
+            extra_work_lines: Array.isArray(safeBreakdown.extra_work_lines) ? safeBreakdown.extra_work_lines : [],
+        };
     }
 
     function toTrimmedString (value)
@@ -481,6 +590,20 @@
      */
     function getVisibleProjects ()
     {
+        const cacheKey = JSON.stringify({
+            search: appliedSearch.toLowerCase(),
+            sortKey,
+            sortDir,
+            hiddenStatuses: Array.from(hiddenStatuses).sort(),
+            hiddenCostCenters: Array.from(hiddenCostCenters).sort(),
+            expandedProjectJobs: Array.from(expandedProjectJobs).sort(),
+        });
+
+        if (cacheKey === visibleProjectsCacheKey)
+        {
+            return visibleProjectsCache;
+        }
+
         const projects = Object.values(projectMap);
         const filtered = [];
         const search = appliedSearch.toLowerCase();
@@ -501,7 +624,13 @@
 
             if (visibleWOs.length === 0)
             {
-                continue; // all workorders filtered out → hide project
+                const computed = getProjectComputedValues(proj);
+                const hasProjectTotals = computed.costs !== 0 || computed.revenue !== 0
+                    || computed.expected !== 0 || computed.costsVc !== 0 || computed.extraWork !== 0;
+                if (!hasProjectTotals)
+                {
+                    continue; // no visible WO and no project totals to show
+                }
             }
 
             // Search filter
@@ -540,12 +669,8 @@
                     case 'customer': return p.customer_name || '';
                     case 'total_costs': return computeProjectTotals(p).costs;
                     case 'total_revenue': return computeProjectTotals(p).revenue;
-                    case 'invoiced_total': return parseDecimal(p.invoiced_total);
-                    case 'margin_total':
-                        {
-                            const totals = computeProjectTotals(p);
-                            return totals.revenue - totals.costs;
-                        }
+                    case 'costs_vc': return getProjectComputedValues(p).costsVc;
+                    case 'margin_total': return getProjectComputedValues(p).marginTotal;
                     case 'project_manager': return p.project_manager || '';
                     case 'cost_center': return p.cost_center || '';
                     case 'pct_ready': return Math.max(0, parseDecimal(p.pct_completed));
@@ -567,22 +692,24 @@
             return sortDir === 'asc' ? cmp : -cmp;
         });
 
+        visibleProjectsCacheKey = cacheKey;
+        visibleProjectsCache = filtered;
+
         return filtered;
+    }
+
+    function invalidateVisibleProjectsCache ()
+    {
+        visibleProjectsCacheKey = '';
+        visibleProjectsCache = [];
     }
 
     function computeProjectTotals (proj)
     {
-        const wos = proj.workorders;
-        let costs = 0, revenue = 0;
-        for (const wo of wos)
-        {
-            if (!hiddenStatuses.has(toTrimmedString(wo.Status || '')))
-            {
-                costs += parseDecimal(wo.Actual_Costs || 0);
-                revenue += parseDecimal(wo.Total_Revenue || 0);
-            }
-        }
-        return { costs, revenue };
+        return {
+            costs: parseDecimal(proj.project_total_costs || 0),
+            revenue: parseDecimal(proj.project_total_revenue || 0),
+        };
     }
 
     function getProjectComputedValues (proj)
@@ -595,24 +722,24 @@
         const costs = columnValues ? parseDecimal(columnValues.total_costs) : totals.costs;
         const revenue = columnValues ? parseDecimal(columnValues.total_revenue) : totals.revenue;
         const expected = parseDecimal(proj.expected_revenue);
+        const costsVc = columnValues ? parseDecimal(columnValues.costs_vc) : parseDecimal(proj.expected_costs_vc);
         const extraWork = parseDecimal(proj.extra_work);
-        const invoicedTotal = parseDecimal(proj.invoiced_total);
         const pctRaw = parseDecimal(proj.pct_completed);
         const pctDisplay = Math.max(0, pctRaw);
         const isPctOverrun = pctDisplay > 100;
         const marginTotal = columnValues && columnValues.margin_total !== null && columnValues.margin_total !== undefined
             ? parseDecimal(columnValues.margin_total)
-            : (revenue - costs);
+            : (expected - costsVc);
         const winstOhw = columnValues
             ? parseDecimal(columnValues.winst_ohw)
-            : (expected * (pctRaw / 100) - costs);
+            : (marginTotal * (pctRaw / 100));
 
         return {
             costs,
             revenue,
             expected,
+            costsVc,
             extraWork,
-            invoicedTotal,
             pctDisplay,
             isPctOverrun,
             marginTotal,
@@ -648,8 +775,6 @@
                 return fmtCurrency(computed.costs);
             case 'total_revenue':
                 return fmtCurrency(computed.revenue);
-            case 'invoiced_total':
-                return fmtCurrency(computed.invoicedTotal);
             case 'customer':
                 return proj.customer_name || proj.customer_id || '';
             case 'description':
@@ -658,6 +783,8 @@
                 return proj.cost_center || '';
             case 'expected_revenue':
                 return fmtCurrency(computed.expected);
+            case 'costs_vc':
+                return fmtCurrency(computed.costsVc);
             case 'extra_work':
                 return fmtCurrency(computed.extraWork);
             case 'margin_total':
@@ -683,6 +810,94 @@
     let tableScrollWrap = null;
     let tableEl = null;
     let tbodyEl = null;
+
+    function renderSubtableRow (proj, visibleWOs)
+    {
+        const subTr = document.createElement('tr');
+        subTr.className = 'subtable-row';
+        subTr.dataset.subtableFor = proj.job_no;
+
+        const td = document.createElement('td');
+        td.colSpan = columnOrder.length + 1;
+        td.style.padding = '6px 10px 10px 24px';
+        subTr.dataset.normJob = toTrimmedString(proj.job_no || '').toLowerCase();
+
+        const wrap = document.createElement('div');
+        wrap.className = 'subtable-wrap';
+
+        const subTable = document.createElement('table');
+        const subHead = document.createElement('thead');
+        const subHRow = document.createElement('tr');
+
+        for (const label of ['Werkorder', 'Status', 'Kosten', 'Opbrengst', 'Debiteur', 'Omschrijving'])
+        {
+            const th = document.createElement('th');
+            th.textContent = label;
+            if (['Kosten', 'Opbrengst'].includes(label))
+            {
+                th.style.textAlign = 'right';
+            }
+            subHRow.appendChild(th);
+        }
+
+        subHead.appendChild(subHRow);
+        subTable.appendChild(subHead);
+
+        const subBody = document.createElement('tbody');
+        for (const wo of visibleWOs)
+        {
+            const woTr = document.createElement('tr');
+            const woCosts = parseDecimal(wo.Actual_Costs || 0);
+            const woRevenue = parseDecimal(wo.Total_Revenue || 0);
+
+            const cells = [
+                wo.No || '',
+                wo.Status || '',
+                null,
+                null,
+                wo.Customer_Name || wo.Customer_Id || '',
+                wo.Description || '',
+            ];
+
+            cells.forEach(function (val, idx)
+            {
+                const c = document.createElement('td');
+                if (idx === 1)
+                {
+                    const cls = statusCssClass(val);
+                    if (cls)
+                    {
+                        c.className = cls;
+                    }
+                    c.textContent = val;
+                }
+                else if (idx === 2)
+                {
+                    c.style.textAlign = 'right';
+                    c.innerHTML = '<span class="' + amountClass(-woCosts) + '">' + escapeHtml(fmtCurrency(woCosts)) + '</span>';
+                }
+                else if (idx === 3)
+                {
+                    c.style.textAlign = 'right';
+                    c.innerHTML = '<span class="' + amountClass(woRevenue) + '">' + escapeHtml(fmtCurrency(woRevenue)) + '</span>';
+                }
+                else
+                {
+                    c.textContent = val;
+                }
+                woTr.appendChild(c);
+            });
+
+            subBody.appendChild(woTr);
+        }
+
+        subTable.appendChild(subBody);
+        wrap.appendChild(subTable);
+        td.appendChild(wrap);
+        subTr.appendChild(td);
+
+        return subTr;
+    }
 
     function renderTable ()
     {
@@ -744,13 +959,13 @@
             th.textContent = lbl;
 
             // Sortable columns
-            if (['description', 'customer', 'total_costs', 'total_revenue', 'invoiced_total', 'margin_total', 'project_manager', 'cost_center', 'pct_ready'].includes(colKey))
+            if (['description', 'customer', 'total_costs', 'total_revenue', 'costs_vc', 'margin_total', 'project_manager', 'cost_center', 'pct_ready'].includes(colKey))
             {
                 th.className = 'sortable';
                 th.dataset.sortKey = colKey;
             }
 
-            if (['total_costs', 'total_revenue', 'invoiced_total', 'expected_revenue', 'extra_work', 'margin_total', 'winst_ohw'].includes(colKey))
+            if (['total_costs', 'total_revenue', 'expected_revenue', 'costs_vc', 'extra_work', 'margin_total', 'winst_ohw'].includes(colKey))
             {
                 th.style.minWidth = '100px';
                 th.style.textAlign = 'right';
@@ -803,10 +1018,17 @@
         tbodyEl = document.createElement('tbody');
         tableEl.appendChild(tbodyEl);
 
+        const fragment = document.createDocumentFragment();
         for (const { proj, visibleWOs } of visibleProjects)
         {
-            renderProjectRow(proj, visibleWOs);
+            const projectRow = renderProjectRow(proj, visibleWOs);
+            fragment.appendChild(projectRow);
+            if (expandedProjectJobs.has(proj.job_no))
+            {
+                fragment.appendChild(renderSubtableRow(proj, visibleWOs));
+            }
         }
+        tbodyEl.appendChild(fragment);
 
         initTableDragScroll(tableScrollWrap);
         syncTableHeight(tableScrollWrap);
@@ -821,6 +1043,10 @@
         const tr = document.createElement('tr');
         tr.className = 'project-row';
         tr.dataset.normJob = normJob;
+        if (expandedProjectJobs.has(proj.job_no))
+        {
+            tr.classList.add('project-row-expanded');
+        }
 
         // Project No cell
         const tdNo = document.createElement('td');
@@ -854,19 +1080,24 @@
                     td.innerHTML = '<span class="aggregate-source-link ' + amountClass(-computed.costs) + '">' + escapeHtml(fmtCurrency(computed.costs)) + '</span>';
                     td.addEventListener('click', function ()
                     {
-                        const costSourceRows = visibleWOs.map(function (wo)
-                        {
-                            return [
-                                wo.No || '',
-                                wo.Status || '',
-                                wo.Description || '',
-                                fmtCurrency(parseDecimal(wo.Actual_Costs || 0)),
-                            ];
-                        });
-                        showSourceModal(
-                            'Totale kosten werkorders – project ' + proj.job_no,
-                            ['Werkorder', 'Status', 'Omschrijving', 'Bedrag'],
-                            costSourceRows
+                        showProjectSourceModal(
+                            proj,
+                            'Totale kosten t/m heden – project ' + proj.job_no,
+                            ['Boekdatum', 'Taak', 'Type', 'Nr.', 'Omschrijving', 'Bedrag'],
+                            function (breakdown)
+                            {
+                                return breakdown.total_costs_lines.map(function (line)
+                                {
+                                    return [
+                                        line.Posting_Date || '',
+                                        line.Job_Task_No || '',
+                                        line.Entry_Type || line.Type || '',
+                                        line.No || '',
+                                        line.Description || '',
+                                        fmtCurrency(line.Total_Cost || line.Line_Amount || 0),
+                                    ];
+                                });
+                            }
                         );
                     });
                     break;
@@ -875,25 +1106,26 @@
                     td.innerHTML = '<span class="aggregate-source-link ' + amountClass(computed.revenue) + '">' + escapeHtml(fmtCurrency(computed.revenue)) + '</span>';
                     td.addEventListener('click', function ()
                     {
-                        const revenueSourceRows = visibleWOs.map(function (wo)
-                        {
-                            return [
-                                wo.No || '',
-                                wo.Status || '',
-                                wo.Description || '',
-                                fmtCurrency(parseDecimal(wo.Total_Revenue || 0)),
-                            ];
-                        });
-                        showSourceModal(
-                            'Totale opbrengst werkorders – project ' + proj.job_no,
-                            ['Werkorder', 'Status', 'Omschrijving', 'Bedrag'],
-                            revenueSourceRows
+                        showProjectSourceModal(
+                            proj,
+                            'Totale opbrengst t/m heden – project ' + proj.job_no,
+                            ['Boekdatum', 'Taak', 'Type', 'Nr.', 'Omschrijving', 'Bedrag'],
+                            function (breakdown)
+                            {
+                                return breakdown.total_revenue_lines.map(function (line)
+                                {
+                                    return [
+                                        line.Posting_Date || '',
+                                        line.Job_Task_No || '',
+                                        line.Entry_Type || line.Type || '',
+                                        line.No || '',
+                                        line.Description || '',
+                                        fmtCurrency(line.Line_Amount || 0),
+                                    ];
+                                });
+                            }
                         );
                     });
-                    break;
-                case 'invoiced_total':
-                    td.style.textAlign = 'right';
-                    td.innerHTML = '<span class="' + amountClass(computed.invoicedTotal) + '">' + escapeHtml(fmtCurrency(computed.invoicedTotal)) + '</span>';
                     break;
                 case 'customer':
                     td.textContent = proj.customer_name || proj.customer_id || '';
@@ -909,20 +1141,52 @@
                     td.innerHTML = '<span class="aggregate-source-link amount-neutral">' + escapeHtml(fmtCurrency(computed.expected)) + '</span>';
                     td.addEventListener('click', function ()
                     {
-                        showSourceModal(
+                        showProjectSourceModal(
+                            proj,
                             'Verwachte opbrengst – project ' + proj.job_no,
-                            ['Taak', 'Regel', 'Type', 'Nr.', 'Omschrijving', 'Bedrag'],
-                            (proj.breakdown && Array.isArray(proj.breakdown.expected_revenue_lines) ? proj.breakdown.expected_revenue_lines : []).map(function (line)
+                            ['Taak', 'Regel', 'Type', 'Nr.', 'Omschrijving', 'Line type', 'Bedrag'],
+                            function (breakdown)
                             {
-                                return [
-                                    line.Job_Task_No || '',
-                                    String(line.Line_No || ''),
-                                    line.Type || '',
-                                    line.No || '',
-                                    line.Description || '',
-                                    fmtCurrency(line.Line_Amount || 0),
-                                ];
-                            })
+                                return breakdown.expected_revenue_lines.map(function (line)
+                                {
+                                    return [
+                                        line.Job_Task_No || '',
+                                        String(line.Line_No || ''),
+                                        line.Type || '',
+                                        line.No || '',
+                                        line.Description || '',
+                                        line.Line_Type || '',
+                                        fmtCurrency(line.Line_Amount || 0),
+                                    ];
+                                });
+                            }
+                        );
+                    });
+                    break;
+                case 'costs_vc':
+                    td.style.textAlign = 'right';
+                    td.innerHTML = '<span class="aggregate-source-link amount-neutral">' + escapeHtml(fmtCurrency(computed.costsVc)) + '</span>';
+                    td.addEventListener('click', function ()
+                    {
+                        showProjectSourceModal(
+                            proj,
+                            'Verwachte kosten (VC) – project ' + proj.job_no,
+                            ['Taak', 'Regel', 'Type', 'Nr.', 'Omschrijving', 'Line type', 'Bedrag'],
+                            function (breakdown)
+                            {
+                                return breakdown.expected_costs_lines.map(function (line)
+                                {
+                                    return [
+                                        line.Job_Task_No || '',
+                                        String(line.Line_No || ''),
+                                        line.Type || '',
+                                        line.No || '',
+                                        line.Description || '',
+                                        line.Line_Type || '',
+                                        fmtCurrency(line.Line_Amount || 0),
+                                    ];
+                                });
+                            }
                         );
                     });
                     break;
@@ -931,20 +1195,24 @@
                     td.innerHTML = '<span class="aggregate-source-link ' + (computed.extraWork > 0.005 ? 'amount-pos' : 'amount-neutral') + '">' + escapeHtml(fmtCurrency(computed.extraWork)) + '</span>';
                     td.addEventListener('click', function ()
                     {
-                        showSourceModal(
+                        showProjectSourceModal(
+                            proj,
                             'Meerwerk – project ' + proj.job_no,
                             ['Taak', 'Regel', 'Type', 'Change order', 'Omschrijving', 'Bedrag'],
-                            (proj.breakdown && Array.isArray(proj.breakdown.extra_work_lines) ? proj.breakdown.extra_work_lines : []).map(function (line)
+                            function (breakdown)
                             {
-                                return [
-                                    line.Job_Task_No || '',
-                                    String(line.Line_No || ''),
-                                    line.Type || '',
-                                    line.Change_Order_No || '',
-                                    line.Description || '',
-                                    fmtCurrency(line.Line_Amount || 0),
-                                ];
-                            })
+                                return breakdown.extra_work_lines.map(function (line)
+                                {
+                                    return [
+                                        line.Job_Task_No || '',
+                                        String(line.Line_No || ''),
+                                        line.Type || '',
+                                        line.Change_Order_No || '',
+                                        line.Description || '',
+                                        fmtCurrency(line.Line_Amount || 0),
+                                    ];
+                                });
+                            }
                         );
                     });
                     break;
@@ -1027,7 +1295,7 @@
             tr.appendChild(td);
         }
 
-        tbodyEl.appendChild(tr);
+        return tr;
     }
 
     function csvEscape (value)
@@ -1085,99 +1353,31 @@
      */
     function toggleSubtable (proj, visibleWOs, projectTr)
     {
-        const existingSubRow = tbodyEl.querySelector('tr[data-subtable-for="' + CSS.escape(proj.job_no) + '"]');
-        if (existingSubRow)
+        const normJob = toTrimmedString(proj.job_no || '').toLowerCase();
+        if (!normJob)
         {
-            existingSubRow.remove();
-            projectTr.classList.remove('project-row-expanded');
             return;
         }
 
-        projectTr.classList.add('project-row-expanded');
-
-        const subTr = document.createElement('tr');
-        subTr.className = 'subtable-row';
-        subTr.dataset.subtableFor = proj.job_no;
-
-        const td = document.createElement('td');
-        td.colSpan = columnOrder.length + 1; // +1 for project no column
-        td.style.padding = '6px 10px 10px 24px';
-
-        const wrap = document.createElement('div');
-        wrap.className = 'subtable-wrap';
-
-        const subTable = document.createElement('table');
-        const subHead = document.createElement('thead');
-        const subHRow = document.createElement('tr');
-
-        for (const label of ['Werkorder', 'Status', 'Kosten', 'Opbrengst', 'Debiteur', 'Omschrijving'])
+        if (expandedProjectJobs.has(proj.job_no))
         {
-            const th = document.createElement('th');
-            th.textContent = label;
-            if (['Kosten', 'Opbrengst'].includes(label))
+            expandedProjectJobs.delete(proj.job_no);
+            if (projectTr)
             {
-                th.style.textAlign = 'right';
+                projectTr.classList.remove('project-row-expanded');
             }
-            subHRow.appendChild(th);
         }
-
-        subHead.appendChild(subHRow);
-        subTable.appendChild(subHead);
-
-        const subBody = document.createElement('tbody');
-        for (const wo of visibleWOs)
+        else
         {
-            const woTr = document.createElement('tr');
-            const woCosts = parseDecimal(wo.Actual_Costs || 0);
-            const woRevenue = parseDecimal(wo.Total_Revenue || 0);
-
-            const cells = [
-                wo.No || '',
-                wo.Status || '',
-                null, // costs
-                null, // revenue
-                wo.Customer_Name || wo.Customer_Id || '',
-                wo.Description || '',
-            ];
-
-            cells.forEach(function (val, idx)
+            expandedProjectJobs.add(proj.job_no);
+            if (projectTr)
             {
-                const c = document.createElement('td');
-                if (idx === 1)
-                {
-                    const cls = statusCssClass(val);
-                    if (cls)
-                    {
-                        c.className = cls;
-                    }
-                    c.textContent = val;
-                }
-                else if (idx === 2)
-                {
-                    c.style.textAlign = 'right';
-                    c.innerHTML = '<span class="' + amountClass(-woCosts) + '">' + escapeHtml(fmtCurrency(woCosts)) + '</span>';
-                }
-                else if (idx === 3)
-                {
-                    c.style.textAlign = 'right';
-                    c.innerHTML = '<span class="' + amountClass(woRevenue) + '">' + escapeHtml(fmtCurrency(woRevenue)) + '</span>';
-                }
-                else
-                {
-                    c.textContent = val;
-                }
-                woTr.appendChild(c);
-            });
-
-            subBody.appendChild(woTr);
+                projectTr.classList.add('project-row-expanded');
+            }
         }
 
-        subTable.appendChild(subBody);
-        wrap.appendChild(subTable);
-        td.appendChild(wrap);
-        subTr.appendChild(td);
-
-        projectTr.insertAdjacentElement('afterend', subTr);
+        invalidateVisibleProjectsCache();
+        renderTable();
     }
 
     /**
@@ -1485,6 +1685,12 @@
         table.appendChild(tbody);
         sourceModalBody.appendChild(table);
         sourceOverlay.style.display = 'flex';
+    }
+
+    function showProjectSourceModal (proj, title, headers, buildRows)
+    {
+        const rows = typeof buildRows === 'function' ? buildRows(proj.breakdown || getEmptyBreakdown()) : [];
+        showSourceModal(title, headers, rows);
     }
 
     function closeSourceModal ()

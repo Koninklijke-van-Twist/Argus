@@ -286,22 +286,28 @@ if (is_array($monthData)) {
         $workordersByJob[$normJobNo][] = $workorderRow;
     }
 
-    foreach ($workordersByJob as $normJobNo => $jobWorkorders) {
-        $totalCosts = finance_column_total_costs($jobWorkorders);
-        $totalRevenue = finance_column_total_revenue($jobWorkorders);
+    $allJobNos = array_values(array_unique(array_merge(array_keys($projectSummaryByJob), array_keys($workordersByJob))));
+
+    foreach ($allJobNos as $normJobNo) {
+        $jobWorkorders = is_array($workordersByJob[$normJobNo] ?? null) ? $workordersByJob[$normJobNo] : [];
         $summaryRow = $projectSummaryByJob[$normJobNo] ?? [];
         $detailRow = is_array($projectDetails[$normJobNo] ?? null) ? $projectDetails[$normJobNo] : [];
 
+        $totalCosts = finance_to_float($summaryRow['Project_Actual_Costs'] ?? finance_column_total_costs($jobWorkorders));
+        $totalRevenue = finance_to_float($summaryRow['Project_Total_Revenue'] ?? finance_column_total_revenue($jobWorkorders));
+
         $expectedRevenue = finance_to_float($summaryRow['Expected_Revenue'] ?? 0.0);
+        $expectedCostsVc = finance_to_float($summaryRow['Expected_Costs_VC'] ?? 0.0);
         $pctCompleted = finance_to_float($detailRow['Percent_Completed'] ?? 0.0);
-        $marginTotal = finance_column_margin_total($totalRevenue, $totalCosts);
-        $winstOhw = finance_column_winst_ohw($expectedRevenue, $pctCompleted, $totalCosts);
+        $marginTotal = finance_column_margin_total($expectedRevenue, $expectedCostsVc);
+        $winstOhw = finance_column_winst_ohw($marginTotal, $pctCompleted);
         $prevProfit = finance_column_prev_profit($prevProfitByProject[$normJobNo] ?? null);
         $difference = finance_column_difference($totalRevenue, $totalCosts, $prevProfit);
 
         $projectColumnValuesByJob[$normJobNo] = [
             'total_costs' => $totalCosts,
             'total_revenue' => $totalRevenue,
+            'costs_vc' => $expectedCostsVc,
             'margin_total' => $marginTotal,
             'winst_ohw' => $winstOhw,
             'prev_profit' => $prevProfit,
@@ -320,11 +326,11 @@ $defaultColumns = [
     'workorders',
     'total_costs',
     'total_revenue',
-    'invoiced_total',
     'customer',
     'description',
     'cost_center',
     'expected_revenue',
+    'costs_vc',
     'extra_work',
     'margin_total',
     'pct_ready',
@@ -401,6 +407,10 @@ $initialData = [
             display: flex;
         }
 
+        .page-loader.is-error {
+            background: rgba(127, 29, 29, .94);
+        }
+
         .page-loader-content {
             display: flex;
             flex-direction: column;
@@ -417,6 +427,26 @@ $initialData = [
             border-top-color: #1f4ea6;
             border-radius: 50%;
             animation: spin .8s linear infinite;
+        }
+
+        .page-loader.is-error .page-loader-spinner {
+            display: none;
+        }
+
+        .page-loader-error {
+            margin: 10px 0 0;
+            max-width: min(92vw, 980px);
+            max-height: 56vh;
+            overflow: auto;
+            white-space: pre-wrap;
+            background: rgba(17, 24, 39, .35);
+            border: 1px solid rgba(254, 202, 202, .55);
+            color: #fee2e2;
+            border-radius: 10px;
+            padding: 12px;
+            font-size: 12px;
+            line-height: 1.45;
+            font-family: Consolas, 'Courier New', monospace;
         }
 
         @keyframes spin {

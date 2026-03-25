@@ -21,13 +21,16 @@ require_once __DIR__ . '/finance_calculations.php';
 class ProjectFinanceService
 {
     public const ROW_MODE_FIRST_NUMERIC = 'first_numeric';
+    public const ROW_MODE_SUM_RAW = 'sum_raw';
     public const ROW_MODE_SUM = 'sum';
     public const ROW_MODE_SUM_INVERT = 'sum_invert';
     public const REVENUE_ROW_MODE_FIRST_NUMERIC = self::ROW_MODE_FIRST_NUMERIC;
+    public const REVENUE_ROW_MODE_SUM_RAW = self::ROW_MODE_SUM_RAW;
     public const REVENUE_ROW_MODE_SUM = self::ROW_MODE_SUM;
     public const REVENUE_ROW_MODE_SUM_INVERT = self::ROW_MODE_SUM_INVERT;
     public const REVENUE_ROW_MODE_OPTIONS = [
         self::REVENUE_ROW_MODE_FIRST_NUMERIC,
+        self::REVENUE_ROW_MODE_SUM_RAW,
         self::REVENUE_ROW_MODE_SUM,
         self::REVENUE_ROW_MODE_SUM_INVERT,
     ];
@@ -59,7 +62,7 @@ class ProjectFinanceService
      *   - key_field: sleutel voor 1 project/werkorder.
      *   - project_field (alleen workorder): koppeling naar projectnummer.
      *   - fields: kolommen waar waarden uit komen.
-     *   - row_mode, cost_row_mode of revenue_row_mode: ROW_MODE_FIRST_NUMERIC of ROW_MODE_SUM.
+     *   - row_mode, cost_row_mode of revenue_row_mode: ROW_MODE_FIRST_NUMERIC, ROW_MODE_SUM_RAW, ROW_MODE_SUM of ROW_MODE_SUM_INVERT.
      *
      * Gedrag:
      * - Meerdere regels met dezelfde sleutel worden opgeteld.
@@ -68,6 +71,44 @@ class ProjectFinanceService
     private static function financeDataConfig(): array
     {
         return [
+            'invoice_sources' => [
+                [
+                    'entity' => 'SalesInvoiceLines',
+                    'select' => 'Document_No,Sell_to_Customer_No,Variant_Code,Description,Amount,Amount_Including_VAT,Line_Discount_Percent,Line_Discount_Amount,Job_No,Type',
+                    'amount_field' => 'Amount',
+                    'amount_incl_field' => 'Amount_Including_VAT',
+                ],
+                [
+                    'entity' => 'SalesLines',
+                    'select' => 'Document_No,Sell_to_Customer_No,Variant_Code,Description,Line_Amount,Line_Discount_Percent,Job_No,Type',
+                    'amount_field' => 'Line_Amount',
+                    'amount_incl_field' => 'Line_Amount',
+                ],
+            ],
+            'project_forecast' => [
+                'entity_set' => 'JobBaselineLines',
+                'project_key_field' => 'Job_No',
+                'line_type_field' => 'Line_Type',
+                'revenue_fields' => [
+                    'Line_Amount',
+                ],
+                'cost_fields' => [
+                    'Total_Cost',
+                ],
+                'select_fields' => [
+                    'Job_No',
+                    'Job_Task_No',
+                    'Line_No',
+                    'Type',
+                    'No',
+                    'Description',
+                    'Description_2',
+                    'Line_Type',
+                    'Line_Amount',
+                    'Total_Cost',
+                ],
+                'filter' => '',
+            ],
             'project' => [
                 'cost_source' => [
                     'entity_set' => 'ProjectPosten',
@@ -76,7 +117,7 @@ class ProjectFinanceService
                         'Total_Cost',
                     ],
                     'filter' => '',
-                    'row_mode' => self::ROW_MODE_SUM,
+                    'row_mode' => self::ROW_MODE_SUM_RAW,
                 ],
                 'revenue_source' => [
                     'entity_set' => 'ProjectPosten',
@@ -84,7 +125,7 @@ class ProjectFinanceService
                     'fields' => [
                         'Line_Amount',
                     ],
-                    'filter' => "Entry_Type eq 'Verkoop'",
+                    'filter' => '',
                     'row_mode' => self::ROW_MODE_SUM_INVERT,
                 ],
             ],
@@ -97,7 +138,7 @@ class ProjectFinanceService
                         'Total_Cost',
                     ],
                     'filter' => '',
-                    'row_mode' => self::ROW_MODE_SUM,
+                    'row_mode' => self::ROW_MODE_SUM_RAW,
                 ],
                 'revenue_source' => [
                     'entity_set' => 'ProjectPosten',
@@ -106,11 +147,51 @@ class ProjectFinanceService
                     'fields' => [
                         'Line_Amount',
                     ],
-                    'filter' => "Entry_Type eq 'Verkoop'",
+                    'filter' => '',
                     'row_mode' => self::ROW_MODE_SUM_INVERT,
                 ],
             ],
         ];
+    }
+
+    /**
+     * Leest en valideert forecast-configuratie voor voorcalculatie per project.
+     */
+    private static function getProjectForecastConfig(): array
+    {
+        $config = self::financeDataConfig();
+        $selected = is_array($config['project_forecast'] ?? null) ? $config['project_forecast'] : [];
+
+        $entitySet = trim((string) ($selected['entity_set'] ?? ''));
+        $projectKeyField = trim((string) ($selected['project_key_field'] ?? ''));
+        $lineTypeField = trim((string) ($selected['line_type_field'] ?? ''));
+
+        if ($entitySet === '' || $projectKeyField === '' || $lineTypeField === '') {
+            throw new RuntimeException('Forecast configuratie mist entity_set, project_key_field of line_type_field.');
+        }
+
+        $selected['entity_set'] = $entitySet;
+        $selected['project_key_field'] = $projectKeyField;
+        $selected['line_type_field'] = $lineTypeField;
+        $selected['revenue_fields'] = is_array($selected['revenue_fields'] ?? null) ? $selected['revenue_fields'] : [];
+        $selected['cost_fields'] = is_array($selected['cost_fields'] ?? null) ? $selected['cost_fields'] : [];
+        $selected['select_fields'] = is_array($selected['select_fields'] ?? null) ? $selected['select_fields'] : [];
+        $selected['filter'] = trim((string) ($selected['filter'] ?? ''));
+
+        return $selected;
+    }
+
+    /**
+     * Leest geconfigureerde factuurbronnen.
+     */
+    private static function getInvoiceSourcesConfig(): array
+    {
+        $config = self::financeDataConfig();
+        $invoiceSources = is_array($config['invoice_sources'] ?? null) ? $config['invoice_sources'] : [];
+
+        return array_values(array_filter($invoiceSources, static function ($source): bool {
+            return is_array($source);
+        }));
     }
 
     /**
@@ -174,26 +255,27 @@ class ProjectFinanceService
             $this->fetchTotalsForKeys($projectCostSource, $projectNumbers, $ttl),
             $this->fetchTotalsForKeys($projectRevenueSource, $projectNumbers, $ttl)
         );
+        $invoiceData = $this->collectProjectInvoicesForProjects($projectNumbers, $ttl);
+
+        return [
+            'project_totals_by_job' => $projectTotalsByJob,
+            'invoice_details_by_id' => is_array($invoiceData['invoice_details_by_id'] ?? null) ? $invoiceData['invoice_details_by_id'] : [],
+            'project_invoice_ids_by_job' => is_array($invoiceData['project_invoice_ids_by_job'] ?? null) ? $invoiceData['project_invoice_ids_by_job'] : [],
+            'project_invoiced_total_by_job' => is_array($invoiceData['project_invoiced_total_by_job'] ?? null) ? $invoiceData['project_invoiced_total_by_job'] : [],
+        ];
+    }
+
+    /**
+     * Haalt factuurdata op voor meerdere projecten zonder kosten/opbrengst-query op ProjectPosten.
+     */
+    public function collectProjectInvoicesForProjects(array $projectNumbers, int $ttl = 3600): array
+    {
         $invoiceDetailsById = [];
         $projectInvoiceIdsByJob = [];
         $projectInvoicedTotalByJob = [];
 
         $projectNumberChunks = self::chunkValues($projectNumbers, 25);
-
-        $invoiceSources = [
-            [
-                'entity' => 'SalesInvoiceLines',
-                'select' => 'Document_No,Sell_to_Customer_No,Variant_Code,Description,Amount,Amount_Including_VAT,Line_Discount_Percent,Line_Discount_Amount,Job_No,Type',
-                'amount_field' => 'Amount',
-                'amount_incl_field' => 'Amount_Including_VAT',
-            ],
-            [
-                'entity' => 'SalesLines',
-                'select' => 'Document_No,Sell_to_Customer_No,Variant_Code,Description,Line_Amount,Line_Discount_Percent,Job_No,Type',
-                'amount_field' => 'Line_Amount',
-                'amount_incl_field' => 'Line_Amount',
-            ],
-        ];
+        $invoiceSources = self::getInvoiceSourcesConfig();
 
         foreach ($invoiceSources as $invoiceSource) {
             $entity = trim((string) ($invoiceSource['entity'] ?? ''));
@@ -212,7 +294,6 @@ class ProjectFinanceService
                     if ($projectNoText === '') {
                         continue;
                     }
-
                     $jobFilters[] = "Job_No eq '" . self::escapeOdataString($projectNoText) . "'";
                 }
 
@@ -342,10 +423,256 @@ class ProjectFinanceService
         }
 
         return [
-            'project_totals_by_job' => $projectTotalsByJob,
             'invoice_details_by_id' => $invoiceDetailsById,
             'project_invoice_ids_by_job' => $projectInvoiceIdsByJob,
             'project_invoiced_total_by_job' => $projectInvoicedTotalByJob,
+        ];
+    }
+
+    /**
+     * Haalt ProjectPosten exact één keer op binnen een datumrange en aggregeert daarna project- en werkordertotalen.
+     */
+    public function collectProjectAndWorkorderFinanceFromProjectPostenRange(string $fromDate, string $toDateExclusive, int $ttl = 3600): array
+    {
+        $projectCostSource = $this->getAmountSourceConfig('project', 'cost_source');
+        $projectRevenueSource = $this->getAmountSourceConfig('project', 'revenue_source');
+        $workorderCostSource = $this->getAmountSourceConfig('workorder', 'cost_source');
+        $workorderRevenueSource = $this->getAmountSourceConfig('workorder', 'revenue_source');
+
+        $entitySet = (string) ($projectCostSource['entity_set'] ?? '');
+        $projectKeyField = (string) ($projectCostSource['key_field'] ?? 'Job_No');
+        $workorderKeyField = (string) ($workorderCostSource['key_field'] ?? 'Job_Task_No');
+        $dateField = 'Posting_Date';
+
+        $selectFields = array_values(array_unique(array_filter(array_merge(
+            [$projectKeyField, $workorderKeyField, $dateField],
+            is_array($projectCostSource['fields'] ?? null) ? $projectCostSource['fields'] : [],
+            is_array($projectRevenueSource['fields'] ?? null) ? $projectRevenueSource['fields'] : [],
+            is_array($workorderCostSource['fields'] ?? null) ? $workorderCostSource['fields'] : [],
+            is_array($workorderRevenueSource['fields'] ?? null) ? $workorderRevenueSource['fields'] : []
+        ), static function ($field): bool {
+            return is_string($field) && trim($field) !== '';
+        })));
+
+        $queryFilter = $dateField . ' ge ' . $fromDate . ' and ' . $dateField . ' lt ' . $toDateExclusive;
+
+        try {
+            $url = $this->companyEntityUrlWithQuery($entitySet, [
+                '$select' => implode(',', $selectFields),
+                '$filter' => $queryFilter,
+            ]);
+            $rows = odata_get_all($url, $this->auth, $ttl);
+        } catch (Throwable $loadError) {
+            throw new RuntimeException(
+                'Finance bron ophalen mislukt voor ' . $entitySet . ' met daterange-filter: ' . $queryFilter,
+                0,
+                $loadError
+            );
+        }
+
+        $projectTotalsByJob = self::combineTotalsByKey(
+            self::aggregateAmountByKey(
+                $rows,
+                $projectKeyField,
+                is_array($projectCostSource['fields'] ?? null) ? $projectCostSource['fields'] : [],
+                (string) ($projectCostSource['row_mode'] ?? self::ROW_MODE_FIRST_NUMERIC)
+            ),
+            self::aggregateAmountByKey(
+                $rows,
+                $projectKeyField,
+                is_array($projectRevenueSource['fields'] ?? null) ? $projectRevenueSource['fields'] : [],
+                (string) ($projectRevenueSource['row_mode'] ?? self::ROW_MODE_FIRST_NUMERIC)
+            )
+        );
+
+        $workorderTotalsByNumber = self::combineTotalsByKey(
+            self::aggregateAmountByKey(
+                $rows,
+                $workorderKeyField,
+                is_array($workorderCostSource['fields'] ?? null) ? $workorderCostSource['fields'] : [],
+                (string) ($workorderCostSource['row_mode'] ?? self::ROW_MODE_FIRST_NUMERIC)
+            ),
+            self::aggregateAmountByKey(
+                $rows,
+                $workorderKeyField,
+                is_array($workorderRevenueSource['fields'] ?? null) ? $workorderRevenueSource['fields'] : [],
+                (string) ($workorderRevenueSource['row_mode'] ?? self::ROW_MODE_FIRST_NUMERIC)
+            )
+        );
+
+        $projectNumbers = [];
+        $workorderNumbers = [];
+        $seenProjectNos = [];
+        $seenWorkorderNos = [];
+
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $jobNo = trim((string) ($row[$projectKeyField] ?? ''));
+            if ($jobNo !== '' && !isset($seenProjectNos[$jobNo])) {
+                $seenProjectNos[$jobNo] = true;
+                $projectNumbers[] = $jobNo;
+            }
+
+            $jobTaskNo = trim((string) ($row[$workorderKeyField] ?? ''));
+            if ($jobTaskNo !== '' && !isset($seenWorkorderNos[$jobTaskNo])) {
+                $seenWorkorderNos[$jobTaskNo] = true;
+                $workorderNumbers[] = $jobTaskNo;
+            }
+        }
+
+        return [
+            'project_totals_by_job' => $projectTotalsByJob,
+            'workorder_totals_by_number' => $workorderTotalsByNumber,
+            'project_numbers' => $projectNumbers,
+            'workorder_numbers' => $workorderNumbers,
+        ];
+    }
+
+    /**
+     * Haalt verwachte omzet/kosten op uit de voorcalculatiebron per project.
+     */
+    public function collectProjectForecastForProjects(array $projectNumbers, int $ttl = 3600): array
+    {
+        $forecastConfig = self::getProjectForecastConfig();
+        $entitySet = (string) ($forecastConfig['entity_set'] ?? '');
+        $projectKeyField = (string) ($forecastConfig['project_key_field'] ?? '');
+        $lineTypeField = (string) ($forecastConfig['line_type_field'] ?? '');
+        $revenueFields = is_array($forecastConfig['revenue_fields'] ?? null) ? $forecastConfig['revenue_fields'] : [];
+        $costFields = is_array($forecastConfig['cost_fields'] ?? null) ? $forecastConfig['cost_fields'] : [];
+        $sourceFilter = trim((string) ($forecastConfig['filter'] ?? ''));
+        $baseSelectFields = is_array($forecastConfig['select_fields'] ?? null) ? $forecastConfig['select_fields'] : [];
+
+        $selectFields = array_values(array_unique(array_filter(array_merge(
+            [$projectKeyField, $lineTypeField],
+            $baseSelectFields,
+            $revenueFields,
+            $costFields
+        ), static function ($field): bool {
+            return is_string($field) && trim($field) !== '';
+        })));
+
+        $totalsByProject = [];
+        $breakdownByProject = [];
+        $projectChunks = self::chunkValues($projectNumbers, 25);
+
+        foreach ($projectChunks as $chunk) {
+            $projectFilters = [];
+            foreach ($chunk as $projectNo) {
+                $projectNoText = trim((string) $projectNo);
+                if ($projectNoText === '') {
+                    continue;
+                }
+
+                $projectFilters[] = $projectKeyField . " eq '" . self::escapeOdataString($projectNoText) . "'";
+            }
+
+            if ($projectFilters === []) {
+                continue;
+            }
+
+            $queryFilter = '(' . implode(' or ', $projectFilters) . ')';
+            if ($sourceFilter !== '') {
+                $queryFilter .= ' and (' . $sourceFilter . ')';
+            }
+
+            try {
+                $url = $this->companyEntityUrlWithQuery($entitySet, [
+                    '$select' => implode(',', $selectFields),
+                    '$filter' => $queryFilter,
+                ]);
+                $rows = odata_get_all($url, $this->auth, $ttl);
+            } catch (Throwable $loadError) {
+                throw new RuntimeException(
+                    'Finance bron ophalen mislukt voor ' . $entitySet . ' met filter: ' . $queryFilter,
+                    0,
+                    $loadError
+                );
+            }
+
+            foreach ($rows as $row) {
+                if (!is_array($row)) {
+                    continue;
+                }
+
+                $projectNo = trim((string) ($row[$projectKeyField] ?? ''));
+                if ($projectNo === '') {
+                    continue;
+                }
+
+                $normalizedProject = self::normalizeMatchValue($projectNo);
+                if (!isset($totalsByProject[$normalizedProject])) {
+                    $totalsByProject[$normalizedProject] = [
+                        'expected_revenue' => 0.0,
+                        'expected_costs' => 0.0,
+                    ];
+                }
+                if (!isset($breakdownByProject[$normalizedProject])) {
+                    $breakdownByProject[$normalizedProject] = [
+                        'expected_revenue_lines' => [],
+                        'expected_costs_lines' => [],
+                        'extra_work_lines' => [],
+                    ];
+                }
+
+                $lineType = trim((string) ($row[$lineTypeField] ?? ''));
+                $hasBillable = self::baselineLineTypeHasBillable($lineType);
+                $hasBudget = self::baselineLineTypeHasBudget($lineType);
+
+                if (!$hasBillable && !$hasBudget) {
+                    continue;
+                }
+
+                $revenueAmount = self::firstNumericValue($row, $revenueFields);
+                $costAmount = self::firstNumericValue($row, $costFields);
+
+                $lineDescription = trim((string) ($row['Description'] ?? ''));
+                $lineDescription2 = trim((string) ($row['Description_2'] ?? ''));
+                if ($lineDescription2 !== '') {
+                    $lineDescription = trim($lineDescription . ' / ' . $lineDescription2);
+                }
+
+                if ($hasBillable && $revenueAmount !== 0.0) {
+                    $totalsByProject[$normalizedProject]['expected_revenue'] = finance_add_amount(
+                        (float) ($totalsByProject[$normalizedProject]['expected_revenue'] ?? 0.0),
+                        $revenueAmount
+                    );
+
+                    $breakdownByProject[$normalizedProject]['expected_revenue_lines'][] = [
+                        'Job_Task_No' => (string) ($row['Job_Task_No'] ?? ''),
+                        'Line_No' => (int) ($row['Line_No'] ?? 0),
+                        'Type' => (string) ($row['Type'] ?? ''),
+                        'No' => (string) ($row['No'] ?? ''),
+                        'Description' => $lineDescription,
+                        'Line_Amount' => $revenueAmount,
+                        'Line_Type' => $lineType,
+                    ];
+                }
+
+                if ($hasBudget && $costAmount !== 0.0) {
+                    $totalsByProject[$normalizedProject]['expected_costs'] = finance_add_amount(
+                        (float) ($totalsByProject[$normalizedProject]['expected_costs'] ?? 0.0),
+                        $costAmount
+                    );
+
+                    $breakdownByProject[$normalizedProject]['expected_costs_lines'][] = [
+                        'Job_Task_No' => (string) ($row['Job_Task_No'] ?? ''),
+                        'Line_No' => (int) ($row['Line_No'] ?? 0),
+                        'Type' => (string) ($row['Type'] ?? ''),
+                        'No' => (string) ($row['No'] ?? ''),
+                        'Description' => $lineDescription,
+                        'Line_Amount' => $costAmount,
+                        'Line_Type' => $lineType,
+                    ];
+                }
+            }
+        }
+
+        return [
+            'forecast_totals_by_job' => $totalsByProject,
+            'forecast_breakdown_by_job' => $breakdownByProject,
         ];
     }
 
@@ -626,8 +953,12 @@ class ProjectFinanceService
                     '$filter' => $queryFilter,
                 ]);
                 $rows = odata_get_all($url, $this->auth, $ttl);
-            } catch (Throwable $ignoredLoadError) {
-                continue;
+            } catch (Throwable $loadError) {
+                throw new RuntimeException(
+                    'Finance bron ophalen mislukt voor ' . $entitySet . ' met filter: ' . $queryFilter,
+                    0,
+                    $loadError
+                );
             }
 
             $chunkTotals = self::aggregateAmountByKey($rows, $keyField, $fields, $rowMode);
@@ -673,8 +1004,12 @@ class ProjectFinanceService
                 '$filter' => $queryFilter,
             ]);
             $rows = odata_get_all($url, $this->auth, $ttl);
-        } catch (Throwable $ignoredLoadError) {
-            return [];
+        } catch (Throwable $loadError) {
+            throw new RuntimeException(
+                'Finance bron ophalen mislukt voor ' . $entitySet . ' met projectfilter: ' . ($queryFilter ?? ''),
+                0,
+                $loadError
+            );
         }
 
         return self::aggregateAmountByKey($rows, $keyField, $fields, $rowMode);
@@ -827,5 +1162,31 @@ class ProjectFinanceService
     private static function extractRowAmount(array $row, array $fields, string $mode): float
     {
         return finance_extract_row_amount($row, $fields, $mode);
+    }
+
+    /**
+     * Bepaalt of Line_Type de billable-status bevat.
+     */
+    private static function baselineLineTypeHasBillable(string $lineType): bool
+    {
+        $normalized = strtolower(trim($lineType));
+        if ($normalized === '') {
+            return false;
+        }
+
+        return str_contains($normalized, 'billable');
+    }
+
+    /**
+     * Bepaalt of Line_Type de budget-status bevat.
+     */
+    private static function baselineLineTypeHasBudget(string $lineType): bool
+    {
+        $normalized = strtolower(trim($lineType));
+        if ($normalized === '') {
+            return false;
+        }
+
+        return str_contains($normalized, 'budget');
     }
 }
