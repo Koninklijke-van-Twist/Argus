@@ -159,6 +159,26 @@ function find_prev_month(string $yearMonth, array $savedMonths): ?string
 }
 
 /**
+ * Leest projecttotaal uit werkorderrijen als samenvatting ontbreekt.
+ */
+function project_total_from_workorders_d(array $workorders, string $field): float
+{
+    foreach ($workorders as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+
+        if (!array_key_exists($field, $row)) {
+            continue;
+        }
+
+        return finance_to_float($row[$field] ?? 0.0);
+    }
+
+    return 0.0;
+}
+
+/**
  * Page load
  */
 $currentUserEmail = current_user_email_d();
@@ -293,8 +313,12 @@ if (is_array($monthData)) {
         $summaryRow = $projectSummaryByJob[$normJobNo] ?? [];
         $detailRow = is_array($projectDetails[$normJobNo] ?? null) ? $projectDetails[$normJobNo] : [];
 
-        $totalCosts = finance_to_float($summaryRow['Project_Actual_Costs'] ?? finance_column_total_costs($jobWorkorders));
-        $totalRevenue = finance_to_float($summaryRow['Project_Total_Revenue'] ?? finance_column_total_revenue($jobWorkorders));
+        $totalCosts = array_key_exists('Project_Actual_Costs', $summaryRow)
+            ? finance_to_float($summaryRow['Project_Actual_Costs'])
+            : project_total_from_workorders_d($jobWorkorders, 'Project_Actual_Costs');
+        $totalRevenue = array_key_exists('Project_Total_Revenue', $summaryRow)
+            ? finance_to_float($summaryRow['Project_Total_Revenue'])
+            : project_total_from_workorders_d($jobWorkorders, 'Project_Total_Revenue');
 
         $expectedRevenue = finance_to_float($summaryRow['Expected_Revenue'] ?? 0.0);
         $expectedCostsVc = finance_to_float($summaryRow['Expected_Costs_VC'] ?? 0.0);

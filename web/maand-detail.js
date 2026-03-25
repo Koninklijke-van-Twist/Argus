@@ -1392,13 +1392,31 @@
         summaryBar.innerHTML = '';
 
         const visible = getVisibleProjects();
-        let totalRevenue = 0, totalCosts = 0;
+        let totalRevenue = 0;
+        let totalCosts = 0;
 
-        for (const { proj } of visible)
+        const hasActiveFilters = hiddenStatuses.size > 0
+            || hiddenCostCenters.size > 0
+            || (appliedSearch || '').trim() !== '';
+
+        if (!hasActiveFilters
+            && monthData
+            && typeof monthData.total_revenue === 'number'
+            && typeof monthData.total_costs === 'number')
         {
-            const t = computeProjectTotals(proj);
-            totalRevenue += t.revenue;
-            totalCosts += t.costs;
+            // Zelfde bron als maandenoverzicht: snapshot-totalen uit dezelfde maandcache.
+            totalRevenue = parseDecimal(monthData.total_revenue);
+            totalCosts = parseDecimal(monthData.total_costs);
+        }
+        else
+        {
+            for (const { proj } of visible)
+            {
+                // Zelfde bron als tabelcellen in detailweergave.
+                const computed = getProjectComputedValues(proj);
+                totalRevenue += computed.revenue;
+                totalCosts += computed.costs;
+            }
         }
 
         const profit = totalRevenue - totalCosts;

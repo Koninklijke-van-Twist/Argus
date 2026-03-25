@@ -6,6 +6,13 @@
     const payload = window.maandenData || {};
     const companies = Array.isArray(payload.companies) ? payload.companies : [];
     const batchUrl = typeof payload.batch_url === 'string' ? payload.batch_url : 'maanden.php?action=fetch_workorders_batch';
+    const projectNumbersUrl = typeof payload.project_numbers_url === 'string'
+        ? payload.project_numbers_url
+        : 'maanden.php?action=fetch_project_numbers_batch';
+    const columnBatchUrl = typeof payload.column_batch_url === 'string'
+        ? payload.column_batch_url
+        : 'maanden.php?action=fetch_column_batch';
+    const columnSteps = Array.isArray(payload.column_steps) ? payload.column_steps : [];
     const deleteUrl = typeof payload.delete_url === 'string' ? payload.delete_url : 'maanden.php?action=delete_month';
     const detailUrl = typeof payload.detail_url === 'string' ? payload.detail_url : 'maand-detail.php';
     const saveSettingsUrl = typeof payload.save_settings_url === 'string' ? payload.save_settings_url : 'maanden.php?action=save_user_settings';
@@ -544,89 +551,130 @@
 
     function runMonthBuildFlow (ym, successMessage)
     {
-        const SUB_STEPS = [
-            { key: '_collect', label: 'Projectnummers verzamelen', url: 'maanden.php?action=fetch_sub_collect' },
-            { key: '_finance', label: 'Finance-data ophalen', url: 'maanden.php?action=fetch_sub_finance' },
-            { key: '_projects', label: 'Projectdetails ophalen', url: 'maanden.php?action=fetch_sub_projects' },
-            { key: '_planning', label: 'Planningsregels ophalen', url: 'maanden.php?action=fetch_sub_planning' },
-        ];
-
         const allBatchMonths = buildBatchMonths(ym); // 36 maanden incl. doelmaand
-        const allProgressItems = allBatchMonths.map(function (bm) { return { key: bm, label: formatMonth(bm) }; })
-            .concat(SUB_STEPS.map(function (s) { return { key: s.key, label: s.label }; }));
+        const effectiveColumnSteps = columnSteps.length > 0
+            ? columnSteps
+            : [
+                { key: 'workorders', label: 'Werkorders' },
+                { key: 'projectposten', label: 'ProjectPosten' },
+                { key: 'project_details', label: 'Projectdetails' },
+                { key: 'planning', label: 'Planningsregels' },
+                { key: 'invoices', label: 'Facturen' },
+            ];
+
+        const allProgressItems = [];
+        for (const batchYm of allBatchMonths)
+        {
+            allProgressItems.push({
+                key: batchYm + '::project_numbers',
+                label: formatMonth(batchYm) + ' · Projectnummers',
+            });
+            for (const step of effectiveColumnSteps)
+            {
+                allProgressItems.push({
+                    key: batchYm + '::' + step.key,
+                    label: formatMonth(batchYm) + ' · ' + step.label,
+                });
+            }
+        }
+
         const allProgressKeys = allProgressItems.map(function (i) { return i.key; });
         const totalSteps = allProgressItems.length;
         const progressItems = initProgressList(allProgressItems);
 
         let batchIndex = 0;
+        let columnIndex = -1;
+        let completedSteps = 0;
 
-        function runNextBatch ()
+        function runNextStep ()
         {
             if (batchIndex >= allBatchMonths.length)
-            {
-                runSubStep(0);
-                return;
-            }
-
-            const batchYm = allBatchMonths[batchIndex];
-            markProgressLoading(progressItems, batchYm, totalSteps, batchIndex);
-            alignProgressWindow(allProgressKeys, progressItems, batchIndex);
-            if (pageLoaderText) { pageLoaderText.textContent = 'Ophalen ' + formatMonth(batchYm) + ' (' + (batchIndex + 1) + '/' + totalSteps + ')'; }
-
-            const body = new URLSearchParams({ target_month: ym, batch_month: batchYm, company: selectedCompany });
-            fetch(batchUrl, { method: 'POST', body: body })
-                .then(parseFetchResponse)
-                .then(function (json)
-                {
-                    if (!json.ok)
-                    {
-                        hideLoader();
-                        toast('Fout bij ophalen ' + formatMonth(batchYm) + ': ' + (json.error || 'Onbekende fout'), true);
-                        return;
-                    }
-                    markProgressDone(progressItems, batchYm);
-                    batchIndex++;
-                    runNextBatch();
-                })
-                .catch(function (err)
-                {
-                    hideLoader();
-                    toast('Netwerkfout bij ophalen ' + formatMonth(batchYm) + ': ' + err.message, true);
-                });
-        }
-
-        function runSubStep (idx)
-        {
-            if (idx >= SUB_STEPS.length)
             {
                 buildSnapshot();
                 return;
             }
 
-            const step = SUB_STEPS[idx];
-            const globalIndex = allBatchMonths.length + idx;
-            markProgressLoading(progressItems, step.key, totalSteps, globalIndex);
-            alignProgressWindow(allProgressKeys, progressItems, globalIndex);
-            if (pageLoaderText) { pageLoaderText.textContent = step.label + ' (' + (globalIndex + 1) + '/' + totalSteps + ')'; }
+            const batchYm = allBatchMonths[batchIndex];
+            if (columnIndex === -1)
+            {
+                const progressKey = batchYm + '::project_numbers';
+                markProgressLoading(progressItems, progressKey, totalSteps, completedSteps);
+                alignProgressWindow(allProgressKeys, progressItems, completedSteps);
+                if (pageLoaderText)
+                {
+                    pageLoaderText.textContent = 'Projectnummers ' + formatMonth(batchYm) + ' (' + (completedSteps + 1) + '/' + totalSteps + ')';
+                }
 
-            const body = new URLSearchParams({ target_month: ym, company: selectedCompany });
-            fetch(step.url, { method: 'POST', body: body })
+                const body = new URLSearchParams({ target_month: ym, batch_month: batchYm, company: selectedCompany });
+                fetch(projectNumbersUrl, { method: 'POST', body: body })
+                    .then(parseFetchResponse)
+                    .then(function (json)
+                    {
+                        if (!json.ok)
+                        {
+                            hideLoader();
+                            toast('Fout bij projectnummers ' + formatMonth(batchYm) + ': ' + (json.error || 'Onbekende fout'), true);
+                            return;
+                        }
+
+                        markProgressDone(progressItems, progressKey);
+                        completedSteps++;
+                        columnIndex = 0;
+                        runNextStep();
+                    })
+                    .catch(function (err)
+                    {
+                        hideLoader();
+                        toast('Netwerkfout bij projectnummers ' + formatMonth(batchYm) + ': ' + err.message, true);
+                    });
+                return;
+            }
+
+            const step = effectiveColumnSteps[columnIndex];
+            const progressKey = batchYm + '::' + step.key;
+            markProgressLoading(progressItems, progressKey, totalSteps, completedSteps);
+            alignProgressWindow(allProgressKeys, progressItems, completedSteps);
+            if (pageLoaderText)
+            {
+                pageLoaderText.textContent = step.label + ' ' + formatMonth(batchYm) + ' (' + (completedSteps + 1) + '/' + totalSteps + ')';
+            }
+
+            const body = new URLSearchParams({
+                target_month: ym,
+                batch_month: batchYm,
+                company: selectedCompany,
+                column_key: step.key,
+            });
+            fetch(columnBatchUrl, { method: 'POST', body: body })
                 .then(parseFetchResponse)
                 .then(function (json)
                 {
                     if (!json.ok)
                     {
                         hideLoader();
-                        toast('Fout bij ' + step.label.toLowerCase() + ': ' + (json.error || 'Onbekende fout'), true);
+                        toast('Fout bij ' + step.label.toLowerCase() + ' voor ' + formatMonth(batchYm) + ': ' + (json.error || 'Onbekende fout'), true);
                         return;
                     }
-                    markProgressDone(progressItems, step.key);
-                    runSubStep(idx + 1);
+
+                    markProgressDone(progressItems, progressKey);
+                    completedSteps++;
+                    if (json.warning)
+                    {
+                        toast('Waarschuwing ' + step.label + ' (' + formatMonth(batchYm) + '): ' + json.warning, true);
+                    }
+
+                    columnIndex++;
+                    if (columnIndex >= effectiveColumnSteps.length)
+                    {
+                        columnIndex = -1;
+                        batchIndex++;
+                    }
+                    runNextStep();
                 })
                 .catch(function (err)
                 {
                     hideLoader();
-                    toast('Netwerkfout bij ' + step.label.toLowerCase() + ': ' + err.message, true);
+                    toast('Netwerkfout bij ' + step.label.toLowerCase() + ' voor ' + formatMonth(batchYm) + ': ' + err.message, true);
                 });
         }
 
@@ -658,7 +706,7 @@
         }
 
         showLoader('Bezig met ophalen...');
-        runNextBatch();
+        runNextStep();
     }
 
     function refreshMonth (ym)
