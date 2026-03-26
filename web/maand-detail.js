@@ -75,7 +75,7 @@
         customer: 'Deb.',
         description: 'Proj. Beschr.',
         cost_center: 'Afd.',
-        expected_revenue: 'Opbr. Ttl Verw.',
+        expected_revenue: 'Opbrengst VC',
         costs_vc: 'Kosten VC',
         extra_work: 'Opbr. MW',
         margin_total: 'Marge Ttl',
@@ -1143,7 +1143,7 @@
                     {
                         showProjectSourceModal(
                             proj,
-                            'Verwachte opbrengst – project ' + proj.job_no,
+                            'Opbrengst VC – project ' + proj.job_no,
                             ['Taak', 'Regel', 'Type', 'Nr.', 'Omschrijving', 'Line type', 'Bedrag'],
                             function (breakdown)
                             {
@@ -1330,7 +1330,9 @@
             const row = [proj.job_no || ''];
             for (const colKey of visibleColKeys)
             {
-                row.push(getProjectCellDisplayText(proj, visibleWOs, computed, colKey));
+                let text = getProjectCellDisplayText(proj, visibleWOs, computed, colKey);
+
+                row.push(text.replace("€", ""));
             }
             lines.push(row.map(csvEscape).join(';'));
         }

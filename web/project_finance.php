@@ -618,12 +618,6 @@ class ProjectFinanceService
                 }
 
                 $lineType = trim((string) ($row[$lineTypeField] ?? ''));
-                $hasBillable = self::baselineLineTypeHasBillable($lineType);
-                $hasBudget = self::baselineLineTypeHasBudget($lineType);
-
-                if (!$hasBillable && !$hasBudget) {
-                    continue;
-                }
 
                 $revenueAmount = self::firstNumericValue($row, $revenueFields);
                 $costAmount = self::firstNumericValue($row, $costFields);
@@ -634,7 +628,7 @@ class ProjectFinanceService
                     $lineDescription = trim($lineDescription . ' / ' . $lineDescription2);
                 }
 
-                if ($hasBillable && $revenueAmount !== 0.0) {
+                if ($revenueAmount !== 0.0) {
                     $totalsByProject[$normalizedProject]['expected_revenue'] = finance_add_amount(
                         (float) ($totalsByProject[$normalizedProject]['expected_revenue'] ?? 0.0),
                         $revenueAmount
@@ -651,7 +645,7 @@ class ProjectFinanceService
                     ];
                 }
 
-                if ($hasBudget && $costAmount !== 0.0) {
+                if ($costAmount !== 0.0) {
                     $totalsByProject[$normalizedProject]['expected_costs'] = finance_add_amount(
                         (float) ($totalsByProject[$normalizedProject]['expected_costs'] ?? 0.0),
                         $costAmount
