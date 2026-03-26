@@ -1308,6 +1308,43 @@
         return '"' + text.replace(/"/g, '""') + '"';
     }
 
+    function formatCsvNumberNl (value, minFractionDigits, maxFractionDigits)
+    {
+        const num = typeof value === 'number' ? value : parseDecimal(value);
+        return num.toLocaleString('nl-NL', {
+            useGrouping: false,
+            minimumFractionDigits: minFractionDigits,
+            maximumFractionDigits: maxFractionDigits,
+        });
+    }
+
+    function getProjectCellExportValue (proj, visibleWOs, computed, colKey)
+    {
+        switch (colKey)
+        {
+            case 'workorders':
+                return visibleWOs.length;
+            case 'total_costs':
+                return formatCsvNumberNl(computed.costs, 2, 2);
+            case 'total_revenue':
+                return formatCsvNumberNl(computed.revenue, 2, 2);
+            case 'expected_revenue':
+                return formatCsvNumberNl(computed.expected, 2, 2);
+            case 'costs_vc':
+                return formatCsvNumberNl(computed.costsVc, 2, 2);
+            case 'extra_work':
+                return formatCsvNumberNl(computed.extraWork, 2, 2);
+            case 'margin_total':
+                return formatCsvNumberNl(computed.marginTotal, 2, 2);
+            case 'pct_ready':
+                return formatCsvNumberNl(computed.pctDisplay / 100, 0, 4);
+            case 'winst_ohw':
+                return formatCsvNumberNl(computed.winstOhw, 2, 2);
+            default:
+                return getProjectCellDisplayText(proj, visibleWOs, computed, colKey);
+        }
+    }
+
     function exportVisibleTableToCsv ()
     {
         const visibleProjects = getVisibleProjects();
@@ -1330,9 +1367,7 @@
             const row = [proj.job_no || ''];
             for (const colKey of visibleColKeys)
             {
-                let text = getProjectCellDisplayText(proj, visibleWOs, computed, colKey);
-
-                row.push(text.replace("€", ""));
+                row.push(getProjectCellExportValue(proj, visibleWOs, computed, colKey));
             }
             lines.push(row.map(csvEscape).join(';'));
         }
