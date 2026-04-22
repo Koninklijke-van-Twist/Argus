@@ -1916,8 +1916,9 @@ foreach ($savedMonths as $ym) {
     ];
 }
 
-// Build list of addable months: from earliest saved month -1 up to previous month
+// Build list of addable months: from earliest saved month -1 up to current month
 $now = new DateTimeImmutable('first day of this month');
+$currentMonth = $now->format('Y-m');
 $prevMonth = $now->modify('-1 month');
 $earliestSaved = null;
 if ($savedMonths !== []) {
@@ -1943,6 +1944,11 @@ while ($count < $limit) {
     }
 }
 
+// Add current month if not already saved
+if (!in_array($currentMonth, $savedMonths, true) && !in_array($currentMonth, $addableMonths, true)) {
+    array_unshift($addableMonths, $currentMonth);
+}
+
 // Load user column order preference
 $userSettings = load_user_settings_payload_m($currentUserEmail);
 $savedColumnOrder = is_array($userSettings['maanden_column_order'] ?? null) ? $userSettings['maanden_column_order'] : [];
@@ -1952,6 +1958,7 @@ $initialData = [
     'selected_company' => $selectedCompany,
     'month_summaries' => $monthSummaries,
     'addable_months' => $addableMonths,
+    'current_month' => $currentMonth,
     'saved_column_order' => $savedColumnOrder,
     'refresh_url' => 'maanden.php?action=refresh_month',
     'batch_url' => 'maanden.php?action=fetch_workorders_batch',
@@ -2356,6 +2363,11 @@ function format_month_nl(string $yearMonth): string
             border-radius: 8px;
             padding: 7px 10px;
             background: #fff;
+        }
+
+        .add-card select option[data-is-current-month="true"] {
+            background-color: #fed7aa;
+            color: #92400e;
         }
 
         .confirm-overlay {

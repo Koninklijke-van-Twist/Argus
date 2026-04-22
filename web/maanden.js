@@ -28,6 +28,7 @@
     const deleteUrl = typeof payload.delete_url === 'string' ? payload.delete_url : 'maanden.php?action=delete_month';
     const detailUrl = typeof payload.detail_url === 'string' ? payload.detail_url : 'maand-detail.php';
     const saveSettingsUrl = typeof payload.save_settings_url === 'string' ? payload.save_settings_url : 'maanden.php?action=save_user_settings';
+    const currentMonth = typeof payload.current_month === 'string' ? payload.current_month : '';
     const pageLoader = document.getElementById('pageLoader');
     const pageLoaderText = document.getElementById('pageLoaderText');
     const batchProgressList = document.getElementById('batchProgressList');
@@ -639,6 +640,15 @@
             const opt = document.createElement('option');
             opt.value = ym;
             opt.textContent = formatMonth(ym);
+            
+            // Check if this is the current month
+            if (ym === currentMonth)
+            {
+                opt.setAttribute('data-is-current-month', 'true');
+                opt.title = 'Het rapport van deze maand is mogelijk incompleet. Ververs de gegevens als de maand volledig verstreken is.';
+                opt.style.backgroundColor = '#fed7aa';
+            }
+            
             sel.appendChild(opt);
         }
         row.appendChild(sel);
