@@ -29,7 +29,7 @@
         { key: 'Total_Revenue', label: 'Opbrengst Werkorder' },
         { key: 'Actual_Total', label: 'Totaal werkorder' },
         { key: 'Cost_Center', label: 'Kostenplaats' },
-        { key: 'Status', label: 'Status' },
+        { key: 'Status', label: 'Status (nu)' },
         { key: 'Document_Status', label: 'Documentstatus' }
     ];
     const memoFields = [
@@ -163,7 +163,7 @@
     {
         const empty = document.createElement('div');
         empty.className = 'empty';
-        empty.textContent = 'Geen open werkorders gevonden.';
+        empty.textContent = 'Geen werkorders gevonden.';
         app.appendChild(empty);
         hidePageLoader();
         return;
@@ -1397,7 +1397,7 @@
 
         const title = document.createElement('span');
         title.className = 'status-filter-title';
-        title.textContent = 'Statusfilters:';
+        title.textContent = 'Statusfilters (huidige status):';
         statusFilterBar.appendChild(title);
 
         const orderedStatusKeys = Object.keys(statusInfoMap).sort(function (a, b)
