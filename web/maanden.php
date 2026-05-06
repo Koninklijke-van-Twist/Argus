@@ -22,7 +22,7 @@ $hour = $minute * 60;
 $day = $hour * 24;
 $week = $day * 7;
 $year = $day * 365;
-$revenueDetailTaskCode = '000-000-010';
+const REVENUE_DETAIL_TASK_CODE = '000-000-010';
 
 /**
  * Functies
@@ -941,7 +941,7 @@ function build_snapshot_from_column_wip(string $company, string $targetYm, array
                 $lineAmount = finance_to_float($sourceRow['Line_Amount'] ?? 0.0);
                 $revenueValue = -1 * $lineAmount;
                 $jobTaskNo = trim((string) ($sourceRow['Job_Task_No'] ?? ''));
-                if ($revenueValue !== 0.0 && $jobTaskNo === $revenueDetailTaskCode) {
+                if ($revenueValue !== 0.0 && $jobTaskNo === REVENUE_DETAIL_TASK_CODE) {
                     $projectPostenRevenueLinesByProject[$normProjectNo][] = [
                         'Posting_Date' => (string) ($sourceRow['Posting_Date'] ?? ''),
                         'Job_Task_No' => $jobTaskNo,
