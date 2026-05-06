@@ -1097,6 +1097,36 @@
                                         fmtCurrency(line.Total_Cost || line.Line_Amount || 0),
                                     ];
                                 });
+                            },
+                            function (breakdown)
+                            {
+                                const lines = Array.isArray(breakdown.total_costs_lines) ? breakdown.total_costs_lines : [];
+                                let verkoopTotal = 0;
+                                let gebruikTotal = 0;
+                                let hasVerkoop = false;
+                                let hasGebruik = false;
+
+                                for (const line of lines)
+                                {
+                                    const entryType = toTrimmedString(line && (line.Entry_Type || line.Type) || '').toLowerCase();
+                                    const amount = parseDecimal(line && (line.Total_Cost || line.Line_Amount) || 0);
+                                    if (entryType === 'verkoop')
+                                    {
+                                        verkoopTotal += amount;
+                                        hasVerkoop = true;
+                                    }
+                                    else if (entryType === 'gebruik')
+                                    {
+                                        gebruikTotal += amount;
+                                        hasGebruik = true;
+                                    }
+                                }
+
+                                const result = [];
+                                if (hasVerkoop) { result.push({ label: 'Verkoop', value: verkoopTotal }); }
+                                if (hasGebruik) { result.push({ label: 'Gebruik', value: gebruikTotal }); }
+                                if (hasVerkoop && hasGebruik) { result.push({ label: 'Resultaat', value: verkoopTotal + gebruikTotal, isResult: true }); }
+                                return result;
                             }
                         );
                     });
@@ -1123,6 +1153,36 @@
                                         fmtCurrency(line.Line_Amount || 0),
                                     ];
                                 });
+                            },
+                            function (breakdown)
+                            {
+                                const lines = Array.isArray(breakdown.total_revenue_lines) ? breakdown.total_revenue_lines : [];
+                                let verkoopTotal = 0;
+                                let gebruikTotal = 0;
+                                let hasVerkoop = false;
+                                let hasGebruik = false;
+
+                                for (const line of lines)
+                                {
+                                    const entryType = toTrimmedString(line && (line.Entry_Type || line.Type) || '').toLowerCase();
+                                    const amount = parseDecimal(line && line.Line_Amount || 0);
+                                    if (entryType === 'verkoop')
+                                    {
+                                        verkoopTotal += amount;
+                                        hasVerkoop = true;
+                                    }
+                                    else if (entryType === 'gebruik')
+                                    {
+                                        gebruikTotal += amount;
+                                        hasGebruik = true;
+                                    }
+                                }
+
+                                const result = [];
+                                if (hasVerkoop) { result.push({ label: 'Verkoop', value: verkoopTotal }); }
+                                if (hasGebruik) { result.push({ label: 'Gebruik', value: gebruikTotal }); }
+                                if (hasVerkoop && hasGebruik) { result.push({ label: 'Resultaat', value: verkoopTotal + gebruikTotal, isResult: true }); }
+                                return result;
                             }
                         );
                     });
@@ -1680,7 +1740,7 @@
         }
     }
 
-    function showSourceModal (title, headers, rows)
+    function showSourceModal (title, headers, rows, summaryRows)
     {
         if (!sourceOverlay || !sourceModalBody)
         {
@@ -1696,6 +1756,43 @@
 
         const safeHeaders = Array.isArray(headers) ? headers : [];
         const safeRows = Array.isArray(rows) ? rows : [];
+        const safeSummaryRows = Array.isArray(summaryRows) ? summaryRows : [];
+
+        if (safeSummaryRows.length > 0)
+        {
+            const summaryWrap = document.createElement('div');
+            summaryWrap.style.cssText = 'margin-bottom:10px;padding:10px 12px;background:#f8fafc;border:1px solid #e7edf5;border-radius:8px;';
+
+            for (const summaryRow of safeSummaryRows)
+            {
+                if (!summaryRow || typeof summaryRow !== 'object')
+                {
+                    continue;
+                }
+
+                const rowEl = document.createElement('div');
+                rowEl.style.cssText = 'display:flex;justify-content:space-between;gap:12px;line-height:1.5;';
+
+                const labelEl = document.createElement('span');
+                labelEl.textContent = String(summaryRow.label || '');
+
+                const valueEl = document.createElement('span');
+                valueEl.style.fontWeight = '700';
+                valueEl.textContent = fmtCurrency(summaryRow.value || 0);
+
+                if (summaryRow.isResult)
+                {
+                    rowEl.style.fontWeight = '700';
+                    rowEl.style.marginTop = '4px';
+                }
+
+                rowEl.appendChild(labelEl);
+                rowEl.appendChild(valueEl);
+                summaryWrap.appendChild(rowEl);
+            }
+
+            sourceModalBody.appendChild(summaryWrap);
+        }
 
         if (safeRows.length === 0)
         {
@@ -1742,10 +1839,12 @@
         sourceOverlay.style.display = 'flex';
     }
 
-    function showProjectSourceModal (proj, title, headers, buildRows)
+    function showProjectSourceModal (proj, title, headers, buildRows, buildSummaryRows)
     {
-        const rows = typeof buildRows === 'function' ? buildRows(proj.breakdown || getEmptyBreakdown()) : [];
-        showSourceModal(title, headers, rows);
+        const breakdown = proj.breakdown || getEmptyBreakdown();
+        const rows = typeof buildRows === 'function' ? buildRows(breakdown) : [];
+        const summaryRows = typeof buildSummaryRows === 'function' ? buildSummaryRows(breakdown) : [];
+        showSourceModal(title, headers, rows, summaryRows);
     }
 
     function closeSourceModal ()

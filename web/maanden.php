@@ -19,6 +19,9 @@ require_once __DIR__ . '/bc_fetch/registry.php';
 $second = 1;
 $minute = $second * 60;
 $hour = $minute * 60;
+$day = $hour * 24;
+$week = $day * 7;
+$year = $day * 365;
 
 /**
  * Functies
@@ -179,6 +182,34 @@ function data_start_month_for_target(string $targetYearMonth): string
         return $targetYearMonth;
     }
     return $target->modify('-35 months')->format('Y-m');
+}
+
+/**
+ * Bepaalt OData cache TTL op basis van maandleeftijd:
+ * - Huidige maand: 1 dag
+ * - Vorige maand: 1 week
+ * - Oudere maanden: 1 jaar
+ */
+function odata_ttl_for_month(string $yearMonth): int
+{
+    global $day, $week, $year;
+
+    $target = DateTimeImmutable::createFromFormat('!Y-m', $yearMonth);
+    if (!$target instanceof DateTimeImmutable) {
+        return $day;
+    }
+
+    $currentMonth = (new DateTimeImmutable('first day of this month'))->format('Y-m');
+    if ($yearMonth === $currentMonth) {
+        return $day;
+    }
+
+    $previousMonth = (new DateTimeImmutable('first day of last month'))->format('Y-m');
+    if ($yearMonth === $previousMonth) {
+        return $week;
+    }
+
+    return $year;
 }
 
 /**
@@ -611,7 +642,7 @@ function build_month_rows(
     ];
 }
 
-function fetch_month_data(string $company, string $yearMonth, array $auth, int $ttl): array
+function fetch_month_data(string $company, string $yearMonth, array $auth): array
 {
     global $baseUrl, $environment;
     @set_time_limit(0);
@@ -624,7 +655,7 @@ function fetch_month_data(string $company, string $yearMonth, array $auth, int $
 
     // Also fetch the target month itself (may already be in WIP if batch completed)
     if (!in_array($yearMonth, $wipDone, true)) {
-        $targetMonthWOs = fetch_workorders_for_batch_month($company, $yearMonth, $auth, $ttl);
+        $targetMonthWOs = fetch_workorders_for_batch_month($company, $yearMonth, $auth, odata_ttl_for_month($yearMonth));
         $wipWorkorders = array_merge($wipWorkorders, $targetMonthWOs);
     }
 
@@ -637,7 +668,7 @@ function fetch_month_data(string $company, string $yearMonth, array $auth, int $
     foreach ($allBatchMonths as $batchYm) {
         if (!is_array($projectPostenByMonth[$batchYm] ?? null)) {
             try {
-                $projectPostenByMonth[$batchYm] = fetch_projectposten_for_batch_month($company, $batchYm, $auth, $ttl);
+                $projectPostenByMonth[$batchYm] = fetch_projectposten_for_batch_month($company, $batchYm, $auth, odata_ttl_for_month($batchYm));
             } catch (Throwable $projectPostenLoadError) {
                 throw new RuntimeException('ProjectPosten-data kon niet worden opgehaald voor maand ' . $batchYm . '.');
             }
@@ -716,7 +747,7 @@ function fetch_month_data(string $company, string $yearMonth, array $auth, int $
 
     try {
         if ($projectNumbers !== []) {
-            $projectInvoiceData = $financeService->collectProjectInvoicesForProjects($projectNumbers, $ttl);
+            $projectInvoiceData = $financeService->collectProjectInvoicesForProjects($projectNumbers, odata_ttl_for_month($yearMonth));
         }
     } catch (Throwable $invoiceError) {
         throw new RuntimeException('Factuurdata kon niet worden opgehaald.');
@@ -744,7 +775,7 @@ function fetch_month_data(string $company, string $yearMonth, array $auth, int $
                 '$select' => 'No,Description,Sell_to_Customer_No,Sell_to_Customer_Name,Bill_to_Customer_No,Bill_to_Name,Person_Responsible,Project_Manager,LVS_Global_Dimension_1_Code,Status,Percent_Completed,Total_WIP_Cost_Amount,Total_WIP_Sales_Amount,Recog_Costs_Amount,Recog_Sales_Amount,Calc_Recog_Costs_Amount,Calc_Recog_Sales_Amount,Acc_WIP_Costs_Amount,Acc_WIP_Sales_Amount,LVS_No_Of_Job_Change_Orders,External_Document_No,Your_Reference',
                 '$filter' => $filter,
             ]);
-            $batchProjects = odata_get_all($projectUrl, $auth, $ttl);
+            $batchProjects = odata_get_all($projectUrl, $auth, odata_ttl_for_month($yearMonth));
         } catch (Throwable $e) {
             continue;
         }
@@ -763,7 +794,7 @@ function fetch_month_data(string $company, string $yearMonth, array $auth, int $
     $planningBreakdownByJob = [];
     if ($projectNumbers !== []) {
         try {
-            $projectForecast = $financeService->collectProjectForecastForProjects($projectNumbers, $ttl);
+            $projectForecast = $financeService->collectProjectForecastForProjects($projectNumbers, odata_ttl_for_month($yearMonth));
             $planningTotalsByJob = is_array($projectForecast['forecast_totals_by_job'] ?? null)
                 ? $projectForecast['forecast_totals_by_job']
                 : [];
@@ -1110,7 +1141,7 @@ if (($_GET['action'] ?? '') === 'fetch_workorders_batch') {
     }
 
     try {
-        $ttl = $hour;
+        $ttl = odata_ttl_for_month($batchYm);
         $batchWorkorders = fetch_workorders_for_batch_month($company, $batchYm, $auth, $ttl);
         $batchProjectPostenRows = fetch_projectposten_for_batch_month($company, $batchYm, $auth, $ttl);
 
@@ -1173,7 +1204,7 @@ if (($_GET['action'] ?? '') === 'fetch_project_numbers_batch') {
     }
 
     try {
-        $ttl = $hour;
+        $ttl = odata_ttl_for_month($batchYm);
         $projectNumbers = bc_fetch_project_numbers_for_month($company, $batchYm, $auth, $ttl);
         $batchProjectNumbers = array_values(array_unique(array_filter($projectNumbers, static function ($value): bool {
             return trim((string) $value) !== '';
@@ -1227,7 +1258,7 @@ if (($_GET['action'] ?? '') === 'fetch_column_batch') {
     }
 
     try {
-        $ttl = $hour;
+        $ttl = odata_ttl_for_month($batchYm);
         $wip = batch_wip_load($company, $targetYm);
         $projectNumbersByMonth = is_array($wip['project_numbers_by_month'] ?? null) ? $wip['project_numbers_by_month'] : [];
         $projectNumbers = is_array($projectNumbersByMonth[$batchYm] ?? null) ? $projectNumbersByMonth[$batchYm] : [];
@@ -1377,7 +1408,7 @@ if (($_GET['action'] ?? '') === 'fetch_sub_finance') {
     }
 
     try {
-        $ttl = $hour;
+        $ttl = odata_ttl_for_month($targetYm);
         $wip = batch_wip_load($company, $targetYm);
         $projectNumbers = is_array($wip['project_numbers'] ?? null) ? $wip['project_numbers'] : [];
         $existingProjectFinance = is_array($wip['project_finance'] ?? null) ? $wip['project_finance'] : [];
@@ -1442,7 +1473,7 @@ if (($_GET['action'] ?? '') === 'fetch_sub_projects') {
     }
 
     try {
-        $ttl = $hour;
+        $ttl = odata_ttl_for_month($targetYm);
         $wip = batch_wip_load($company, $targetYm);
         $projectNumbers = is_array($wip['project_numbers'] ?? null) ? $wip['project_numbers'] : [];
         $projectDetails = [];
@@ -1551,7 +1582,7 @@ if (($_GET['action'] ?? '') === 'fetch_sub_planning_project') {
     }
 
     try {
-        $ttl = $hour;
+        $ttl = odata_ttl_for_month($targetYm);
         $wip = batch_wip_load($company, $targetYm);
         $planningTotalsByJob = is_array($wip['planning_totals_by_job'] ?? null) ? $wip['planning_totals_by_job'] : [];
         $planningBreakdownByJob = is_array($wip['planning_breakdown_by_job'] ?? null) ? $wip['planning_breakdown_by_job'] : [];
@@ -1637,7 +1668,7 @@ if (($_GET['action'] ?? '') === 'fetch_sub_planning_batch') {
     }
 
     try {
-        $ttl = $hour;
+        $ttl = odata_ttl_for_month($targetYm);
         $wip = batch_wip_load($company, $targetYm);
         $planningTotalsByJob = is_array($wip['planning_totals_by_job'] ?? null) ? $wip['planning_totals_by_job'] : [];
         $planningBreakdownByJob = is_array($wip['planning_breakdown_by_job'] ?? null) ? $wip['planning_breakdown_by_job'] : [];
@@ -1718,7 +1749,7 @@ if (($_GET['action'] ?? '') === 'fetch_sub_planning') {
     }
 
     try {
-        $ttl = $hour;
+        $ttl = odata_ttl_for_month($targetYm);
         $wip = batch_wip_load($company, $targetYm);
         $projectNumbers = wip_project_numbers($wip);
         $planningTotalsByJob = [];
@@ -1846,8 +1877,7 @@ if (($_GET['action'] ?? '') === 'refresh_month') {
     }
 
     try {
-        $ttl = $hour;
-        $data = fetch_month_data($company, $ym, $auth, $ttl);
+        $data = fetch_month_data($company, $ym, $auth);
         maand_save($company, $ym, $data);
         echo json_encode(['ok' => true, 'data' => $data], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     } catch (Throwable $e) {
