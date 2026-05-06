@@ -59,8 +59,10 @@ function bc_fetch_column_projectposten(string $company, string $yearMonth, array
         }
 
         $cost = bc_fetch_float_value($row, 'Total_Cost');
+        $entryType = strtolower(trim((string) ($row['Entry_Type'] ?? $row['Type'] ?? '')));
+        $isGebruikEntryType = $entryType === 'gebruik';
         // BC levert omzet negatief; voor UI wordt dit omgedraaid naar positief.
-        $revenue = -1 * bc_fetch_float_value($row, 'Line_Amount');
+        $revenue = $isGebruikEntryType ? 0.0 : (-1 * bc_fetch_float_value($row, 'Line_Amount'));
 
         $projectDictionary[$normProjectNo]['costs'] = bc_fetch_add((float) ($projectDictionary[$normProjectNo]['costs'] ?? 0.0), $cost);
         $projectDictionary[$normProjectNo]['revenue'] = bc_fetch_add((float) ($projectDictionary[$normProjectNo]['revenue'] ?? 0.0), $revenue);

@@ -125,7 +125,7 @@ class ProjectFinanceService
                     'fields' => [
                         'Line_Amount',
                     ],
-                    'filter' => '',
+                    'filter' => "Entry_Type ne 'Gebruik'",
                     'row_mode' => self::ROW_MODE_SUM_INVERT,
                 ],
             ],
@@ -147,7 +147,7 @@ class ProjectFinanceService
                     'fields' => [
                         'Line_Amount',
                     ],
-                    'filter' => '',
+                    'filter' => "Entry_Type ne 'Gebruik'",
                     'row_mode' => self::ROW_MODE_SUM_INVERT,
                 ],
             ],
@@ -470,6 +470,14 @@ class ProjectFinanceService
             );
         }
 
+        $revenueRows = array_values(array_filter($rows, static function ($row): bool {
+            if (!is_array($row)) {
+                return false;
+            }
+            $entryType = strtolower(trim((string) ($row['Entry_Type'] ?? $row['Type'] ?? '')));
+            return $entryType !== 'gebruik';
+        }));
+
         $projectTotalsByJob = self::combineTotalsByKey(
             self::aggregateAmountByKey(
                 $rows,
@@ -478,7 +486,7 @@ class ProjectFinanceService
                 (string) ($projectCostSource['row_mode'] ?? self::ROW_MODE_FIRST_NUMERIC)
             ),
             self::aggregateAmountByKey(
-                $rows,
+                $revenueRows,
                 $projectKeyField,
                 is_array($projectRevenueSource['fields'] ?? null) ? $projectRevenueSource['fields'] : [],
                 (string) ($projectRevenueSource['row_mode'] ?? self::ROW_MODE_FIRST_NUMERIC)
@@ -493,7 +501,7 @@ class ProjectFinanceService
                 (string) ($workorderCostSource['row_mode'] ?? self::ROW_MODE_FIRST_NUMERIC)
             ),
             self::aggregateAmountByKey(
-                $rows,
+                $revenueRows,
                 $workorderKeyField,
                 is_array($workorderRevenueSource['fields'] ?? null) ? $workorderRevenueSource['fields'] : [],
                 (string) ($workorderRevenueSource['row_mode'] ?? self::ROW_MODE_FIRST_NUMERIC)

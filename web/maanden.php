@@ -316,7 +316,11 @@ function aggregate_projectposten_rows(array $rows): array
         $normWorkorder = strtolower($jobTaskNo);
 
         $costAmount = finance_extract_row_amount($row, ['Total_Cost'], finance_normalize_row_mode('sum_raw'));
-        $revenueAmount = finance_extract_row_amount($row, ['Line_Amount'], finance_normalize_row_mode('sum_invert'));
+        $entryType = strtolower(trim((string) ($row['Entry_Type'] ?? $row['Type'] ?? '')));
+        $isGebruikEntryType = $entryType === 'gebruik';
+        $revenueAmount = $isGebruikEntryType
+            ? 0.0
+            : finance_extract_row_amount($row, ['Line_Amount'], finance_normalize_row_mode('sum_invert'));
 
         if ($jobNo !== '') {
             if (!isset($projectTotalsByJob[$normJob])) {
@@ -942,8 +946,10 @@ function build_snapshot_from_column_wip(string $company, string $targetYm, array
                 $lineAmount = finance_to_float($sourceRow['Line_Amount'] ?? 0.0);
                 $revenueValue = -1 * $lineAmount;
                 $jobTaskNo = trim((string) ($sourceRow['Job_Task_No'] ?? ''));
+                $entryType = strtolower(trim((string) ($sourceRow['Entry_Type'] ?? $sourceRow['Type'] ?? '')));
+                $isGebruikEntryType = $entryType === 'gebruik';
                 $matchesRevenueTaskFilter = !REVENUE_DETAIL_TASK_FILTER_ENABLED || $jobTaskNo === REVENUE_DETAIL_TASK_CODE;
-                if ($revenueValue !== 0.0 && $matchesRevenueTaskFilter) {
+                if ($revenueValue !== 0.0 && !$isGebruikEntryType && $matchesRevenueTaskFilter) {
                     $projectPostenRevenueLinesByProject[$normProjectNo][] = [
                         'Posting_Date' => (string) ($sourceRow['Posting_Date'] ?? ''),
                         'Job_Task_No' => $jobTaskNo,
