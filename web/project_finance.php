@@ -47,24 +47,24 @@ class ProjectFinanceService
     public function __construct(string $company, string $environment = '')
     {
         global $baseUrl, $auth_list;
-        
+
         $this->company = trim($company);
         $this->baseUrl = trim((string) $baseUrl);
-        
+
         if ($this->baseUrl === '') {
             throw new RuntimeException('baseUrl ontbreekt in auth.php.');
         }
-        
+
         // Bepaal environment
         $environmentToUse = trim($environment);
         if ($environmentToUse === '') {
             $environmentToUse = auth_get_primary_environment();
         }
-        
+
         if ($environmentToUse === '') {
             throw new RuntimeException('Geen environment beschikbaar.');
         }
-        
+
         $this->environment = $environmentToUse;
         $this->auth = auth_get_auth_for_environment($this->environment);
     }
@@ -142,7 +142,7 @@ class ProjectFinanceService
                     'fields' => [
                         'Line_Amount',
                     ],
-                    'filter' => "Entry_Type eq 'Verkoop'",
+                    'filter' => "Entry_Type ne 'Gebruik'",
                     'row_mode' => self::ROW_MODE_SUM_INVERT,
                 ],
             ],
@@ -154,7 +154,7 @@ class ProjectFinanceService
                     'fields' => [
                         'Total_Cost',
                     ],
-                    'filter' => '',
+                    'filter' => "Entry_Type eq 'Gebruik'",
                     'row_mode' => self::ROW_MODE_SUM_RAW,
                 ],
                 'revenue_source' => [
