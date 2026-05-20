@@ -10,6 +10,7 @@ require __DIR__ . '/auth.php';
 require_once __DIR__ . '/logincheck.php';
 require_once __DIR__ . '/odata.php';
 require_once __DIR__ . '/finance_calculations.php';
+require_once __DIR__ . '/auth_helper.php';
 
 /**
  * Functies
@@ -183,11 +184,22 @@ function project_total_from_workorders_d(array $workorders, string $field): floa
  */
 $currentUserEmail = current_user_email_d();
 
-$companies = [
-    'Koninklijke van Twist',
-    'Hunter van Twist',
-    'KVT Gas',
-];
+// Laden van alle bedrijven uit alle actieve environments
+try {
+    $discoveryResult = auth_discover_companies_across_active_environments(300);
+    $companies = is_array($discoveryResult['companies'] ?? null) ? $discoveryResult['companies'] : [];
+} catch (Throwable $e) {
+    $companies = [];
+}
+
+// Fallback naar hardcoded bedrijven als discovery leeg was
+if ($companies === []) {
+    $companies = [
+        'Koninklijke van Twist',
+        'Hunter van Twist',
+        'KVT Gas',
+    ];
+}
 
 $selectedCompany = $_GET['company'] ?? $companies[0];
 if (!in_array($selectedCompany, $companies, true)) {
@@ -361,6 +373,7 @@ $defaultColumns = [
     'winst_ohw',
     'notes',
     'project_manager',
+    'reason_code',
     'invoices',
 ];
 
@@ -1342,7 +1355,7 @@ $initialData = [
     <script>
         window.maandDetailData = <?= json_encode($initialData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
     </script>
-    <script src="maand-detail.js"></script>
+    <script src="maand-detail.js?v=<?= urlencode((string) @filemtime(__DIR__ . '/maand-detail.js')) ?>"></script>
 </body>
 
 </html>

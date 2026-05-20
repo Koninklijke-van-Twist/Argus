@@ -4,6 +4,7 @@
  * Includes/requires
  */
 require_once __DIR__ . '/helpers.php';
+require_once __DIR__ . '/../auth_helper.php';
 
 /**
  * Functies
@@ -24,8 +25,9 @@ function bc_fetch_project_numbers_for_month(string $company, string $yearMonth, 
 
     $seen = [];
     $result = [];
+    $auth = auth_get_auth_for_environment(auth_get_environment_for_company($company, 300));
 
-    $projectPostenUrl = company_entity_url_with_query($GLOBALS['baseUrl'], $GLOBALS['environment'], $company, 'ProjectPosten', [
+    $projectPostenUrl = company_entity_url_with_query($GLOBALS['baseUrl'], auth_get_environment_for_company($company, 300), $company, 'ProjectPosten', [
         '$select' => 'Job_No',
         '$filter' => 'Posting_Date ge ' . $fromStr . ' and Posting_Date lt ' . $toStr,
     ]);
@@ -44,7 +46,16 @@ function bc_fetch_project_numbers_for_month(string $company, string $yearMonth, 
         $result[] = $projectNo;
     }
 
-    $workorderUrl = company_entity_url_with_query($GLOBALS['baseUrl'], $GLOBALS['environment'], $company, 'Werkorders', [
+    return $result;
+}
+
+function bc_fetch_project_numbers_from_werkorders(string $company, string $fromStr, string $toStr, array $auth, int $ttl): array
+{
+    $seen = [];
+    $result = [];
+    $auth = auth_get_auth_for_environment(auth_get_environment_for_company($company, 300));
+
+    $workorderUrl = company_entity_url_with_query($GLOBALS['baseUrl'], auth_get_environment_for_company($company, 300), $company, 'Werkorders', [
         '$select' => 'Job_No',
         '$filter' => 'Start_Date ge ' . $fromStr . ' and Start_Date lt ' . $toStr,
     ]);

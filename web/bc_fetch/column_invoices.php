@@ -25,7 +25,9 @@ function bc_fetch_column_invoices(string $company, string $yearMonth, array $pro
     }
 
     try {
-        $financeService = new ProjectFinanceService($company);
+        require_once __DIR__ . '/../auth_helper.php';
+        $environment = auth_get_environment_for_company($company, 300);
+        $financeService = new ProjectFinanceService($company, $environment);
         $invoiceData = $financeService->collectProjectInvoicesForProjects($projectNumbers, $ttl);
     } catch (Throwable $e) {
         return [

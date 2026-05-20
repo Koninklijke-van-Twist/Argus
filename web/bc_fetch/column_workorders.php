@@ -4,6 +4,7 @@
  * Includes/requires
  */
 require_once __DIR__ . '/helpers.php';
+require_once __DIR__ . '/../auth_helper.php';
 
 /**
  * Functies
@@ -13,6 +14,7 @@ require_once __DIR__ . '/helpers.php';
  */
 function bc_fetch_column_workorders(string $company, string $yearMonth, array $projectNumbers, array $auth, int $ttl): array
 {
+    $auth = auth_get_auth_for_environment(auth_get_environment_for_company($company, 300));
     $from = DateTimeImmutable::createFromFormat('!Y-m', $yearMonth);
     if (!$from instanceof DateTimeImmutable) {
         return [
@@ -28,7 +30,7 @@ function bc_fetch_column_workorders(string $company, string $yearMonth, array $p
 
     $dictionary = bc_fetch_seed_project_dictionary($projectNumbers);
 
-    $url = company_entity_url_with_query($GLOBALS['baseUrl'], $GLOBALS['environment'], $company, 'Werkorders', [
+    $url = company_entity_url_with_query($GLOBALS['baseUrl'], auth_get_environment_for_company($company, 300), $company, 'Werkorders', [
         '$select' => 'No,Task_Code,Task_Description,Status,KVT_Document_Status,Job_No,Job_Task_No,Contract_No,Start_Date,End_Date,Bill_to_Customer_No,Bill_to_Name,Sell_to_Customer_No,Sell_to_Name,Job_Dimension_1_Value,Memo,Memo_Internal_Use_Only,Memo_Invoice,KVT_Memo_Invoice_Details,KVT_Remarks_Invoicing,LVS_Show_on_Planboard,LVS_Fixed_Planned',
         '$filter' => 'Start_Date ge ' . $fromStr . ' and Start_Date lt ' . $toStr,
     ]);

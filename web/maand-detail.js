@@ -83,6 +83,7 @@
         winst_ohw: 'Winst OHW',
         notes: 'Notities',
         project_manager: 'Projectmanager',
+        reason_code: 'Redencode',
         invoices: 'Facturen',
     };
 
@@ -176,6 +177,7 @@
                 customer_id: toTrimmedString(projDetail.Bill_to_Customer_No || projSummary.Customer_Id || row.Customer_Id || ''),
                 customer_name: toTrimmedString(projDetail.Bill_to_Name || projSummary.Customer_Name || row.Customer_Name || ''),
                 project_manager: toTrimmedString(projDetail.Project_Manager || projSummary.Project_Manager || projDetail.Person_Responsible || ''),
+                reason_code: toTrimmedString(projDetail.KVT_Reason_Code || ''),
                 cost_center: toTrimmedString(projDetail.LVS_Global_Dimension_1_Code || projSummary.Cost_Center || row.Cost_Center || ''),
                 project_total_costs: projectTotalCosts,
                 project_total_revenue: projectTotalRevenue,
@@ -672,6 +674,7 @@
                     case 'costs_vc': return getProjectComputedValues(p).costsVc;
                     case 'margin_total': return getProjectComputedValues(p).marginTotal;
                     case 'project_manager': return p.project_manager || '';
+                    case 'reason_code': return p.reason_code || '';
                     case 'cost_center': return p.cost_center || '';
                     case 'pct_ready': return Math.max(0, parseDecimal(p.pct_completed));
                     default: return p.job_no || '';
@@ -797,10 +800,56 @@
                 return 'Notities';
             case 'project_manager':
                 return proj.project_manager || '';
+            case 'reason_code':
+                return proj.reason_code || '';
             case 'invoices':
                 return formatInvoicePreviewText(proj.invoice_ids || []);
             default:
                 return '';
+        }
+    }
+
+    function getProjectColumnDebugConfig (proj, visibleWOs, colKey)
+    {
+        const projectNo = toTrimmedString(proj && proj.job_no ? proj.job_no : '');
+        const baseFilter = projectNo !== '' ? ('Job_No=' + projectNo) : '';
+
+        switch (colKey)
+        {
+            case 'workorders':
+                return { type: 'computed-field', formula: 'Aantal zichtbare werkorders na filters' };
+            case 'total_costs':
+                return { type: 'bc-field', name: 'Total_Cost', source: 'ProjectPosten', filters: baseFilter };
+            case 'total_revenue':
+                return { type: 'bc-field', name: 'Line_Amount', source: 'ProjectPosten', filters: baseFilter + ',Entry_Type!=Gebruik' };
+            case 'customer':
+                return { type: 'bc-field', name: 'Bill_to_Customer_No,Bill_to_Name', source: 'Projecten,Werkorders', filters: baseFilter.replace('Job_No=', 'No=') + ',' + baseFilter };
+            case 'description':
+                return { type: 'bc-field', name: 'Description,Task_Description', source: 'Projecten,Werkorders', filters: baseFilter.replace('Job_No=', 'No=') + ',' + baseFilter };
+            case 'cost_center':
+                return { type: 'bc-field', name: 'LVS_Global_Dimension_1_Code,Job_Dimension_1_Value', source: 'Projecten,Werkorders', filters: baseFilter.replace('Job_No=', 'No=') + ',' + baseFilter };
+            case 'expected_revenue':
+                return { type: 'bc-field', name: 'Line_Amount', source: 'JobBaselineLines', filters: baseFilter };
+            case 'costs_vc':
+                return { type: 'bc-field', name: 'Total_Cost', source: 'JobBaselineLines', filters: baseFilter };
+            case 'extra_work':
+                return { type: 'computed-field', formula: 'Extra_Work is afgeleid uit planning/Projecten en kan meerdere BC velden combineren' };
+            case 'margin_total':
+                return { type: 'computed-field', formula: 'Sum(JobBaselineLines.Line_Amount) - Sum(JobBaselineLines.Total_Cost)' };
+            case 'pct_ready':
+                return { type: 'bc-field', name: 'Percent_Completed', source: 'Projecten', filters: baseFilter.replace('Job_No=', 'No=') };
+            case 'winst_ohw':
+                return { type: 'computed-field', formula: '(Sum(JobBaselineLines.Line_Amount) - Sum(JobBaselineLines.Total_Cost)) * (Projecten.Percent_Completed / 100)' };
+            case 'notes':
+                return { type: 'bc-field', name: 'Memo,Memo_Internal_Use_Only,Memo_Invoice,KVT_Memo_Invoice_Details,KVT_Remarks_Invoicing', source: 'Werkorders', filters: baseFilter };
+            case 'project_manager':
+                return { type: 'bc-field', name: 'Project_Manager,Person_Responsible', source: 'Projecten', filters: baseFilter.replace('Job_No=', 'No=') };
+            case 'reason_code':
+                return { type: 'bc-field', name: 'KVT_Reason_Code', source: 'Projecten', filters: baseFilter.replace('Job_No=', 'No=') };
+            case 'invoices':
+                return { type: 'bc-field', name: 'Document_No', source: 'SalesInvoiceLines,SalesLines', filters: baseFilter };
+            default:
+                return null;
         }
     }
 
@@ -959,7 +1008,7 @@
             th.textContent = lbl;
 
             // Sortable columns
-            if (['description', 'customer', 'total_costs', 'total_revenue', 'costs_vc', 'margin_total', 'project_manager', 'cost_center', 'pct_ready'].includes(colKey))
+            if (['description', 'customer', 'total_costs', 'total_revenue', 'costs_vc', 'margin_total', 'project_manager', 'reason_code', 'cost_center', 'pct_ready'].includes(colKey))
             {
                 th.className = 'sortable';
                 th.dataset.sortKey = colKey;
@@ -1307,6 +1356,9 @@
                     }
                 case 'project_manager':
                     td.textContent = proj.project_manager || '';
+                    break;
+                case 'reason_code':
+                    td.textContent = proj.reason_code || '';
                     break;
                 case 'invoices':
                     {
@@ -2210,7 +2262,8 @@
     }, { passive: true });
 
     // Initial render
-    if (appEl && workorderRows.length > 0)
+    const hasRenderableProjects = Object.keys(projectMap).length > 0;
+    if (appEl && (workorderRows.length > 0 || hasRenderableProjects))
     {
         renderStatusFilterBar();
         renderDepartmentFilterBar();
@@ -2221,7 +2274,7 @@
     {
         const empty = document.createElement('div');
         empty.className = 'empty';
-        empty.textContent = monthData ? 'Geen werkorders gevonden voor deze maand.' : 'Geen maanddata geladen.';
+        empty.textContent = monthData ? 'Geen projecten of werkorders gevonden voor deze maand.' : 'Geen maanddata geladen.';
         appEl.appendChild(empty);
         if (summaryBar) { summaryBar.style.display = 'none'; }
     }
