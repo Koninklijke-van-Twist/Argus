@@ -114,8 +114,10 @@ function odata_get_json(string $url, array $auth): array
 function build_cache_key(string $url, array $auth): string
 {
     require __DIR__ . "/auth.php";
+    require_once __DIR__ . "/auth_helper.php";
     $user = (string) ($auth['user'] ?? '');
-    return $url . '|' . $user . '|' . $environment;
+    $envFragment = auth_get_environment_key_fragment();
+    return $url . '|' . $user . '|' . $envFragment;
 }
 
 function cache_base_dir(): string

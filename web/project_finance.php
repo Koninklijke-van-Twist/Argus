@@ -41,15 +41,32 @@ class ProjectFinanceService
     private array $auth;
 
     /**
-     * Initialiseert de service voor een specifiek bedrijf op basis van auth.php context.
+     * Initialiseert de service voor een specifiek bedrijf en environment.
+     * Als environment leeg is, gebruikt het de primaire environment.
      */
-    public function __construct(string $company)
+    public function __construct(string $company, string $environment = '')
     {
-        $context = self::getOdataContext();
+        global $baseUrl, $auth_list;
+        
         $this->company = trim($company);
-        $this->baseUrl = (string) $context['base_url'];
-        $this->environment = (string) $context['environment'];
-        $this->auth = is_array($context['auth']) ? $context['auth'] : [];
+        $this->baseUrl = trim((string) $baseUrl);
+        
+        if ($this->baseUrl === '') {
+            throw new RuntimeException('baseUrl ontbreekt in auth.php.');
+        }
+        
+        // Bepaal environment
+        $environmentToUse = trim($environment);
+        if ($environmentToUse === '') {
+            $environmentToUse = auth_get_primary_environment();
+        }
+        
+        if ($environmentToUse === '') {
+            throw new RuntimeException('Geen environment beschikbaar.');
+        }
+        
+        $this->environment = $environmentToUse;
+        $this->auth = auth_get_auth_for_environment($this->environment);
     }
 
     /**
@@ -116,7 +133,7 @@ class ProjectFinanceService
                     'fields' => [
                         'Total_Cost',
                     ],
-                    'filter' => '',
+                    'filter' => "Entry_Type eq 'Gebruik'",
                     'row_mode' => self::ROW_MODE_SUM_RAW,
                 ],
                 'revenue_source' => [
@@ -125,7 +142,7 @@ class ProjectFinanceService
                     'fields' => [
                         'Line_Amount',
                     ],
-                    'filter' => "Entry_Type ne 'Gebruik'",
+                    'filter' => "Entry_Type eq 'Verkoop'",
                     'row_mode' => self::ROW_MODE_SUM_INVERT,
                 ],
             ],
@@ -862,21 +879,6 @@ class ProjectFinanceService
     /**
      * Leest de OData context uit globale configuratie die via auth.php gezet wordt.
      */
-    private static function getOdataContext(): array
-    {
-        global $baseUrl, $environment, $auth;
-
-        if (!isset($baseUrl, $environment, $auth) || !is_array($auth)) {
-            throw new RuntimeException('OData context ontbreekt. Zorg dat auth.php geladen is.');
-        }
-
-        return [
-            'base_url' => (string) $baseUrl,
-            'environment' => (string) $environment,
-            'auth' => $auth,
-        ];
-    }
-
     /**
      * Bouwt een OData entity URL met query parameters voor de geconfigureerde company.
      */

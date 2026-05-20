@@ -2210,7 +2210,8 @@
     }, { passive: true });
 
     // Initial render
-    if (appEl && workorderRows.length > 0)
+    const hasRenderableProjects = Object.keys(projectMap).length > 0;
+    if (appEl && (workorderRows.length > 0 || hasRenderableProjects))
     {
         renderStatusFilterBar();
         renderDepartmentFilterBar();
@@ -2221,7 +2222,7 @@
     {
         const empty = document.createElement('div');
         empty.className = 'empty';
-        empty.textContent = monthData ? 'Geen werkorders gevonden voor deze maand.' : 'Geen maanddata geladen.';
+        empty.textContent = monthData ? 'Geen projecten of werkorders gevonden voor deze maand.' : 'Geen maanddata geladen.';
         appEl.appendChild(empty);
         if (summaryBar) { summaryBar.style.display = 'none'; }
     }

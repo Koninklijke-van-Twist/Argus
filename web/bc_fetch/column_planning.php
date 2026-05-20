@@ -38,7 +38,9 @@ function bc_fetch_column_planning_project(string $company, string $projectNumber
         return bc_fetch_empty_planning_project();
     }
 
-    $financeService = new ProjectFinanceService($company);
+    require_once __DIR__ . '/../auth_helper.php';
+    $environment = auth_get_environment_for_company($company, 300);
+    $financeService = new ProjectFinanceService($company, $environment);
     $forecast = $financeService->collectProjectForecastForProjects([$projectNo], $ttl);
 
     $normalizedProjectNo = bc_fetch_normalize_project_no($projectNo);

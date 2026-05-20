@@ -122,6 +122,417 @@ function company_entity_url_with_query(string $baseUrl, string $environment, str
     return $url;
 }
 
+function project_modal_normalize_project_no(string $projectNo): string
+{
+    return strtolower(trim($projectNo));
+}
+
+function project_modal_is_formatted_task_no(string $taskNo): bool
+{
+    return preg_match('/^\d{3}-\d{3}-\d{3}$/', trim($taskNo)) === 1;
+}
+
+function project_modal_task_no_to_numeric(string $taskNo): ?int
+{
+    $value = trim($taskNo);
+    if (!project_modal_is_formatted_task_no($value)) {
+        return null;
+    }
+
+    $parts = explode('-', $value);
+    return ((int) $parts[0] * 1000000) + ((int) $parts[1] * 1000) + (int) $parts[2];
+}
+
+function project_modal_parse_totaling_range(string $totaling): ?array
+{
+    $text = trim($totaling);
+    if ($text === '') {
+        return null;
+    }
+
+    if (!preg_match('/^(\d{3}-\d{3}-\d{3})\.\.(\d{3}-\d{3}-\d{3})$/', $text, $matches)) {
+        return null;
+    }
+
+    $fromNumeric = project_modal_task_no_to_numeric($matches[1]);
+    $toNumeric = project_modal_task_no_to_numeric($matches[2]);
+    if ($fromNumeric === null || $toNumeric === null || $fromNumeric > $toNumeric) {
+        return null;
+    }
+
+    return [
+        'from' => $matches[1],
+        'to' => $matches[2],
+        'from_numeric' => $fromNumeric,
+        'to_numeric' => $toNumeric,
+    ];
+}
+
+function project_modal_task_no_in_range(string $taskNo, array $range): bool
+{
+    $taskNumeric = project_modal_task_no_to_numeric($taskNo);
+    if ($taskNumeric === null) {
+        return false;
+    }
+
+    $fromNumeric = (int) ($range['from_numeric'] ?? 0);
+    $toNumeric = (int) ($range['to_numeric'] ?? -1);
+    return $taskNumeric >= $fromNumeric && $taskNumeric <= $toNumeric;
+}
+
+function project_modal_is_total_task_type(string $taskType): bool
+{
+    return str_contains(strtolower(trim($taskType)), 'totaal');
+}
+
+function project_modal_collect_for_projects(string $company, string $yearMonth, array $projectNumbers, array $auth, int $ttl): array
+{
+    global $baseUrl;
+    
+    $environmentForCompany = auth_get_environment_for_company($company, 300);
+    $auth = auth_get_auth_for_environment($environmentForCompany);
+
+    $normalizedProjects = [];
+    $seenProjects = [];
+    foreach ($projectNumbers as $projectNo) {
+        $projectNoText = trim((string) $projectNo);
+        if ($projectNoText === '') {
+            continue;
+        }
+
+        $normalized = project_modal_normalize_project_no($projectNoText);
+        if ($normalized === '' || isset($seenProjects[$normalized])) {
+            continue;
+        }
+
+        $seenProjects[$normalized] = true;
+        $normalizedProjects[] = $projectNoText;
+    }
+
+    if ($normalizedProjects === []) {
+        return [];
+    }
+
+    $byProject = [];
+    foreach ($normalizedProjects as $projectNo) {
+        $normProject = project_modal_normalize_project_no($projectNo);
+        $byProject[$normProject] = [
+            'project_no' => $projectNo,
+            'contract_value' => 0.0,
+            'installments_received' => 0.0,
+            'budget_cost_total' => 0.0,
+            'task_rows' => [],
+            'task_rows_total' => [],
+        ];
+    }
+
+    $chunks = array_chunk($normalizedProjects, 20);
+
+    foreach ($chunks as $chunk) {
+        $projectFilters = array_map(static function ($projectNo): string {
+            return "Job_No eq '" . str_replace("'", "''", trim((string) $projectNo)) . "'";
+        }, $chunk);
+        $projectFilter = implode(' or ', $projectFilters);
+
+        if ($projectFilter === '') {
+            continue;
+        }
+
+        try {
+            $contractUrl = company_entity_url_with_query($baseUrl, $environmentForCompany, $company, 'FactureerbareProjectPlanningsRegels', [
+                '$select' => 'Job_No,Line_Type,Line_Amount_LCY',
+                '$filter' => $projectFilter,
+            ]);
+            $contractRows = odata_get_all($contractUrl, $auth, $ttl);
+        } catch (Throwable $ignoredContractLoadError) {
+            $contractRows = [];
+        }
+
+        foreach ($contractRows as $contractRow) {
+            if (!is_array($contractRow)) {
+                continue;
+            }
+
+            $normProject = project_modal_normalize_project_no((string) ($contractRow['Job_No'] ?? ''));
+            if ($normProject === '' || !isset($byProject[$normProject])) {
+                continue;
+            }
+
+            $lineType = strtolower(trim((string) ($contractRow['Line_Type'] ?? '')));
+            $isFactureerbaar = str_contains($lineType, 'factureer');
+            $isForecast = str_contains($lineType, 'prognose') || str_contains($lineType, 'forecast');
+            if (!$isFactureerbaar || $isForecast) {
+                continue;
+            }
+
+            $lineAmount = finance_to_float($contractRow['Line_Amount_LCY'] ?? 0.0);
+            $byProject[$normProject]['contract_value'] = finance_add_amount(
+                (float) ($byProject[$normProject]['contract_value'] ?? 0.0),
+                $lineAmount
+            );
+        }
+
+        $customerFilters = [];
+        foreach ($chunk as $projectNo) {
+            $escapedProject = str_replace("'", "''", trim((string) $projectNo));
+            $customerFilters[] = "(Your_Reference eq '" . $escapedProject . "' or External_Document_No eq '" . $escapedProject . "')";
+        }
+
+        if ($customerFilters !== []) {
+            try {
+                $customerUrl = company_entity_url_with_query($baseUrl, $environmentForCompany, $company, 'Customer_Ledger_Entries', [
+                    '$select' => 'Amount_LCY,Open,Your_Reference,External_Document_No',
+                    '$filter' => '(Open eq true) and (' . implode(' or ', $customerFilters) . ')',
+                ]);
+                $customerRows = odata_get_all($customerUrl, $auth, $ttl);
+            } catch (Throwable $ignoredCustomerLoadError) {
+                $customerRows = [];
+            }
+
+            foreach ($customerRows as $customerRow) {
+                if (!is_array($customerRow)) {
+                    continue;
+                }
+
+                $reference = trim((string) ($customerRow['Your_Reference'] ?? ''));
+                if ($reference === '') {
+                    $reference = trim((string) ($customerRow['External_Document_No'] ?? ''));
+                }
+
+                $normProject = project_modal_normalize_project_no($reference);
+                if ($normProject === '' || !isset($byProject[$normProject])) {
+                    continue;
+                }
+
+                $amountLcy = finance_to_float($customerRow['Amount_LCY'] ?? 0.0);
+                $byProject[$normProject]['installments_received'] = finance_add_amount(
+                    (float) ($byProject[$normProject]['installments_received'] ?? 0.0),
+                    $amountLcy
+                );
+            }
+        }
+
+        try {
+            $taskUrl = company_entity_url_with_query($baseUrl, $environmentForCompany, $company, 'ProjectenJobTaskLines', [
+                '$select' => 'Job_No,Job_Task_No,Description,Job_Task_Type,Totaling,Schedule_Total_Cost',
+                '$filter' => $projectFilter,
+            ]);
+            $taskRows = odata_get_all($taskUrl, $auth, $ttl);
+        } catch (Throwable $ignoredTaskLoadError) {
+            $taskRows = [];
+        }
+
+        foreach ($taskRows as $taskRow) {
+            if (!is_array($taskRow)) {
+                continue;
+            }
+
+            $normProject = project_modal_normalize_project_no((string) ($taskRow['Job_No'] ?? ''));
+            if ($normProject === '' || !isset($byProject[$normProject])) {
+                continue;
+            }
+
+            $taskNo = trim((string) ($taskRow['Job_Task_No'] ?? ''));
+            if ($taskNo === '') {
+                continue;
+            }
+            if (FORMATTED_TASK_NOS_ONLY && !project_modal_is_formatted_task_no($taskNo)) {
+                continue;
+            }
+
+            $taskKey = strtolower($taskNo);
+            $byProject[$normProject]['task_rows'][$taskKey] = [
+                'Cost_Group_Code' => $taskNo,
+                'Cost_Group_Description' => (string) ($taskRow['Description'] ?? ''),
+                'Job_Task_Type' => (string) ($taskRow['Job_Task_Type'] ?? ''),
+                'Totaling' => (string) ($taskRow['Totaling'] ?? ''),
+                'Budget_Cost' => finance_to_float($taskRow['Schedule_Total_Cost'] ?? 0.0),
+                'EAC' => 0.0,
+                'Booked_Cost' => 0.0,
+                'Entered_Obligations' => 0.0,
+                'Variance_Budget_EAC' => 0.0,
+                'Is_Total_Row' => project_modal_is_total_task_type((string) ($taskRow['Job_Task_Type'] ?? '')),
+            ];
+        }
+
+        try {
+            $ledgerUrl = company_entity_url_with_query($baseUrl, $environmentForCompany, $company, 'JobLedgerEntries', [
+                '$select' => 'Job_No,Job_Task_No,Total_Cost_LCY',
+                '$filter' => $projectFilter,
+            ]);
+            $ledgerRows = odata_get_all($ledgerUrl, $auth, $ttl);
+        } catch (Throwable $ignoredLedgerLoadError) {
+            $ledgerRows = [];
+        }
+
+        foreach ($ledgerRows as $ledgerRow) {
+            if (!is_array($ledgerRow)) {
+                continue;
+            }
+
+            $normProject = project_modal_normalize_project_no((string) ($ledgerRow['Job_No'] ?? ''));
+            if ($normProject === '' || !isset($byProject[$normProject])) {
+                continue;
+            }
+
+            $taskNo = trim((string) ($ledgerRow['Job_Task_No'] ?? ''));
+            if ($taskNo === '') {
+                continue;
+            }
+            if (FORMATTED_TASK_NOS_ONLY && !project_modal_is_formatted_task_no($taskNo)) {
+                continue;
+            }
+
+            $taskKey = strtolower($taskNo);
+            if (!isset($byProject[$normProject]['task_rows'][$taskKey])) {
+                continue;
+            }
+
+            $byProject[$normProject]['task_rows'][$taskKey]['Booked_Cost'] = finance_add_amount(
+                (float) ($byProject[$normProject]['task_rows'][$taskKey]['Booked_Cost'] ?? 0.0),
+                finance_to_float($ledgerRow['Total_Cost_LCY'] ?? 0.0)
+            );
+        }
+
+        try {
+            $purchaseUrl = company_entity_url_with_query($baseUrl, $environmentForCompany, $company, 'PurchaseLines', [
+                '$select' => 'Job_No,Job_Task_No,Line_Amount',
+                '$filter' => $projectFilter,
+            ]);
+            $purchaseRows = odata_get_all($purchaseUrl, $auth, $ttl);
+        } catch (Throwable $ignoredPurchaseLoadError) {
+            $purchaseRows = [];
+        }
+
+        foreach ($purchaseRows as $purchaseRow) {
+            if (!is_array($purchaseRow)) {
+                continue;
+            }
+
+            $normProject = project_modal_normalize_project_no((string) ($purchaseRow['Job_No'] ?? ''));
+            if ($normProject === '' || !isset($byProject[$normProject])) {
+                continue;
+            }
+
+            $taskNo = trim((string) ($purchaseRow['Job_Task_No'] ?? ''));
+            if ($taskNo === '') {
+                continue;
+            }
+            if (FORMATTED_TASK_NOS_ONLY && !project_modal_is_formatted_task_no($taskNo)) {
+                continue;
+            }
+
+            $taskKey = strtolower($taskNo);
+            if (!isset($byProject[$normProject]['task_rows'][$taskKey])) {
+                continue;
+            }
+
+            $byProject[$normProject]['task_rows'][$taskKey]['Entered_Obligations'] = finance_add_amount(
+                (float) ($byProject[$normProject]['task_rows'][$taskKey]['Entered_Obligations'] ?? 0.0),
+                finance_to_float($purchaseRow['Line_Amount'] ?? 0.0)
+            );
+        }
+    }
+
+    foreach ($byProject as $normProject => $projectData) {
+        $taskRowsByKey = is_array($projectData['task_rows'] ?? null) ? $projectData['task_rows'] : [];
+        $bookingRows = [];
+        foreach ($taskRowsByKey as $taskKey => $taskRow) {
+            if (!is_array($taskRow)) {
+                continue;
+            }
+
+            $isTotalRow = (bool) ($taskRow['Is_Total_Row'] ?? false);
+            if ($isTotalRow) {
+                continue;
+            }
+
+            $bookingRows[$taskKey] = $taskRow;
+        }
+
+        foreach ($taskRowsByKey as $taskKey => $taskRow) {
+            if (!is_array($taskRow)) {
+                continue;
+            }
+
+            $isTotalRow = (bool) ($taskRow['Is_Total_Row'] ?? false);
+            if ($isTotalRow) {
+                $range = project_modal_parse_totaling_range((string) ($taskRow['Totaling'] ?? ''));
+                if ($range !== null) {
+                    $budgetTotal = 0.0;
+                    $bookedTotal = 0.0;
+                    $obligationTotal = 0.0;
+
+                    foreach ($bookingRows as $bookingRow) {
+                        if (!is_array($bookingRow)) {
+                            continue;
+                        }
+
+                        $bookingTaskNo = (string) ($bookingRow['Cost_Group_Code'] ?? '');
+                        if (!project_modal_task_no_in_range($bookingTaskNo, $range)) {
+                            continue;
+                        }
+
+                        $budgetTotal = finance_add_amount($budgetTotal, finance_to_float($bookingRow['Budget_Cost'] ?? 0.0));
+                        $bookedTotal = finance_add_amount($bookedTotal, finance_to_float($bookingRow['Booked_Cost'] ?? 0.0));
+                        $obligationTotal = finance_add_amount($obligationTotal, finance_to_float($bookingRow['Entered_Obligations'] ?? 0.0));
+                    }
+
+                    $taskRowsByKey[$taskKey]['Budget_Cost'] = $budgetTotal;
+                    $taskRowsByKey[$taskKey]['Booked_Cost'] = $bookedTotal;
+                    $taskRowsByKey[$taskKey]['Entered_Obligations'] = $obligationTotal;
+                }
+            }
+
+            $taskRowsByKey[$taskKey]['Variance_Budget_EAC'] = finance_calculate_result(
+                finance_to_float($taskRowsByKey[$taskKey]['Budget_Cost'] ?? 0.0),
+                finance_to_float($taskRowsByKey[$taskKey]['EAC'] ?? 0.0)
+            );
+        }
+
+        uasort($taskRowsByKey, static function (array $left, array $right): int {
+            return strnatcasecmp((string) ($left['Cost_Group_Code'] ?? ''), (string) ($right['Cost_Group_Code'] ?? ''));
+        });
+
+        $budgetTotal = 0.0;
+        $eacTotal = 0.0;
+        $bookedTotal = 0.0;
+        $obligationTotal = 0.0;
+        foreach ($taskRowsByKey as $taskRow) {
+            if (!is_array($taskRow)) {
+                continue;
+            }
+            if ((bool) ($taskRow['Is_Total_Row'] ?? false)) {
+                continue;
+            }
+
+            $budgetTotal = finance_add_amount($budgetTotal, finance_to_float($taskRow['Budget_Cost'] ?? 0.0));
+            $eacTotal = finance_add_amount($eacTotal, finance_to_float($taskRow['EAC'] ?? 0.0));
+            $bookedTotal = finance_add_amount($bookedTotal, finance_to_float($taskRow['Booked_Cost'] ?? 0.0));
+            $obligationTotal = finance_add_amount($obligationTotal, finance_to_float($taskRow['Entered_Obligations'] ?? 0.0));
+        }
+
+        $varianceTotal = finance_calculate_result($budgetTotal, $eacTotal);
+
+        $projectData['budget_cost_total'] = $budgetTotal;
+        $projectData['task_rows'] = array_values($taskRowsByKey);
+        $projectData['task_rows_total'] = [
+            'Cost_Group_Code' => 'TOTAL',
+            'Cost_Group_Description' => 'Totaal alle regels',
+            'Budget_Cost' => $budgetTotal,
+            'EAC' => $eacTotal,
+            'Booked_Cost' => $bookedTotal,
+            'Entered_Obligations' => $obligationTotal,
+            'Variance_Budget_EAC' => $varianceTotal,
+            'Is_Total_Row' => true,
+        ];
+
+        $byProject[$normProject] = $projectData;
+    }
+
+    return $byProject;
+}
+
 function batch_wip_path(string $company, string $targetYearMonth): string
 {
     $safeCompany = preg_replace('/[^a-z0-9_-]/i', '_', strtolower(trim($company)));
@@ -253,7 +664,10 @@ function wip_project_numbers(array $wip): array
  */
 function fetch_workorders_for_batch_month(string $company, string $batchYearMonth, array $auth, int $ttl): array
 {
-    global $baseUrl, $environment;
+    global $baseUrl;
+    
+    $environmentForCompany = auth_get_environment_for_company($company, 300);
+    $auth = auth_get_auth_for_environment($environmentForCompany);
 
     $from = DateTimeImmutable::createFromFormat('!Y-m', $batchYearMonth);
     if (!$from instanceof DateTimeImmutable) {
@@ -263,7 +677,7 @@ function fetch_workorders_for_batch_month(string $company, string $batchYearMont
     $fromStr = $from->format('Y-m-d');
     $toStr = $to->format('Y-m-d');
 
-    $workorderUrl = company_entity_url_with_query($baseUrl, $environment, $company, 'Werkorders', [
+    $workorderUrl = company_entity_url_with_query($baseUrl, $environmentForCompany, $company, 'Werkorders', [
         '$select' => 'No,Task_Code,Task_Description,Status,KVT_Document_Status,Job_No,Job_Task_No,Contract_No,Start_Date,End_Date,Bill_to_Customer_No,Bill_to_Name,Sell_to_Customer_No,Sell_to_Name,Job_Dimension_1_Value,Memo,Memo_Internal_Use_Only,Memo_Invoice,KVT_Memo_Invoice_Details,KVT_Remarks_Invoicing,LVS_Show_on_Planboard,LVS_Fixed_Planned',
         '$filter' => 'Start_Date ge ' . $fromStr . ' and Start_Date lt ' . $toStr,
     ]);
@@ -276,7 +690,10 @@ function fetch_workorders_for_batch_month(string $company, string $batchYearMont
  */
 function fetch_projectposten_for_batch_month(string $company, string $batchYearMonth, array $auth, int $ttl): array
 {
-    global $baseUrl, $environment;
+    global $baseUrl;
+    
+    $environmentForCompany = auth_get_environment_for_company($company, 300);
+    $auth = auth_get_auth_for_environment($environmentForCompany);
 
     $from = DateTimeImmutable::createFromFormat('!Y-m', $batchYearMonth);
     if (!$from instanceof DateTimeImmutable) {
@@ -286,7 +703,7 @@ function fetch_projectposten_for_batch_month(string $company, string $batchYearM
     $fromStr = $from->format('Y-m-d');
     $toStr = $to->format('Y-m-d');
 
-    $projectPostenUrl = company_entity_url_with_query($baseUrl, $environment, $company, 'ProjectPosten', [
+    $projectPostenUrl = company_entity_url_with_query($baseUrl, $environmentForCompany, $company, 'ProjectPosten', [
         '$filter' => 'Posting_Date ge ' . $fromStr . ' and Posting_Date lt ' . $toStr,
     ]);
 
@@ -384,7 +801,10 @@ function aggregate_projectposten_rows(array $rows): array
  */
 function fetch_projectposten_keys_for_target(string $company, string $targetYearMonth, array $auth, int $ttl): array
 {
-    global $baseUrl, $environment;
+    global $baseUrl;
+    
+    $environmentForCompany = auth_get_environment_for_company($company, 300);
+    $auth = auth_get_auth_for_environment($environmentForCompany);
 
     $startYearMonth = data_start_month_for_target($targetYearMonth);
     $from = DateTimeImmutable::createFromFormat('!Y-m', $startYearMonth);
@@ -400,7 +820,7 @@ function fetch_projectposten_keys_for_target(string $company, string $targetYear
     $toStr = $to->modify('+1 month')->format('Y-m-d');
 
     try {
-        $projectPostenUrl = company_entity_url_with_query($baseUrl, $environment, $company, 'ProjectPosten', [
+        $projectPostenUrl = company_entity_url_with_query($baseUrl, $environmentForCompany, $company, 'ProjectPosten', [
             '$select' => 'Job_No,Job_Task_No',
             '$filter' => 'Posting_Date ge ' . $fromStr . ' and Posting_Date lt ' . $toStr,
         ]);
@@ -650,7 +1070,10 @@ function build_month_rows(
 
 function fetch_month_data(string $company, string $yearMonth, array $auth): array
 {
-    global $baseUrl, $environment;
+    global $baseUrl;
+    
+    $environmentForCompany = auth_get_environment_for_company($company, 300);
+    $auth = auth_get_auth_for_environment($environmentForCompany);
     @set_time_limit(0);
     @ini_set('max_execution_time', '0');
 
@@ -727,7 +1150,8 @@ function fetch_month_data(string $company, string $yearMonth, array $auth): arra
         }
     }
 
-    $financeService = new ProjectFinanceService($company);
+    $environmentForCompany = auth_get_environment_for_company($company, 300);
+    $financeService = new ProjectFinanceService($company, $environmentForCompany);
 
     foreach ($ppProjectNumbers as $pNo) {
         $pNo = trim((string) $pNo);
@@ -777,7 +1201,7 @@ function fetch_month_data(string $company, string $yearMonth, array $auth): arra
         $filterParts = array_map(fn($no) => "No eq '" . str_replace("'", "''", $no) . "'", $chunk);
         $filter = implode(' or ', $filterParts);
         try {
-            $projectUrl = company_entity_url_with_query($baseUrl, $environment, $company, 'Projecten', [
+            $projectUrl = company_entity_url_with_query($baseUrl, $environmentForCompany, $company, 'Projecten', [
                 '$select' => 'No,Description,Sell_to_Customer_No,Sell_to_Customer_Name,Bill_to_Customer_No,Bill_to_Name,Person_Responsible,Project_Manager,LVS_Global_Dimension_1_Code,Status,Percent_Completed,Total_WIP_Cost_Amount,Total_WIP_Sales_Amount,Recog_Costs_Amount,Recog_Sales_Amount,Calc_Recog_Costs_Amount,Calc_Recog_Sales_Amount,Acc_WIP_Costs_Amount,Acc_WIP_Sales_Amount,LVS_No_Of_Job_Change_Orders,External_Document_No,Your_Reference',
                 '$filter' => $filter,
             ]);
@@ -1118,11 +1542,24 @@ function save_user_settings_m(string $email, array $patch): bool
  */
 $currentUserEmail = current_user_email_or_fallback_m();
 
-$companies = [
-    'Koninklijke van Twist',
-    'Hunter van Twist',
-    'KVT Gas',
-];
+// Laden van alle bedrijven uit alle actieve environments
+try {
+    require_once __DIR__ . '/auth_helper.php';
+    $discoveryResult = auth_discover_companies_across_active_environments(300);
+    $companies = is_array($discoveryResult['companies'] ?? null) ? $discoveryResult['companies'] : [];
+} catch (Throwable $e) {
+    // Fallback op lege lijst als discovery mislukt
+    $companies = [];
+}
+
+// Fallback naar hardcoded bedrijven als discovery leeg was
+if ($companies === []) {
+    $companies = [
+        'Koninklijke van Twist',
+        'Hunter van Twist',
+        'KVT Gas',
+    ];
+}
 
 $selectedCompany = $_GET['company'] ?? $companies[0];
 if (!in_array($selectedCompany, $companies, true)) {
@@ -1212,6 +1649,7 @@ if (($_GET['action'] ?? '') === 'fetch_project_numbers_batch') {
     if (!in_array($company, $companies, true)) {
         $company = $companies[0];
     }
+    $auth = auth_get_auth_for_company($company, 300);
 
     try {
         $ttl = odata_ttl_for_month($batchYm);
@@ -1266,6 +1704,7 @@ if (($_GET['action'] ?? '') === 'fetch_column_batch') {
     if (!in_array($company, $companies, true)) {
         $company = $companies[0];
     }
+    $auth = auth_get_auth_for_company($company, 300);
 
     try {
         $ttl = odata_ttl_for_month($batchYm);
@@ -1424,7 +1863,8 @@ if (($_GET['action'] ?? '') === 'fetch_sub_finance') {
         $existingProjectFinance = is_array($wip['project_finance'] ?? null) ? $wip['project_finance'] : [];
         $existingWorkorderFinance = is_array($wip['workorder_finance'] ?? null) ? $wip['workorder_finance'] : [];
 
-        $financeService = new ProjectFinanceService($company);
+        $environmentForCompany = auth_get_environment_for_company($company, 300);
+        $financeService = new ProjectFinanceService($company, $environmentForCompany);
         $projectInvoiceData = [
             'invoice_details_by_id' => [],
             'project_invoice_ids_by_job' => [],
@@ -1493,8 +1933,8 @@ if (($_GET['action'] ?? '') === 'fetch_sub_projects') {
             $filterParts = array_map(fn($no) => "No eq '" . str_replace("'", "''", $no) . "'", $chunk);
             $filter = implode(' or ', $filterParts);
             try {
-                $projectUrl = company_entity_url_with_query($baseUrl, $environment, $company, 'Projecten', [
-                    '$select' => 'No,Description,Sell_to_Customer_No,Sell_to_Customer_Name,Bill_to_Customer_No,Bill_to_Name,Person_Responsible,Project_Manager,LVS_Global_Dimension_1_Code,Status,Percent_Completed,Total_WIP_Cost_Amount,Total_WIP_Sales_Amount,Recog_Costs_Amount,Recog_Sales_Amount,Calc_Recog_Costs_Amount,Calc_Recog_Sales_Amount,Acc_WIP_Costs_Amount,Acc_WIP_Sales_Amount,LVS_No_Of_Job_Change_Orders,External_Document_No,Your_Reference',
+                $projectUrl = company_entity_url_with_query($baseUrl, $environmentForCompany, $company, 'Projecten', [
+                    '$select' => 'No,Description,Sell_to_Customer_No,Sell_to_Customer_Name,Bill_to_Customer_No,Bill_to_Name,Person_Responsible,Project_Manager,KVT_Sales_Person_Code,LVS_Global_Dimension_1_Code,Status,Percent_Completed,Total_WIP_Cost_Amount,Total_WIP_Sales_Amount,Recog_Costs_Amount,Recog_Sales_Amount,Calc_Recog_Costs_Amount,Calc_Recog_Sales_Amount,Acc_WIP_Costs_Amount,Acc_WIP_Sales_Amount,LVS_No_Of_Job_Change_Orders,External_Document_No,Your_Reference,LVS_Your_reference,Creation_Date,Ending_Date',
                     '$filter' => $filter,
                 ]);
                 $batchProjects = odata_get_all($projectUrl, $auth, $ttl);
@@ -1597,7 +2037,8 @@ if (($_GET['action'] ?? '') === 'fetch_sub_planning_project') {
         $planningTotalsByJob = is_array($wip['planning_totals_by_job'] ?? null) ? $wip['planning_totals_by_job'] : [];
         $planningBreakdownByJob = is_array($wip['planning_breakdown_by_job'] ?? null) ? $wip['planning_breakdown_by_job'] : [];
 
-        $financeService = new ProjectFinanceService($company);
+        $environmentForCompany = auth_get_environment_for_company($company, 300);
+        $financeService = new ProjectFinanceService($company, $environmentForCompany);
         $forecast = $financeService->collectProjectForecastForProjects([$projectNo], $ttl);
 
         $normProjectNo = strtolower($projectNo);
@@ -1683,7 +2124,8 @@ if (($_GET['action'] ?? '') === 'fetch_sub_planning_batch') {
         $planningTotalsByJob = is_array($wip['planning_totals_by_job'] ?? null) ? $wip['planning_totals_by_job'] : [];
         $planningBreakdownByJob = is_array($wip['planning_breakdown_by_job'] ?? null) ? $wip['planning_breakdown_by_job'] : [];
 
-        $financeService = new ProjectFinanceService($company);
+        $environmentForCompany = auth_get_environment_for_company($company, 300);
+        $financeService = new ProjectFinanceService($company, $environmentForCompany);
         $forecast = $financeService->collectProjectForecastForProjects($projectNumbers, $ttl);
         $totalsByProject = is_array($forecast['forecast_totals_by_job'] ?? null)
             ? $forecast['forecast_totals_by_job']
@@ -1768,7 +2210,8 @@ if (($_GET['action'] ?? '') === 'fetch_sub_planning') {
 
         if ($projectNumbers !== []) {
             try {
-                $financeService = new ProjectFinanceService($company);
+                $environmentForCompany = auth_get_environment_for_company($company, 300);
+                $financeService = new ProjectFinanceService($company, $environmentForCompany);
                 $projectForecast = $financeService->collectProjectForecastForProjects($projectNumbers, $ttl);
                 $planningTotalsByJob = is_array($projectForecast['forecast_totals_by_job'] ?? null)
                     ? $projectForecast['forecast_totals_by_job']
