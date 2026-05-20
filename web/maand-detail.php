@@ -373,6 +373,7 @@ $defaultColumns = [
     'winst_ohw',
     'notes',
     'project_manager',
+    'reason_code',
     'invoices',
 ];
 
