@@ -1,0 +1,247 @@
+<?php
+
+/**
+ * Includes/requires
+ */
+require_once __DIR__ . '/helpers.php';
+require_once __DIR__ . '/../auth_helper.php';
+
+/**
+ * Functies
+ */
+/**
+ * Berekent OData-datums voor OHW-snapshot op een doelmaand (einde van die maand).
+ *
+ * @return array{posting_before:string,reverse_after:string,blank_reverse:string}|null
+ */
+function bc_fetch_snapshot_ohw_bounds(string $targetYearMonth): ?array
+{
+    $target = DateTimeImmutable::createFromFormat('!Y-m', $targetYearMonth);
+    if (!$target instanceof DateTimeImmutable) {
+        return null;
+    }
+
+    return [
+        'posting_before' => $target->modify('+1 month')->format('Y-m-d'),
+        'reverse_after' => $target->format('Y-m-t'),
+        'blank_reverse' => '0001-01-01',
+    ];
+}
+
+/**
+ * OData-filter: geboekt vóór snapshot, niet (of later) teruggedraaid t.o.v. snapshot.
+ */
+function bc_fetch_snapshot_ohw_filter(string $targetYearMonth): string
+{
+    $bounds = bc_fetch_snapshot_ohw_bounds($targetYearMonth);
+    if ($bounds === null) {
+        return '';
+    }
+
+    return sprintf(
+        'Posting_Date lt %s and (Reverse_Date gt %s or Reverse_Date eq %s)',
+        $bounds['posting_before'],
+        $bounds['reverse_after'],
+        $bounds['blank_reverse']
+    );
+}
+
+/**
+ * Haalt alle Grootboekposten_OHW op voor de snapshot van een doelmaand.
+ */
+function bc_fetch_grootboekposten_ohw_rows(string $company, string $targetYearMonth, array $auth, int $ttl): array
+{
+    $filter = bc_fetch_snapshot_ohw_filter($targetYearMonth);
+    if ($filter === '') {
+        return [];
+    }
+
+    $auth = auth_get_auth_for_environment(auth_get_environment_for_company($company, 300));
+    $url = company_entity_url_with_query(
+        $GLOBALS['baseUrl'],
+        auth_get_environment_for_company($company, 300),
+        $company,
+        'Grootboekposten_OHW',
+        ['$filter' => $filter]
+    );
+
+    return odata_get_all($url, $auth, $ttl);
+}
+
+/**
+ * Formatteert Job_Complete uit een OHW-rij als Ja/Nee.
+ */
+function bc_fetch_ohw_job_complete_label($value): string
+{
+    if ($value === true || $value === 1 || $value === '1' || $value === 'true') {
+        return 'Ja';
+    }
+    if ($value === false || $value === 0 || $value === '0' || $value === 'false') {
+        return 'Nee';
+    }
+
+    $text = trim((string) $value);
+    if ($text === '') {
+        return '';
+    }
+
+    return $text;
+}
+
+/**
+ * Zet een Grootboekposten_OHW-rij om naar een breakdownregel voor detailmodals.
+ */
+function bc_fetch_ohw_breakdown_line_from_row(array $sourceRow, bool $isCost): array
+{
+    $amount = bc_fetch_float_value($sourceRow, 'WIP_Entry_Amount');
+    $absAmount = abs($amount);
+
+    return [
+        'Posting_Date' => (string) ($sourceRow['Posting_Date'] ?? ''),
+        'Job_Complete' => bc_fetch_ohw_job_complete_label($sourceRow['Job_Complete'] ?? ''),
+        'Document_No' => (string) ($sourceRow['Document_No'] ?? ''),
+        'G_L_Account_No' => (string) ($sourceRow['G_L_Account_No'] ?? ''),
+        'WIP_Method_Used' => (string) ($sourceRow['WIP_Method_Used'] ?? ''),
+        'Type' => (string) ($sourceRow['Type'] ?? ''),
+        'Global_Dimension_1_Code' => (string) ($sourceRow['Global_Dimension_1_Code'] ?? ''),
+        'WIP_Entry_Amount' => $isCost ? $absAmount : $amount,
+        'Total_Cost' => $isCost ? $absAmount : 0.0,
+        'Line_Amount' => $isCost ? 0.0 : $amount,
+    ];
+}
+
+/**
+ * Eerste niet-lege afdelingscode (Global_Dimension_1_Code) uit OHW-breakdownregels.
+ */
+function bc_fetch_primary_department_from_breakdown(array $breakdown): string
+{
+    foreach (['total_costs_lines', 'total_revenue_lines'] as $lineKey) {
+        $lines = is_array($breakdown[$lineKey] ?? null) ? $breakdown[$lineKey] : [];
+        foreach ($lines as $line) {
+            if (!is_array($line)) {
+                continue;
+            }
+
+            $code = trim((string) ($line['Global_Dimension_1_Code'] ?? ''));
+            if ($code !== '') {
+                return $code;
+            }
+        }
+    }
+
+    return '';
+}
+
+/**
+ * Aggregateert OHW-rijen naar projecttotalen (negatief = kosten, positief = opbrengst).
+ */
+function bc_fetch_aggregate_ohw_rows(array $rows): array
+{
+    $projectTotalsByJob = [];
+    $projectNumbers = [];
+    $seenProjectNos = [];
+
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+
+        $jobNo = trim((string) ($row['Job_No'] ?? ''));
+        if ($jobNo === '') {
+            continue;
+        }
+
+        $normJob = bc_fetch_normalize_project_no($jobNo);
+        $amount = bc_fetch_float_value($row, 'WIP_Entry_Amount');
+        if ($amount === 0.0) {
+            continue;
+        }
+
+        if (!isset($projectTotalsByJob[$normJob])) {
+            $projectTotalsByJob[$normJob] = ['costs' => 0.0, 'revenue' => 0.0, 'resultaat' => 0.0];
+        }
+
+        if ($amount < 0) {
+            $costAmount = abs($amount);
+            $projectTotalsByJob[$normJob]['costs'] = bc_fetch_add(
+                (float) ($projectTotalsByJob[$normJob]['costs'] ?? 0.0),
+                $costAmount
+            );
+        } else {
+            $projectTotalsByJob[$normJob]['revenue'] = bc_fetch_add(
+                (float) ($projectTotalsByJob[$normJob]['revenue'] ?? 0.0),
+                $amount
+            );
+        }
+
+        $projectTotalsByJob[$normJob]['resultaat'] = finance_calculate_result(
+            (float) ($projectTotalsByJob[$normJob]['revenue'] ?? 0.0),
+            (float) ($projectTotalsByJob[$normJob]['costs'] ?? 0.0)
+        );
+
+        if (!isset($seenProjectNos[$jobNo])) {
+            $seenProjectNos[$jobNo] = true;
+            $projectNumbers[] = $jobNo;
+        }
+    }
+
+    return [
+        'project_totals_by_job' => $projectTotalsByJob,
+        'workorder_totals_by_number' => [],
+        'project_numbers' => $projectNumbers,
+        'workorder_numbers' => [],
+    ];
+}
+
+/**
+ * Haalt OHW voor de snapshot-doelmaand op en groepeert op projectnummer.
+ */
+function bc_fetch_column_grootboekposten_ohw(string $company, string $yearMonth, array $projectNumbers, array $auth, int $ttl): array
+{
+    $rows = bc_fetch_grootboekposten_ohw_rows($company, $yearMonth, $auth, $ttl);
+    $projectDictionary = bc_fetch_seed_project_dictionary($projectNumbers);
+
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+
+        $projectNo = trim((string) ($row['Job_No'] ?? ''));
+        if ($projectNo === '') {
+            continue;
+        }
+
+        $normProjectNo = bc_fetch_normalize_project_no($projectNo);
+        if (!isset($projectDictionary[$normProjectNo])) {
+            $projectDictionary[$normProjectNo] = [];
+        }
+        if (!isset($projectDictionary[$normProjectNo]['rows'])) {
+            $projectDictionary[$normProjectNo]['rows'] = [];
+            $projectDictionary[$normProjectNo]['costs'] = 0.0;
+            $projectDictionary[$normProjectNo]['revenue'] = 0.0;
+        }
+
+        $amount = bc_fetch_float_value($row, 'WIP_Entry_Amount');
+        if ($amount < 0) {
+            $projectDictionary[$normProjectNo]['costs'] = bc_fetch_add(
+                (float) ($projectDictionary[$normProjectNo]['costs'] ?? 0.0),
+                abs($amount)
+            );
+        } elseif ($amount > 0) {
+            $projectDictionary[$normProjectNo]['revenue'] = bc_fetch_add(
+                (float) ($projectDictionary[$normProjectNo]['revenue'] ?? 0.0),
+                $amount
+            );
+        }
+
+        $projectDictionary[$normProjectNo]['rows'][] = $row;
+    }
+
+    return [
+        'column' => 'grootboekposten_ohw',
+        'by_project' => $projectDictionary,
+        'by_workorder' => [],
+        'row_count' => count($rows),
+        'snapshot_bounds' => bc_fetch_snapshot_ohw_bounds($yearMonth),
+    ];
+}

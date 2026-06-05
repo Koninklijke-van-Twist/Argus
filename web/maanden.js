@@ -5,26 +5,17 @@
      */
     const payload = window.maandenData || {};
     const companies = Array.isArray(payload.companies) ? payload.companies : [];
-    const batchUrl = typeof payload.batch_url === 'string' ? payload.batch_url : 'maanden.php?action=fetch_workorders_batch';
     const projectNumbersUrl = typeof payload.project_numbers_url === 'string'
         ? payload.project_numbers_url
         : 'maanden.php?action=fetch_project_numbers_batch';
     const columnBatchUrl = typeof payload.column_batch_url === 'string'
         ? payload.column_batch_url
         : 'maanden.php?action=fetch_column_batch';
-    const planningProjectListUrl = typeof payload.planning_project_list_url === 'string'
-        ? payload.planning_project_list_url
-        : 'maanden.php?action=planning_project_list';
-    const planningProjectUrl = typeof payload.planning_project_url === 'string'
-        ? payload.planning_project_url
-        : 'maanden.php?action=fetch_sub_planning_project';
-    const planningBatchUrl = typeof payload.planning_batch_url === 'string'
-        ? payload.planning_batch_url
-        : 'maanden.php?action=fetch_sub_planning_batch';
     const subPlanningUrl = typeof payload.sub_planning_url === 'string'
         ? payload.sub_planning_url
         : 'maanden.php?action=fetch_sub_planning';
     const columnSteps = Array.isArray(payload.column_steps) ? payload.column_steps : [];
+    const targetColumnSteps = Array.isArray(payload.target_column_steps) ? payload.target_column_steps : [];
     const deleteUrl = typeof payload.delete_url === 'string' ? payload.delete_url : 'maanden.php?action=delete_month';
     const detailUrl = typeof payload.detail_url === 'string' ? payload.detail_url : 'maand-detail.php';
     const saveSettingsUrl = typeof payload.save_settings_url === 'string' ? payload.save_settings_url : 'maanden.php?action=save_user_settings';
@@ -115,7 +106,8 @@
             batchProgressList.appendChild(li);
         }
 
-        state.items[item.key] = { li, icon, pct, section: sectionKey };
+        const labelEl = li.querySelector('span:not(.batch-progress-icon):not(.batch-progress-pct)');
+        state.items[item.key] = { li: li, icon: icon, pct: pct, labelEl: labelEl, section: sectionKey };
         state.orderedKeys.push(item.key);
     }
 
@@ -142,7 +134,7 @@
         const monthHeader = document.createElement('li');
         monthHeader.className = 'batch-progress-section';
         const monthTitle = document.createElement('span');
-        monthTitle.textContent = 'Maanden Laden';
+        monthTitle.textContent = 'Snapshot laden';
         const monthPct = document.createElement('span');
         monthPct.className = 'batch-progress-section-pct';
         monthHeader.appendChild(monthTitle);
@@ -261,6 +253,80 @@
             section.completed++;
             updateSectionProgress(section);
         }
+    }
+
+    function appendMonthProgressItems (state, items)
+    {
+        if (!batchProgressList || !state || !Array.isArray(items) || items.length === 0)
+        {
+            return 0;
+        }
+
+        const divider = batchProgressList.querySelector('.batch-progress-divider');
+        let added = 0;
+
+        for (const item of items)
+        {
+            if (!item || typeof item !== 'object')
+            {
+                continue;
+            }
+
+            const key = String(item.key || '').trim();
+            const label = String(item.label || '').trim();
+            if (key === '' || label === '' || state.items[key])
+            {
+                continue;
+            }
+
+            const li = document.createElement('li');
+            li.className = 'batch-progress-item';
+
+            const icon = document.createElement('span');
+            icon.className = 'batch-progress-icon';
+            icon.textContent = '○';
+
+            const labelEl = document.createElement('span');
+            labelEl.textContent = label;
+
+            const pct = document.createElement('span');
+            pct.className = 'batch-progress-pct';
+            pct.textContent = '';
+
+            li.appendChild(icon);
+            li.appendChild(labelEl);
+            li.appendChild(pct);
+
+            if (divider)
+            {
+                batchProgressList.insertBefore(li, divider);
+            }
+            else
+            {
+                batchProgressList.appendChild(li);
+            }
+
+            state.items[key] = { li: li, icon: icon, pct: pct, labelEl: labelEl, section: 'month' };
+            state.orderedKeys.push(key);
+            added++;
+        }
+
+        state.sections.month.total += added;
+        updateSectionProgress(state.sections.month);
+
+        return added;
+    }
+
+    function projectDetailsProgressLabel (ym, chunkIndex, totalChunks)
+    {
+        const base = formatMonth(ym) + ' · Projectdetails';
+        const total = Math.max(1, Number(totalChunks) || 1);
+        if (total <= 1)
+        {
+            return base;
+        }
+
+        return base + ' (' + (Number(chunkIndex) + 1) + '/' + total + ')';
     }
 
     function alignProgressWindow (orderedKeys, state, currentIndex)
@@ -698,164 +764,169 @@
         monthGrid.appendChild(buildAddCard());
     }
 
+    function persistSelectedCompany (company)
+    {
+        if (!saveSettingsUrl || !company)
+        {
+            return;
+        }
+
+        fetch(saveSettingsUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ selected_company: company }),
+        }).catch(function () {});
+    }
+
     function runMonthBuildFlow (ym, successMessage)
     {
-        const allBatchMonths = buildBatchMonths(ym); // 36 maanden incl. doelmaand
-        const effectiveColumnSteps = columnSteps.length > 0
-            ? columnSteps
+        const effectiveTargetColumnSteps = targetColumnSteps.length > 0
+            ? targetColumnSteps
             : [
-                { key: 'workorders', label: 'Werkorders' },
-                { key: 'projectposten', label: 'ProjectPosten' },
+                { key: 'grootboekposten_ohw', label: 'Grootboekposten OHW' },
                 { key: 'project_details', label: 'Projectdetails' },
-                { key: 'invoices', label: 'Facturen' },
             ];
 
         const monthProgressItems = [];
-        for (const batchYm of allBatchMonths)
+        for (const targetStep of effectiveTargetColumnSteps)
         {
-            monthProgressItems.push({
-                key: batchYm + '::project_numbers',
-                label: formatMonth(batchYm) + ' · Projectnummers',
-            });
-            for (const step of effectiveColumnSteps)
+            if (targetStep.key === 'project_details')
             {
                 monthProgressItems.push({
-                    key: batchYm + '::' + step.key,
-                    label: formatMonth(batchYm) + ' · ' + step.label,
+                    key: 'target::project_details::0',
+                    label: formatMonth(ym) + ' · ' + targetStep.label,
+                    stepKey: 'project_details',
+                });
+            }
+            else
+            {
+                monthProgressItems.push({
+                    key: 'target::' + targetStep.key,
+                    label: formatMonth(ym) + ' · ' + targetStep.label,
+                    stepKey: targetStep.key,
                 });
             }
         }
 
         const progressState = initProgressList(monthProgressItems);
-        let totalSteps = monthProgressItems.length;
+        appendPlanningProgressItems(progressState, [{
+            key: 'planning::voorcalculatie',
+            label: formatMonth(ym) + ' · Voorcalculatie',
+        }]);
+        let totalSteps = monthProgressItems.length + 1;
         let completedSteps = 0;
-        const planningQueue = [];
-        const planningSeen = new Set();
 
-        let batchIndex = 0;
-        let columnIndex = -1;
+        let targetColumnIndex = 0;
+        let projectDetailsChunkIndex = 0;
+        let projectDetailsTotalChunks = 1;
+        let projectDetailsChunksExpanded = false;
 
-        function queuePlanningProjects (projects)
+        function expandProjectDetailsProgressItems (totalChunks)
         {
-            if (!Array.isArray(projects) || projects.length === 0)
+            const safeTotal = Math.max(1, Number(totalChunks) || 1);
+            projectDetailsTotalChunks = safeTotal;
+
+            const firstItem = progressState.items['target::project_details::0'];
+            if (firstItem && firstItem.labelEl)
+            {
+                firstItem.labelEl.textContent = projectDetailsProgressLabel(ym, 0, safeTotal);
+            }
+
+            if (safeTotal <= 1 || projectDetailsChunksExpanded)
             {
                 return;
             }
 
-            const newProjects = [];
-            for (const rawProjectNo of projects)
+            projectDetailsChunksExpanded = true;
+            const newItems = [];
+            for (let i = 1; i < safeTotal; i++)
             {
-                const projectNo = String(rawProjectNo || '').trim();
-                if (projectNo === '' || planningSeen.has(projectNo))
-                {
-                    continue;
-                }
-
-                planningSeen.add(projectNo);
-                planningQueue.push(projectNo);
-                newProjects.push(projectNo);
-            }
-
-            if (newProjects.length === 0)
-            {
-                return;
-            }
-        }
-
-        function buildPlanningBatches (projectNumbers, batchSize)
-        {
-            const safeBatchSize = Math.max(1, batchSize || 30);
-            const sortedProjects = projectNumbers.slice().sort(function (left, right)
-            {
-                return String(left).localeCompare(String(right), 'nl', { numeric: true, sensitivity: 'base' });
-            });
-
-            const result = [];
-            for (let i = 0; i < sortedProjects.length; i += safeBatchSize)
-            {
-                const projects = sortedProjects.slice(i, i + safeBatchSize);
-                if (projects.length === 0)
-                {
-                    continue;
-                }
-
-                const from = projects[0];
-                const to = projects[projects.length - 1];
-                const label = projects.length === 1
-                    ? ('Voorcalculatie ' + from)
-                    : ('Voorcalculatie ' + from + ' - ' + to);
-
-                result.push({
-                    key: 'planning_batch::' + String(result.length).padStart(4, '0') + '::' + from + '::' + to,
-                    label: label,
-                    projects: projects,
+                newItems.push({
+                    key: 'target::project_details::' + i,
+                    label: projectDetailsProgressLabel(ym, i, safeTotal),
                 });
             }
 
-            return result;
+            totalSteps += appendMonthProgressItems(progressState, newItems);
         }
 
-        function runNextStep ()
+        function runVoorcalculatieStep ()
         {
-            if (batchIndex >= allBatchMonths.length)
-            {
-                fetchPlanningProjectsAndRun();
-                return;
-            }
-
-            const batchYm = allBatchMonths[batchIndex];
-            if (columnIndex === -1)
-            {
-                const progressKey = batchYm + '::project_numbers';
-                markProgressLoading(progressState, progressKey, totalSteps, completedSteps);
-                alignProgressWindow(progressState.orderedKeys, progressState, completedSteps);
-                if (pageLoaderText)
-                {
-                    pageLoaderText.textContent = 'Projectnummers ' + formatMonth(batchYm) + ' (' + (completedSteps + 1) + '/' + totalSteps + ')';
-                }
-
-                const body = new URLSearchParams({ target_month: ym, batch_month: batchYm, company: selectedCompany });
-                fetch(projectNumbersUrl, { method: 'POST', body: body })
-                    .then(parseFetchResponse)
-                    .then(function (json)
-                    {
-                        if (!json.ok)
-                        {
-                            hideLoader();
-                            toast('Fout bij projectnummers ' + formatMonth(batchYm) + ': ' + (json.error || 'Onbekende fout'), true);
-                            return;
-                        }
-
-                        queuePlanningProjects(json.project_numbers);
-                        queuePlanningProjects(json.all_project_numbers);
-                        markProgressDone(progressState, progressKey);
-                        completedSteps++;
-                        columnIndex = 0;
-                        runNextStep();
-                    })
-                    .catch(function (err)
-                    {
-                        hideLoader();
-                        toast('Netwerkfout bij projectnummers ' + formatMonth(batchYm) + ': ' + err.message, true);
-                    });
-                return;
-            }
-
-            const step = effectiveColumnSteps[columnIndex];
-            const progressKey = batchYm + '::' + step.key;
+            const progressKey = 'planning::voorcalculatie';
             markProgressLoading(progressState, progressKey, totalSteps, completedSteps);
             alignProgressWindow(progressState.orderedKeys, progressState, completedSteps);
             if (pageLoaderText)
             {
-                pageLoaderText.textContent = step.label + ' ' + formatMonth(batchYm) + ' (' + (completedSteps + 1) + '/' + totalSteps + ')';
+                pageLoaderText.textContent = 'Voorcalculatie ' + formatMonth(ym) + ' (' + (completedSteps + 1) + '/' + totalSteps + ')';
+            }
+
+            const body = new URLSearchParams({ target_month: ym, company: selectedCompany });
+            fetch(subPlanningUrl, { method: 'POST', body: body })
+                .then(parseFetchResponse)
+                .then(function (json)
+                {
+                    if (!json.ok)
+                    {
+                        hideLoader();
+                        toast('Fout bij voorcalculatie voor ' + formatMonth(ym) + ': ' + (json.error || 'Onbekende fout'), true);
+                        return;
+                    }
+
+                    if (json.warning)
+                    {
+                        toast('Waarschuwing voorcalculatie (' + formatMonth(ym) + '): ' + json.warning, true);
+                    }
+
+                    markProgressDone(progressState, progressKey);
+                    completedSteps++;
+                    buildSnapshot();
+                })
+                .catch(function (err)
+                {
+                    hideLoader();
+                    toast('Netwerkfout bij voorcalculatie voor ' + formatMonth(ym) + ': ' + err.message, true);
+                });
+        }
+
+        function runTargetColumnStep ()
+        {
+            if (targetColumnIndex >= effectiveTargetColumnSteps.length)
+            {
+                runVoorcalculatieStep();
+                return;
+            }
+
+            const step = effectiveTargetColumnSteps[targetColumnIndex];
+            const isProjectDetails = step.key === 'project_details';
+            const chunkIndex = isProjectDetails ? projectDetailsChunkIndex : 0;
+            const progressKey = isProjectDetails
+                ? ('target::project_details::' + chunkIndex)
+                : ('target::' + step.key);
+
+            markProgressLoading(progressState, progressKey, totalSteps, completedSteps);
+
+            alignProgressWindow(progressState.orderedKeys, progressState, completedSteps);
+            if (pageLoaderText)
+            {
+                let loaderLabel = step.label + ' ' + formatMonth(ym);
+                if (isProjectDetails && projectDetailsTotalChunks > 1)
+                {
+                    loaderLabel += ' (' + (chunkIndex + 1) + '/' + projectDetailsTotalChunks + ')';
+                }
+                pageLoaderText.textContent = loaderLabel + ' (' + (completedSteps + 1) + '/' + totalSteps + ')';
             }
 
             const body = new URLSearchParams({
                 target_month: ym,
-                batch_month: batchYm,
+                batch_month: ym,
                 company: selectedCompany,
                 column_key: step.key,
             });
+            if (isProjectDetails)
+            {
+                body.set('chunk_index', String(chunkIndex));
+            }
+
             fetch(columnBatchUrl, { method: 'POST', body: body })
                 .then(parseFetchResponse)
                 .then(function (json)
@@ -863,127 +934,50 @@
                     if (!json.ok)
                     {
                         hideLoader();
-                        toast('Fout bij ' + step.label.toLowerCase() + ' voor ' + formatMonth(batchYm) + ': ' + (json.error || 'Onbekende fout'), true);
+                        toast('Fout bij ' + step.label.toLowerCase() + ' voor ' + formatMonth(ym) + ': ' + (json.error || 'Onbekende fout'), true);
                         return;
                     }
 
-                    markProgressDone(progressState, progressKey);
-                    completedSteps++;
                     if (json.warning)
                     {
-                        toast('Waarschuwing ' + step.label + ' (' + formatMonth(batchYm) + '): ' + json.warning, true);
+                        toast('Waarschuwing ' + step.label + ' (' + formatMonth(ym) + '): ' + json.warning, true);
                     }
 
-                    columnIndex++;
-                    if (columnIndex >= effectiveColumnSteps.length)
+                    if (isProjectDetails)
                     {
-                        columnIndex = -1;
-                        batchIndex++;
-                    }
-                    runNextStep();
-                })
-                .catch(function (err)
-                {
-                    hideLoader();
-                    toast('Netwerkfout bij ' + step.label.toLowerCase() + ' voor ' + formatMonth(batchYm) + ': ' + err.message, true);
-                });
-        }
+                        const totalChunks = Math.max(1, Number(json.total_chunks || 1));
+                        if (chunkIndex === 0)
+                        {
+                            expandProjectDetailsProgressItems(totalChunks);
+                        }
 
-        function fetchPlanningProjectsAndRun ()
-        {
-            if (pageLoaderText)
-            {
-                pageLoaderText.textContent = 'Voorcalculatie-projecten voorbereiden...';
-            }
+                        markProgressDone(progressState, progressKey);
+                        completedSteps++;
 
-            const body = new URLSearchParams({ target_month: ym, company: selectedCompany });
-            fetch(planningProjectListUrl, { method: 'POST', body: body })
-                .then(parseFetchResponse)
-                .then(function (json)
-                {
-                    if (!json.ok)
-                    {
-                        hideLoader();
-                        toast('Fout bij projectlijst voorcalculatie: ' + (json.error || 'Onbekende fout'), true);
-                        return;
-                    }
+                        if (!json.chunks_complete && (chunkIndex + 1) < totalChunks)
+                        {
+                            projectDetailsChunkIndex = chunkIndex + 1;
+                            runTargetColumnStep();
+                            return;
+                        }
 
-                    const projects = Array.isArray(json.projects) ? json.projects : [];
-                    queuePlanningProjects(projects);
-                    if (planningQueue.length === 0)
-                    {
-                        buildSnapshot();
-                        return;
-                    }
-
-                    const planningBatches = buildPlanningBatches(planningQueue, 30);
-                    appendPlanningProgressItems(progressState, planningBatches);
-                    totalSteps += planningBatches.length;
-                    runPlanningBatchStep(planningBatches, 0);
-                })
-                .catch(function (err)
-                {
-                    if (planningQueue.length === 0)
-                    {
-                        hideLoader();
-                        toast('Netwerkfout bij projectlijst voorcalculatie: ' + err.message, true);
-                        return;
-                    }
-
-                    const planningBatches = buildPlanningBatches(planningQueue, 30);
-                    appendPlanningProgressItems(progressState, planningBatches);
-                    totalSteps += planningBatches.length;
-                    runPlanningBatchStep(planningBatches, 0);
-                });
-        }
-
-        function runPlanningBatchStep (planningBatches, batchIndex)
-        {
-            if (!Array.isArray(planningBatches) || batchIndex >= planningBatches.length)
-            {
-                buildSnapshot();
-                return;
-            }
-
-            const batch = planningBatches[batchIndex];
-            if (!batch || !Array.isArray(batch.projects) || batch.projects.length === 0)
-            {
-                runPlanningBatchStep(planningBatches, batchIndex + 1);
-                return;
-            }
-
-            const progressKey = String(batch.key || '');
-            markProgressLoading(progressState, progressKey, totalSteps, completedSteps);
-            alignProgressWindow(progressState.orderedKeys, progressState, completedSteps);
-            if (pageLoaderText)
-            {
-                pageLoaderText.textContent = String(batch.label || 'Voorcalculatie') + ' (' + (completedSteps + 1) + '/' + totalSteps + ')';
-            }
-
-            const body = new URLSearchParams({
-                target_month: ym,
-                company: selectedCompany,
-                project_numbers_json: JSON.stringify(batch.projects),
-            });
-            fetch(planningBatchUrl, { method: 'POST', body: body })
-                .then(parseFetchResponse)
-                .then(function (json)
-                {
-                    if (!json.ok)
-                    {
-                        hideLoader();
-                        toast('Fout bij ' + (batch.label || 'voorcalculatie') + ': ' + (json.error || 'Onbekende fout'), true);
+                        projectDetailsChunkIndex = 0;
+                        projectDetailsTotalChunks = 1;
+                        projectDetailsChunksExpanded = false;
+                        targetColumnIndex++;
+                        runTargetColumnStep();
                         return;
                     }
 
                     markProgressDone(progressState, progressKey);
                     completedSteps++;
-                    runPlanningBatchStep(planningBatches, batchIndex + 1);
+                    targetColumnIndex++;
+                    runTargetColumnStep();
                 })
                 .catch(function (err)
                 {
                     hideLoader();
-                    toast('Netwerkfout bij ' + (batch.label || 'voorcalculatie') + ': ' + err.message, true);
+                    toast('Netwerkfout bij ' + step.label.toLowerCase() + ' voor ' + formatMonth(ym) + ': ' + err.message, true);
                 });
         }
 
@@ -1001,7 +995,7 @@
                         return;
                     }
                     const data = json.data || {};
-                    const newSumm = createMonthSummary(ym, data, allBatchMonths[0]);
+                    const newSumm = createMonthSummary(ym, data, ym);
                     upsertMonthSummary(newSumm);
                     removeAddableMonth(ym);
                     renderGrid();
@@ -1015,7 +1009,7 @@
         }
 
         showLoader('Bezig met ophalen...');
-        runNextStep();
+        runTargetColumnStep();
     }
 
     function refreshMonth (ym)
@@ -1056,7 +1050,7 @@
         const parts = targetYm.split('-');
         const targetYear = parseInt(parts[0], 10);
         const targetMonth = parseInt(parts[1], 10);
-        // 36 months total: 35 before target + target itself (all fetched via batchUrl)
+        // 36 batch-maanden: projectnummers + kolommen per maand, daarna OHW en voorcalculatie
         const result = [];
         for (let i = 35; i >= 0; i--)
         {
@@ -1077,7 +1071,9 @@
         companySelect.addEventListener('change', function ()
         {
             const company = companySelect.value;
-            window.location.href = 'maanden.php?company=' + encodeURIComponent(company);
+            selectedCompany = company;
+            persistSelectedCompany(company);
+            window.location.href = 'maanden.php';
         });
     }
 

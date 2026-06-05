@@ -102,29 +102,13 @@ class ProjectFinanceService
                     'amount_incl_field' => 'Line_Amount',
                 ],
             ],
+            // Voorcalculatie (statisch, huidige BC-stand):
+            // - kosten: ProjectenJobTaskLines.Schedule_Total_Cost per Job_No
+            // - opbrengst: FactureerbareProjectPlanningsRegels.Line_Amount_LCY per Job_No
             'project_forecast' => [
-                'entity_set' => 'JobBaselineLines',
+                'cost_entity_set' => 'ProjectenJobTaskLines',
+                'revenue_entity_set' => 'FactureerbareProjectPlanningsRegels',
                 'project_key_field' => 'Job_No',
-                'line_type_field' => 'Line_Type',
-                'revenue_fields' => [
-                    'Line_Amount',
-                ],
-                'cost_fields' => [
-                    'Total_Cost',
-                ],
-                'select_fields' => [
-                    'Job_No',
-                    'Job_Task_No',
-                    'Line_No',
-                    'Type',
-                    'No',
-                    'Description',
-                    'Description_2',
-                    'Line_Type',
-                    'Line_Amount',
-                    'Total_Cost',
-                ],
-                'filter' => '',
             ],
             'project' => [
                 'cost_source' => [
@@ -169,33 +153,6 @@ class ProjectFinanceService
                 ],
             ],
         ];
-    }
-
-    /**
-     * Leest en valideert forecast-configuratie voor voorcalculatie per project.
-     */
-    private static function getProjectForecastConfig(): array
-    {
-        $config = self::financeDataConfig();
-        $selected = is_array($config['project_forecast'] ?? null) ? $config['project_forecast'] : [];
-
-        $entitySet = trim((string) ($selected['entity_set'] ?? ''));
-        $projectKeyField = trim((string) ($selected['project_key_field'] ?? ''));
-        $lineTypeField = trim((string) ($selected['line_type_field'] ?? ''));
-
-        if ($entitySet === '' || $projectKeyField === '' || $lineTypeField === '') {
-            throw new RuntimeException('Forecast configuratie mist entity_set, project_key_field of line_type_field.');
-        }
-
-        $selected['entity_set'] = $entitySet;
-        $selected['project_key_field'] = $projectKeyField;
-        $selected['line_type_field'] = $lineTypeField;
-        $selected['revenue_fields'] = is_array($selected['revenue_fields'] ?? null) ? $selected['revenue_fields'] : [];
-        $selected['cost_fields'] = is_array($selected['cost_fields'] ?? null) ? $selected['cost_fields'] : [];
-        $selected['select_fields'] = is_array($selected['select_fields'] ?? null) ? $selected['select_fields'] : [];
-        $selected['filter'] = trim((string) ($selected['filter'] ?? ''));
-
-        return $selected;
     }
 
     /**
@@ -557,61 +514,143 @@ class ProjectFinanceService
     }
 
     /**
-     * Haalt verwachte omzet/kosten op uit de voorcalculatiebron per project.
+     * Haalt voorcalculatie op per project (huidige BC-stand, geen historie).
+     *
+     * Kosten: ProjectenJobTaskLines.Schedule_Total_Cost (taakregels, geen totalen).
+     * Opbrengst: FactureerbareProjectPlanningsRegels.Line_Amount_LCY.
      */
     public function collectProjectForecastForProjects(array $projectNumbers, int $ttl = 3600): array
     {
-        $forecastConfig = self::getProjectForecastConfig();
-        $entitySet = (string) ($forecastConfig['entity_set'] ?? '');
-        $projectKeyField = (string) ($forecastConfig['project_key_field'] ?? '');
-        $lineTypeField = (string) ($forecastConfig['line_type_field'] ?? '');
-        $revenueFields = is_array($forecastConfig['revenue_fields'] ?? null) ? $forecastConfig['revenue_fields'] : [];
-        $costFields = is_array($forecastConfig['cost_fields'] ?? null) ? $forecastConfig['cost_fields'] : [];
-        $sourceFilter = trim((string) ($forecastConfig['filter'] ?? ''));
-        $baseSelectFields = is_array($forecastConfig['select_fields'] ?? null) ? $forecastConfig['select_fields'] : [];
-
-        $selectFields = array_values(array_unique(array_filter(array_merge(
-            [$projectKeyField, $lineTypeField],
-            $baseSelectFields,
-            $revenueFields,
-            $costFields
-        ), static function ($field): bool {
-            return is_string($field) && trim($field) !== '';
-        })));
-
         $totalsByProject = [];
         $breakdownByProject = [];
-        $projectChunks = self::chunkValues($projectNumbers, 25);
-
-        foreach ($projectChunks as $chunk) {
-            $projectFilters = [];
+        foreach (self::chunkValues($projectNumbers, 25) as $chunk) {
             foreach ($chunk as $projectNo) {
-                $projectNoText = trim((string) $projectNo);
-                if ($projectNoText === '') {
+                $normalizedProject = self::normalizeMatchValue((string) $projectNo);
+                if ($normalizedProject === '') {
                     continue;
                 }
 
-                $projectFilters[] = $projectKeyField . " eq '" . self::escapeOdataString($projectNoText) . "'";
+                if (!isset($totalsByProject[$normalizedProject])) {
+                    $totalsByProject[$normalizedProject] = [
+                        'expected_revenue' => 0.0,
+                        'expected_costs' => 0.0,
+                        'extra_work' => 0.0,
+                    ];
+                    $breakdownByProject[$normalizedProject] = [
+                        'expected_revenue_lines' => [],
+                        'expected_costs_lines' => [],
+                        'extra_work_lines' => [],
+                    ];
+                }
+            }
+        }
+
+        $costData = $this->fetchVoorcalculatieCostsForProjects($projectNumbers, $ttl);
+        $revenueData = $this->fetchVoorcalculatieRevenueForProjects($projectNumbers, $ttl);
+
+        foreach ($costData['totals'] as $normalizedProject => $amount) {
+            if (!isset($totalsByProject[$normalizedProject])) {
+                $totalsByProject[$normalizedProject] = [
+                    'expected_revenue' => 0.0,
+                    'expected_costs' => 0.0,
+                    'extra_work' => 0.0,
+                ];
+                $breakdownByProject[$normalizedProject] = [
+                    'expected_revenue_lines' => [],
+                    'expected_costs_lines' => [],
+                    'extra_work_lines' => [],
+                ];
             }
 
-            if ($projectFilters === []) {
+            $totalsByProject[$normalizedProject]['expected_costs'] = finance_add_amount(
+                (float) ($totalsByProject[$normalizedProject]['expected_costs'] ?? 0.0),
+                (float) $amount
+            );
+        }
+
+        foreach ($costData['breakdown'] as $normalizedProject => $lines) {
+            if (!isset($breakdownByProject[$normalizedProject])) {
+                $breakdownByProject[$normalizedProject] = [
+                    'expected_revenue_lines' => [],
+                    'expected_costs_lines' => [],
+                    'extra_work_lines' => [],
+                ];
+            }
+
+            $breakdownByProject[$normalizedProject]['expected_costs_lines'] = array_merge(
+                $breakdownByProject[$normalizedProject]['expected_costs_lines'],
+                is_array($lines) ? $lines : []
+            );
+        }
+
+        foreach ($revenueData['totals'] as $normalizedProject => $amount) {
+            if (!isset($totalsByProject[$normalizedProject])) {
+                $totalsByProject[$normalizedProject] = [
+                    'expected_revenue' => 0.0,
+                    'expected_costs' => 0.0,
+                    'extra_work' => 0.0,
+                ];
+                $breakdownByProject[$normalizedProject] = [
+                    'expected_revenue_lines' => [],
+                    'expected_costs_lines' => [],
+                    'extra_work_lines' => [],
+                ];
+            }
+
+            $totalsByProject[$normalizedProject]['expected_revenue'] = finance_add_amount(
+                (float) ($totalsByProject[$normalizedProject]['expected_revenue'] ?? 0.0),
+                (float) $amount
+            );
+        }
+
+        foreach ($revenueData['breakdown'] as $normalizedProject => $lines) {
+            if (!isset($breakdownByProject[$normalizedProject])) {
+                $breakdownByProject[$normalizedProject] = [
+                    'expected_revenue_lines' => [],
+                    'expected_costs_lines' => [],
+                    'extra_work_lines' => [],
+                ];
+            }
+
+            $breakdownByProject[$normalizedProject]['expected_revenue_lines'] = array_merge(
+                $breakdownByProject[$normalizedProject]['expected_revenue_lines'],
+                is_array($lines) ? $lines : []
+            );
+        }
+
+        return [
+            'forecast_totals_by_job' => $totalsByProject,
+            'forecast_breakdown_by_job' => $breakdownByProject,
+        ];
+    }
+
+    /**
+     * Voorcalculatie kosten uit ProjectenJobTaskLines (Schedule_Total_Cost).
+     *
+     * @return array{totals:array<string,float>,breakdown:array<string,array<int,array<string,mixed>>>}
+     */
+    private function fetchVoorcalculatieCostsForProjects(array $projectNumbers, int $ttl): array
+    {
+        $totals = [];
+        $breakdown = [];
+        $projectChunks = self::chunkValues($projectNumbers, 20);
+
+        foreach ($projectChunks as $chunk) {
+            $projectFilter = self::buildJobNoOrFilter($chunk);
+            if ($projectFilter === '') {
                 continue;
             }
 
-            $queryFilter = '(' . implode(' or ', $projectFilters) . ')';
-            if ($sourceFilter !== '') {
-                $queryFilter .= ' and (' . $sourceFilter . ')';
-            }
+            $url = $this->companyEntityUrlWithQuery('ProjectenJobTaskLines', [
+                '$select' => 'Job_No,Job_Task_No,Description,Job_Task_Type,Schedule_Total_Cost',
+                '$filter' => $projectFilter,
+            ]);
 
             try {
-                $url = $this->companyEntityUrlWithQuery($entitySet, [
-                    '$select' => implode(',', $selectFields),
-                    '$filter' => $queryFilter,
-                ]);
                 $rows = odata_get_all($url, $this->auth, $ttl);
             } catch (Throwable $loadError) {
                 throw new RuntimeException(
-                    'Finance bron ophalen mislukt voor ' . $entitySet . ' met filter: ' . $queryFilter,
+                    'Voorcalculatie kosten ophalen mislukt (ProjectenJobTaskLines): ' . $projectFilter,
                     0,
                     $loadError
                 );
@@ -622,30 +661,99 @@ class ProjectFinanceService
                     continue;
                 }
 
-                $projectNo = trim((string) ($row[$projectKeyField] ?? ''));
-                if ($projectNo === '') {
+                $projectNo = trim((string) ($row['Job_No'] ?? ''));
+                $taskNo = trim((string) ($row['Job_Task_No'] ?? ''));
+                if ($projectNo === '' || $taskNo === '') {
+                    continue;
+                }
+
+                if (self::isTotalJobTaskType((string) ($row['Job_Task_Type'] ?? ''))) {
+                    continue;
+                }
+
+                $amount = finance_to_float($row['Schedule_Total_Cost'] ?? 0.0);
+                if ($amount === 0.0) {
                     continue;
                 }
 
                 $normalizedProject = self::normalizeMatchValue($projectNo);
-                if (!isset($totalsByProject[$normalizedProject])) {
-                    $totalsByProject[$normalizedProject] = [
-                        'expected_revenue' => 0.0,
-                        'expected_costs' => 0.0,
-                    ];
-                }
-                if (!isset($breakdownByProject[$normalizedProject])) {
-                    $breakdownByProject[$normalizedProject] = [
-                        'expected_revenue_lines' => [],
-                        'expected_costs_lines' => [],
-                        'extra_work_lines' => [],
-                    ];
+                $totals[$normalizedProject] = finance_add_amount((float) ($totals[$normalizedProject] ?? 0.0), $amount);
+
+                if (!isset($breakdown[$normalizedProject])) {
+                    $breakdown[$normalizedProject] = [];
                 }
 
-                $lineType = trim((string) ($row[$lineTypeField] ?? ''));
+                $breakdown[$normalizedProject][] = [
+                    'Job_Task_No' => $taskNo,
+                    'Line_No' => 0,
+                    'Type' => (string) ($row['Job_Task_Type'] ?? ''),
+                    'No' => '',
+                    'Description' => (string) ($row['Description'] ?? ''),
+                    'Line_Amount' => $amount,
+                    'Line_Type' => '',
+                ];
+            }
+        }
 
-                $revenueAmount = self::firstNumericValue($row, $revenueFields);
-                $costAmount = self::firstNumericValue($row, $costFields);
+        return [
+            'totals' => $totals,
+            'breakdown' => $breakdown,
+        ];
+    }
+
+    /**
+     * Voorcalculatie opbrengst uit FactureerbareProjectPlanningsRegels (Line_Amount_LCY).
+     *
+     * @return array{totals:array<string,float>,breakdown:array<string,array<int,array<string,mixed>>>}
+     */
+    private function fetchVoorcalculatieRevenueForProjects(array $projectNumbers, int $ttl): array
+    {
+        $totals = [];
+        $breakdown = [];
+        $projectChunks = self::chunkValues($projectNumbers, 20);
+
+        foreach ($projectChunks as $chunk) {
+            $projectFilter = self::buildJobNoOrFilter($chunk);
+            if ($projectFilter === '') {
+                continue;
+            }
+
+            $url = $this->companyEntityUrlWithQuery('FactureerbareProjectPlanningsRegels', [
+                '$select' => 'Job_No,Job_Task_No,Line_No,Line_Type,Type,No,Description,Description_2,Line_Amount_LCY,LVS_Cancelled_Original_Line',
+                '$filter' => $projectFilter,
+            ]);
+
+            try {
+                $rows = odata_get_all($url, $this->auth, $ttl);
+            } catch (Throwable $loadError) {
+                throw new RuntimeException(
+                    'Voorcalculatie opbrengst ophalen mislukt (FactureerbareProjectPlanningsRegels): ' . $projectFilter,
+                    0,
+                    $loadError
+                );
+            }
+
+            foreach ($rows as $row) {
+                if (!is_array($row)) {
+                    continue;
+                }
+
+                if (self::isTruthyOdataBoolean($row['LVS_Cancelled_Original_Line'] ?? false)) {
+                    continue;
+                }
+
+                $projectNo = trim((string) ($row['Job_No'] ?? ''));
+                if ($projectNo === '') {
+                    continue;
+                }
+
+                $amount = finance_to_float($row['Line_Amount_LCY'] ?? 0.0);
+                if ($amount === 0.0) {
+                    continue;
+                }
+
+                $normalizedProject = self::normalizeMatchValue($projectNo);
+                $totals[$normalizedProject] = finance_add_amount((float) ($totals[$normalizedProject] ?? 0.0), $amount);
 
                 $lineDescription = trim((string) ($row['Description'] ?? ''));
                 $lineDescription2 = trim((string) ($row['Description_2'] ?? ''));
@@ -653,46 +761,58 @@ class ProjectFinanceService
                     $lineDescription = trim($lineDescription . ' / ' . $lineDescription2);
                 }
 
-                if ($revenueAmount !== 0.0) {
-                    $totalsByProject[$normalizedProject]['expected_revenue'] = finance_add_amount(
-                        (float) ($totalsByProject[$normalizedProject]['expected_revenue'] ?? 0.0),
-                        $revenueAmount
-                    );
-
-                    $breakdownByProject[$normalizedProject]['expected_revenue_lines'][] = [
-                        'Job_Task_No' => (string) ($row['Job_Task_No'] ?? ''),
-                        'Line_No' => (int) ($row['Line_No'] ?? 0),
-                        'Type' => (string) ($row['Type'] ?? ''),
-                        'No' => (string) ($row['No'] ?? ''),
-                        'Description' => $lineDescription,
-                        'Line_Amount' => $revenueAmount,
-                        'Line_Type' => $lineType,
-                    ];
+                if (!isset($breakdown[$normalizedProject])) {
+                    $breakdown[$normalizedProject] = [];
                 }
 
-                if ($costAmount !== 0.0) {
-                    $totalsByProject[$normalizedProject]['expected_costs'] = finance_add_amount(
-                        (float) ($totalsByProject[$normalizedProject]['expected_costs'] ?? 0.0),
-                        $costAmount
-                    );
-
-                    $breakdownByProject[$normalizedProject]['expected_costs_lines'][] = [
-                        'Job_Task_No' => (string) ($row['Job_Task_No'] ?? ''),
-                        'Line_No' => (int) ($row['Line_No'] ?? 0),
-                        'Type' => (string) ($row['Type'] ?? ''),
-                        'No' => (string) ($row['No'] ?? ''),
-                        'Description' => $lineDescription,
-                        'Line_Amount' => $costAmount,
-                        'Line_Type' => $lineType,
-                    ];
-                }
+                $breakdown[$normalizedProject][] = [
+                    'Job_Task_No' => (string) ($row['Job_Task_No'] ?? ''),
+                    'Line_No' => (int) ($row['Line_No'] ?? 0),
+                    'Type' => (string) ($row['Type'] ?? ''),
+                    'No' => (string) ($row['No'] ?? ''),
+                    'Description' => $lineDescription,
+                    'Line_Amount' => $amount,
+                    'Line_Type' => (string) ($row['Line_Type'] ?? ''),
+                ];
             }
         }
 
         return [
-            'forecast_totals_by_job' => $totalsByProject,
-            'forecast_breakdown_by_job' => $breakdownByProject,
+            'totals' => $totals,
+            'breakdown' => $breakdown,
         ];
+    }
+
+    /**
+     * OData-filter: Job_No eq 'P1' or Job_No eq 'P2' ...
+     */
+    private static function buildJobNoOrFilter(array $projectNumbers): string
+    {
+        $filters = [];
+        foreach ($projectNumbers as $projectNo) {
+            $projectNoText = trim((string) $projectNo);
+            if ($projectNoText === '') {
+                continue;
+            }
+
+            $filters[] = "Job_No eq '" . self::escapeOdataString($projectNoText) . "'";
+        }
+
+        if ($filters === []) {
+            return '';
+        }
+
+        return '(' . implode(' or ', $filters) . ')';
+    }
+
+    private static function isTotalJobTaskType(string $taskType): bool
+    {
+        return str_contains(strtolower(trim($taskType)), 'totaal');
+    }
+
+    private static function isTruthyOdataBoolean($value): bool
+    {
+        return $value === true || $value === 1 || $value === '1' || $value === 'true';
     }
 
     /**

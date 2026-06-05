@@ -160,26 +160,6 @@ function find_prev_month(string $yearMonth, array $savedMonths): ?string
 }
 
 /**
- * Leest projecttotaal uit werkorderrijen als samenvatting ontbreekt.
- */
-function project_total_from_workorders_d(array $workorders, string $field): float
-{
-    foreach ($workorders as $row) {
-        if (!is_array($row)) {
-            continue;
-        }
-
-        if (!array_key_exists($field, $row)) {
-            continue;
-        }
-
-        return finance_to_float($row[$field] ?? 0.0);
-    }
-
-    return 0.0;
-}
-
-/**
  * Page load
  */
 $currentUserEmail = current_user_email_d();
@@ -201,9 +181,13 @@ if ($companies === []) {
     ];
 }
 
-$selectedCompany = $_GET['company'] ?? $companies[0];
-if (!in_array($selectedCompany, $companies, true)) {
-    $selectedCompany = $companies[0];
+$userSettings = load_user_settings_d($currentUserEmail);
+$savedCompany = trim((string) ($userSettings['selected_company'] ?? ''));
+$selectedCompany = trim((string) ($_GET['company'] ?? ''));
+if ($selectedCompany === '' || !in_array($selectedCompany, $companies, true)) {
+    $selectedCompany = ($savedCompany !== '' && in_array($savedCompany, $companies, true))
+        ? $savedCompany
+        : $companies[0];
 }
 
 $yearMonth = trim((string) ($_GET['year_month'] ?? ''));
@@ -228,6 +212,12 @@ if (($_GET['action'] ?? '') === 'save_user_settings') {
     if (isset($decoded['detail_hidden_columns']) && is_array($decoded['detail_hidden_columns'])) {
         $patch['detail_hidden_columns'] = array_values(array_filter($decoded['detail_hidden_columns'], 'is_string'));
     }
+    if (isset($decoded['selected_company']) && is_string($decoded['selected_company'])) {
+        $companyValue = trim($decoded['selected_company']);
+        if ($companyValue !== '' && in_array($companyValue, $companies, true)) {
+            $patch['selected_company'] = $companyValue;
+        }
+    }
     $ok = save_user_settings_d($currentUserEmail, $patch);
     echo json_encode(['ok' => $ok], JSON_UNESCAPED_UNICODE);
     exit;
@@ -249,28 +239,22 @@ $savedMonths = list_saved_months_d($selectedCompany);
 $prevYearMonth = $yearMonth !== '' ? find_prev_month($yearMonth, $savedMonths) : null;
 $prevMonthData = $prevYearMonth !== null ? maand_load_d($selectedCompany, $prevYearMonth) : null;
 
-// Build prev month profit per project: job_no -> profit (invoiced revenue - invoiced costs from workorders)
+// Build prev month profit per project from project summaries
 $prevProfitByProject = [];
 if (is_array($prevMonthData)) {
-    $prevRows = $prevMonthData['workorder_rows'] ?? [];
-    foreach ($prevRows as $row) {
-        $jNo = strtolower(trim((string) ($row['Job_No'] ?? '')));
+    $prevSummaries = is_array($prevMonthData['project_summaries'] ?? null) ? $prevMonthData['project_summaries'] : [];
+    foreach ($prevSummaries as $summaryRow) {
+        if (!is_array($summaryRow)) {
+            continue;
+        }
+        $jNo = strtolower(trim((string) ($summaryRow['Job_No'] ?? '')));
         if ($jNo === '') {
             continue;
         }
-        $costs = finance_to_float($row['Actual_Costs'] ?? 0);
-        $revenue = finance_to_float($row['Total_Revenue'] ?? 0);
-        if (!isset($prevProfitByProject[$jNo])) {
-            $prevProfitByProject[$jNo] = ['revenue' => 0.0, 'costs' => 0.0];
-        }
-        $prevProfitByProject[$jNo]['revenue'] = finance_add_amount(
-            (float) ($prevProfitByProject[$jNo]['revenue'] ?? 0.0),
-            $revenue
-        );
-        $prevProfitByProject[$jNo]['costs'] = finance_add_amount(
-            (float) ($prevProfitByProject[$jNo]['costs'] ?? 0.0),
-            $costs
-        );
+        $prevProfitByProject[$jNo] = [
+            'revenue' => finance_to_float($summaryRow['Project_Total_Revenue'] ?? 0.0),
+            'costs' => finance_to_float($summaryRow['Project_Actual_Costs'] ?? 0.0),
+        ];
     }
 }
 
@@ -282,10 +266,6 @@ if (is_array($monthData)) {
     $projectDetails = is_array($monthData['project_details'] ?? null)
         ? $monthData['project_details']
         : [];
-    $workorderRows = is_array($monthData['workorder_rows'] ?? null)
-        ? $monthData['workorder_rows']
-        : [];
-
     $projectSummaryByJob = [];
     foreach ($projectSummaries as $summaryRow) {
         if (!is_array($summaryRow)) {
@@ -300,37 +280,12 @@ if (is_array($monthData)) {
         $projectSummaryByJob[$normJobNo] = $summaryRow;
     }
 
-    $workordersByJob = [];
-    foreach ($workorderRows as $workorderRow) {
-        if (!is_array($workorderRow)) {
-            continue;
-        }
-
-        $normJobNo = strtolower(trim((string) ($workorderRow['Job_No'] ?? '')));
-        if ($normJobNo === '') {
-            continue;
-        }
-
-        if (!isset($workordersByJob[$normJobNo])) {
-            $workordersByJob[$normJobNo] = [];
-        }
-
-        $workordersByJob[$normJobNo][] = $workorderRow;
-    }
-
-    $allJobNos = array_values(array_unique(array_merge(array_keys($projectSummaryByJob), array_keys($workordersByJob))));
-
-    foreach ($allJobNos as $normJobNo) {
-        $jobWorkorders = is_array($workordersByJob[$normJobNo] ?? null) ? $workordersByJob[$normJobNo] : [];
+    foreach (array_keys($projectSummaryByJob) as $normJobNo) {
         $summaryRow = $projectSummaryByJob[$normJobNo] ?? [];
         $detailRow = is_array($projectDetails[$normJobNo] ?? null) ? $projectDetails[$normJobNo] : [];
 
-        $totalCosts = array_key_exists('Project_Actual_Costs', $summaryRow)
-            ? finance_to_float($summaryRow['Project_Actual_Costs'])
-            : project_total_from_workorders_d($jobWorkorders, 'Project_Actual_Costs');
-        $totalRevenue = array_key_exists('Project_Total_Revenue', $summaryRow)
-            ? finance_to_float($summaryRow['Project_Total_Revenue'])
-            : project_total_from_workorders_d($jobWorkorders, 'Project_Total_Revenue');
+        $totalCosts = finance_to_float($summaryRow['Project_Actual_Costs'] ?? 0.0);
+        $totalRevenue = finance_to_float($summaryRow['Project_Total_Revenue'] ?? 0.0);
 
         $expectedRevenue = finance_to_float($summaryRow['Expected_Revenue'] ?? 0.0);
         $expectedCostsVc = finance_to_float($summaryRow['Expected_Costs_VC'] ?? 0.0);
@@ -352,14 +307,11 @@ if (is_array($monthData)) {
     }
 }
 
-// Load user settings
-$userSettings = load_user_settings_d($currentUserEmail);
 $savedColumnOrder = is_array($userSettings['detail_column_order'] ?? null) ? $userSettings['detail_column_order'] : [];
 $savedHiddenColumns = is_array($userSettings['detail_hidden_columns'] ?? null) ? $userSettings['detail_hidden_columns'] : [];
 
 // Default columns definition (keys)
 $defaultColumns = [
-    'workorders',
     'total_costs',
     'total_revenue',
     'customer',
@@ -371,10 +323,8 @@ $defaultColumns = [
     'margin_total',
     'pct_ready',
     'winst_ohw',
-    'notes',
     'project_manager',
     'reason_code',
-    'invoices',
 ];
 
 // Apply saved order (only include known columns)
@@ -1292,7 +1242,7 @@ $initialData = [
     <div id="statusFilterBar" class="status-filter-bar"></div>
     <div id="departmentFilterBar" class="status-filter-bar"></div>
     <div class="search-bar">
-        <input type="search" id="searchInput" placeholder="Zoeken in projecten / werkorders...">
+        <input type="search" id="searchInput" placeholder="Zoeken in projecten...">
         <button type="button" id="exportCsvBtn" class="status-toggle-all-btn">CSV export</button>
     </div>
 
@@ -1302,28 +1252,6 @@ $initialData = [
         <?php if ($errorMessage): ?>
             <div class="error-box"><?= htmlspecialchars($errorMessage) ?></div>
         <?php endif; ?>
-    </div>
-
-    <!-- Notes overlay -->
-    <div class="notes-overlay" id="notesOverlay" style="display:none">
-        <div class="notes-modal" role="dialog" aria-modal="true">
-            <div class="notes-modal-head">
-                <strong id="notesModalTitle">Notities</strong>
-                <button type="button" class="notes-close" id="notesClose">Sluiten</button>
-            </div>
-            <div id="notesModalBody"></div>
-        </div>
-    </div>
-
-    <!-- Invoice overlay -->
-    <div class="invoice-overlay" id="invoiceOverlay" style="display:none">
-        <div class="invoice-modal" role="dialog" aria-modal="true">
-            <div class="invoice-modal-head">
-                <strong id="invoiceModalTitle">Factuur</strong>
-                <button type="button" class="invoice-close" id="invoiceClose">Sluiten</button>
-            </div>
-            <div id="invoiceModalBody"></div>
-        </div>
     </div>
 
     <!-- Source overlay -->

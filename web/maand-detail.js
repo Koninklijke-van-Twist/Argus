@@ -17,14 +17,6 @@
     const departmentFilterBar = document.getElementById('departmentFilterBar');
     const searchInput = document.getElementById('searchInput');
     const exportCsvBtn = document.getElementById('exportCsvBtn');
-    const notesOverlay = document.getElementById('notesOverlay');
-    const notesModalTitle = document.getElementById('notesModalTitle');
-    const notesModalBody = document.getElementById('notesModalBody');
-    const notesClose = document.getElementById('notesClose');
-    const invoiceOverlay = document.getElementById('invoiceOverlay');
-    const invoiceModalTitle = document.getElementById('invoiceModalTitle');
-    const invoiceModalBody = document.getElementById('invoiceModalBody');
-    const invoiceClose = document.getElementById('invoiceClose');
     const sourceOverlay = document.getElementById('sourceOverlay');
     const sourceModalTitle = document.getElementById('sourceModalTitle');
     const sourceModalBody = document.getElementById('sourceModalBody');
@@ -42,11 +34,9 @@
     const pageLoader = document.getElementById('pageLoader');
     const pageLoaderText = document.getElementById('pageLoaderText');
 
-    const workorderRows = monthData && Array.isArray(monthData.workorder_rows) ? monthData.workorder_rows : [];
     const projectDetails = monthData && typeof monthData.project_details === 'object' ? monthData.project_details : {};
     const projectBreakdowns = monthData && typeof monthData.project_breakdowns === 'object' ? monthData.project_breakdowns : {};
     const projectSummaries = monthData && Array.isArray(monthData.project_summaries) ? monthData.project_summaries : [];
-    const invoiceDetailsById = monthData && typeof monthData.invoice_details_by_id === 'object' ? monthData.invoice_details_by_id : {};
 
     const projectSummaryByJob = {};
     for (const summaryRow of projectSummaries)
@@ -64,12 +54,16 @@
     }
 
     // Column order state (mutable)
+    const deprecatedColumnKeys = new Set(['workorders', 'notes', 'invoices']);
     let columnOrder = Array.isArray(payload.column_order) ? payload.column_order.slice() : defaultColumns.slice();
-    let hiddenColumns = new Set(Array.isArray(payload.hidden_columns) ? payload.hidden_columns : []);
+    columnOrder = columnOrder.filter(function (key) { return !deprecatedColumnKeys.has(key); });
+    let hiddenColumns = new Set(
+        (Array.isArray(payload.hidden_columns) ? payload.hidden_columns : [])
+            .filter(function (key) { return !deprecatedColumnKeys.has(key); })
+    );
 
     // Column label map
     const columnLabels = {
-        workorders: 'Werkorder(s)',
         total_costs: 'Kosten t/m heden',
         total_revenue: 'Opbrengst. t/m heden',
         customer: 'Deb.',
@@ -81,10 +75,8 @@
         margin_total: 'Marge Ttl',
         pct_ready: '% Gereed',
         winst_ohw: 'Winst OHW',
-        notes: 'Notities',
         project_manager: 'Projectmanager',
         reason_code: 'Redencode',
-        invoices: 'Facturen',
     };
 
     // Status filter state
@@ -146,7 +138,18 @@
         showFatalLoadingError('Promise-fout tijdens laden', details);
     });
 
-    // Group workorders by project
+    const OHW_DETAIL_HEADERS = [
+        'Boekdatum',
+        'Project gereed',
+        'Document',
+        'Grootboekrekening',
+        'WIP-methode',
+        'Type',
+        'Afd.',
+        'Bedrag',
+    ];
+
+    // Projecten uit snapshot
     const projectMap = {};
 
     function ensureProjectMapEntry (normJob, seedRow)
@@ -178,15 +181,14 @@
                 customer_name: toTrimmedString(projDetail.Bill_to_Name || projSummary.Customer_Name || row.Customer_Name || ''),
                 project_manager: toTrimmedString(projDetail.Project_Manager || projSummary.Project_Manager || projDetail.Person_Responsible || ''),
                 reason_code: toTrimmedString(projDetail.KVT_Reason_Code || ''),
-                cost_center: toTrimmedString(projDetail.LVS_Global_Dimension_1_Code || projSummary.Cost_Center || row.Cost_Center || ''),
+                cost_center: primaryDepartmentFromBreakdown(breakdown)
+                    || toTrimmedString(projSummary.Cost_Center || projDetail.LVS_Global_Dimension_1_Code || ''),
                 project_total_costs: projectTotalCosts,
                 project_total_revenue: projectTotalRevenue,
                 expected_revenue: expectedRevenueFromBreakdown !== 0 ? expectedRevenueFromBreakdown : expectedRevenueFallback,
                 expected_costs_vc: expectedCostsVcFallback,
                 extra_work: extraWorkFromBreakdown !== 0 ? extraWorkFromBreakdown : extraWorkFallback,
                 pct_completed: parseDecimal(projDetail.Percent_Completed),
-                invoice_ids: Array.isArray(projSummary.Invoice_Ids) ? projSummary.Invoice_Ids.slice() : (row.Invoice_Ids && Array.isArray(row.Invoice_Ids) ? row.Invoice_Ids : []),
-                workorders: [],
                 breakdown: breakdown,
             };
         }
@@ -198,38 +200,6 @@
     {
         const summaryJobNo = toTrimmedString(summaryRow.Job_No || '').toLowerCase();
         ensureProjectMapEntry(summaryJobNo, summaryRow);
-    }
-
-    for (const row of workorderRows)
-    {
-        const jNo = toTrimmedString(row.Job_No || '');
-        const normJob = jNo.toLowerCase();
-
-        if (normJob === '')
-        {
-            continue;
-        }
-
-        const projectEntry = ensureProjectMapEntry(normJob, row);
-        if (!projectEntry)
-        {
-            continue;
-        }
-
-        projectEntry.workorders.push(row);
-        // Merge invoice ids
-        if (Array.isArray(row.Invoice_Ids))
-        {
-            const seen = new Set(projectEntry.invoice_ids);
-            for (const id of row.Invoice_Ids)
-            {
-                if (!seen.has(id))
-                {
-                    seen.add(id);
-                    projectEntry.invoice_ids.push(id);
-                }
-            }
-        }
     }
 
     function parseDecimal (v)
@@ -263,6 +233,99 @@
     function toTrimmedString (value)
     {
         return String(value === null || value === undefined ? '' : value).trim();
+    }
+
+    function primaryDepartmentFromBreakdown (breakdown)
+    {
+        const lineKeys = ['total_costs_lines', 'total_revenue_lines'];
+        for (const lineKey of lineKeys)
+        {
+            const lines = Array.isArray(breakdown[lineKey]) ? breakdown[lineKey] : [];
+            for (const line of lines)
+            {
+                const code = toTrimmedString(line && line.Global_Dimension_1_Code || '');
+                if (code !== '')
+                {
+                    return code;
+                }
+            }
+        }
+
+        return '';
+    }
+
+    function formatJobCompleteLabel (value)
+    {
+        if (value === true || value === 1 || value === '1' || value === 'true' || value === 'Ja')
+        {
+            return 'Ja';
+        }
+        if (value === false || value === 0 || value === '0' || value === 'false' || value === 'Nee')
+        {
+            return 'Nee';
+        }
+
+        return toTrimmedString(value);
+    }
+
+    function mapOhwBreakdownRowToModal (line, preferCost)
+    {
+        const amount = preferCost
+            ? parseDecimal(line.Total_Cost || line.WIP_Entry_Amount || 0)
+            : parseDecimal(line.Line_Amount || line.WIP_Entry_Amount || 0);
+
+        return [
+            line.Posting_Date || '',
+            formatJobCompleteLabel(line.Job_Complete),
+            line.Document_No || '',
+            line.G_L_Account_No || '',
+            line.WIP_Method_Used || '',
+            line.Type || line.Entry_Type || '',
+            line.Global_Dimension_1_Code || '',
+            fmtCurrency(amount),
+        ];
+    }
+
+    function aggregateOhwLinesFooter (lines, amountFields)
+    {
+        const totalsByType = {};
+        for (const line of lines)
+        {
+            if (!line || typeof line !== 'object')
+            {
+                continue;
+            }
+
+            const typeLabel = toTrimmedString(line.Type || line.Entry_Type || 'Overig') || 'Overig';
+            let amount = 0;
+            for (const fieldName of amountFields)
+            {
+                if (line[fieldName] !== undefined && line[fieldName] !== null && line[fieldName] !== '')
+                {
+                    amount = parseDecimal(line[fieldName]);
+                    break;
+                }
+            }
+
+            totalsByType[typeLabel] = (totalsByType[typeLabel] || 0) + amount;
+        }
+
+        const labels = Object.keys(totalsByType).sort(function (left, right)
+        {
+            return left.localeCompare(right, 'nl');
+        });
+        const result = labels.map(function (label)
+        {
+            return { label: label, value: totalsByType[label] };
+        });
+
+        if (result.length > 1)
+        {
+            const sum = result.reduce(function (acc, item) { return acc + item.value; }, 0);
+            result.push({ label: 'Totaal', value: sum, isResult: true });
+        }
+
+        return result;
     }
 
     function computeExtraWork (projDetail)
@@ -355,16 +418,7 @@
      */
     function collectAllStatuses ()
     {
-        const statuses = new Set();
-        for (const row of workorderRows)
-        {
-            const s = toTrimmedString(row.Status || '');
-            if (s !== '')
-            {
-                statuses.add(s);
-            }
-        }
-        return [...statuses].sort();
+        return [];
     }
 
     function renderStatusFilterBar ()
@@ -618,24 +672,6 @@
                 continue;
             }
 
-            const visibleWOs = proj.workorders.filter(function (wo)
-            {
-                const status = toTrimmedString(wo.Status || '');
-                return !hiddenStatuses.has(status);
-            });
-
-            if (visibleWOs.length === 0)
-            {
-                const computed = getProjectComputedValues(proj);
-                const hasProjectTotals = computed.costs !== 0 || computed.revenue !== 0
-                    || computed.expected !== 0 || computed.costsVc !== 0 || computed.extraWork !== 0;
-                if (!hasProjectTotals)
-                {
-                    continue; // no visible WO and no project totals to show
-                }
-            }
-
-            // Search filter
             if (search !== '')
             {
                 const haystack = [
@@ -645,7 +681,7 @@
                     proj.customer_id,
                     proj.project_manager,
                     proj.cost_center,
-                ].concat(visibleWOs.map(function (w) { return [w.No || '', w.Description || '', w.Customer_Name || ''].join(' '); })).join(' ').toLowerCase();
+                ].join(' ').toLowerCase();
 
                 if (!haystack.includes(search))
                 {
@@ -653,7 +689,7 @@
                 }
             }
 
-            filtered.push({ proj, visibleWOs });
+            filtered.push({ proj, visibleWOs: [] });
         }
 
         // Sort
@@ -750,19 +786,6 @@
         };
     }
 
-    function formatInvoicePreviewText (ids)
-    {
-        const safeIds = Array.isArray(ids) ? ids : [];
-        if (safeIds.length === 0)
-        {
-            return '–';
-        }
-        const maxVisibleInvoiceIds = 3;
-        const visibleIds = safeIds.slice(0, maxVisibleInvoiceIds);
-        const remainingCount = safeIds.length - visibleIds.length;
-        return visibleIds.join(', ') + (remainingCount > 0 ? ' +' + remainingCount : '');
-    }
-
     function getVisibleColumnKeys ()
     {
         return columnOrder.filter(function (colKey) { return !hiddenColumns.has(colKey); });
@@ -772,8 +795,6 @@
     {
         switch (colKey)
         {
-            case 'workorders':
-                return visibleWOs.length + ' WO' + (visibleWOs.length !== 1 ? '\'s' : '');
             case 'total_costs':
                 return fmtCurrency(computed.costs);
             case 'total_revenue':
@@ -796,14 +817,10 @@
                 return fmtPct(computed.pctDisplay);
             case 'winst_ohw':
                 return fmtCurrency(computed.winstOhw);
-            case 'notes':
-                return 'Notities';
             case 'project_manager':
                 return proj.project_manager || '';
             case 'reason_code':
                 return proj.reason_code || '';
-            case 'invoices':
-                return formatInvoicePreviewText(proj.invoice_ids || []);
             default:
                 return '';
         }
@@ -816,38 +833,32 @@
 
         switch (colKey)
         {
-            case 'workorders':
-                return { type: 'computed-field', formula: 'Aantal zichtbare werkorders na filters' };
             case 'total_costs':
-                return { type: 'bc-field', name: 'Total_Cost', source: 'ProjectPosten', filters: baseFilter };
+                return { type: 'bc-field', name: 'WIP_Entry_Amount', source: 'Grootboekposten_OHW', filters: baseFilter + ',WIP_Entry_Amount<0' };
             case 'total_revenue':
-                return { type: 'bc-field', name: 'Line_Amount', source: 'ProjectPosten', filters: baseFilter + ',Entry_Type!=Gebruik' };
+                return { type: 'bc-field', name: 'WIP_Entry_Amount', source: 'Grootboekposten_OHW', filters: baseFilter + ',WIP_Entry_Amount>0' };
             case 'customer':
-                return { type: 'bc-field', name: 'Bill_to_Customer_No,Bill_to_Name', source: 'Projecten,Werkorders', filters: baseFilter.replace('Job_No=', 'No=') + ',' + baseFilter };
+                return { type: 'bc-field', name: 'Bill_to_Customer_No,Bill_to_Name', source: 'Projecten', filters: baseFilter.replace('Job_No=', 'No=') };
             case 'description':
-                return { type: 'bc-field', name: 'Description,Task_Description', source: 'Projecten,Werkorders', filters: baseFilter.replace('Job_No=', 'No=') + ',' + baseFilter };
+                return { type: 'bc-field', name: 'Description', source: 'Projecten', filters: baseFilter.replace('Job_No=', 'No=') };
             case 'cost_center':
-                return { type: 'bc-field', name: 'LVS_Global_Dimension_1_Code,Job_Dimension_1_Value', source: 'Projecten,Werkorders', filters: baseFilter.replace('Job_No=', 'No=') + ',' + baseFilter };
+                return { type: 'bc-field', name: 'Global_Dimension_1_Code', source: 'Grootboekposten_OHW', filters: baseFilter };
             case 'expected_revenue':
-                return { type: 'bc-field', name: 'Line_Amount', source: 'JobBaselineLines', filters: baseFilter };
+                return { type: 'bc-field', name: 'Line_Amount_LCY', source: 'FactureerbareProjectPlanningsRegels', filters: baseFilter };
             case 'costs_vc':
-                return { type: 'bc-field', name: 'Total_Cost', source: 'JobBaselineLines', filters: baseFilter };
+                return { type: 'bc-field', name: 'Schedule_Total_Cost', source: 'ProjectenJobTaskLines', filters: baseFilter };
             case 'extra_work':
-                return { type: 'computed-field', formula: 'Extra_Work is afgeleid uit planning/Projecten en kan meerdere BC velden combineren' };
+                return { type: 'computed-field', formula: 'Meerwerk (nog niet gekoppeld aan nieuwe voorcalculatie-bronnen)' };
             case 'margin_total':
-                return { type: 'computed-field', formula: 'Sum(JobBaselineLines.Line_Amount) - Sum(JobBaselineLines.Total_Cost)' };
+                return { type: 'computed-field', formula: 'Sum(FactureerbareProjectPlanningsRegels.Line_Amount_LCY) - Sum(ProjectenJobTaskLines.Schedule_Total_Cost)' };
             case 'pct_ready':
                 return { type: 'bc-field', name: 'Percent_Completed', source: 'Projecten', filters: baseFilter.replace('Job_No=', 'No=') };
             case 'winst_ohw':
-                return { type: 'computed-field', formula: '(Sum(JobBaselineLines.Line_Amount) - Sum(JobBaselineLines.Total_Cost)) * (Projecten.Percent_Completed / 100)' };
-            case 'notes':
-                return { type: 'bc-field', name: 'Memo,Memo_Internal_Use_Only,Memo_Invoice,KVT_Memo_Invoice_Details,KVT_Remarks_Invoicing', source: 'Werkorders', filters: baseFilter };
+                return { type: 'computed-field', formula: '(Opbrengst VC - Kosten VC) * (Projecten.Percent_Completed / 100)' };
             case 'project_manager':
                 return { type: 'bc-field', name: 'Project_Manager,Person_Responsible', source: 'Projecten', filters: baseFilter.replace('Job_No=', 'No=') };
             case 'reason_code':
                 return { type: 'bc-field', name: 'KVT_Reason_Code', source: 'Projecten', filters: baseFilter.replace('Job_No=', 'No=') };
-            case 'invoices':
-                return { type: 'bc-field', name: 'Document_No', source: 'SalesInvoiceLines,SalesLines', filters: baseFilter };
             default:
                 return null;
         }
@@ -1070,12 +1081,7 @@
         const fragment = document.createDocumentFragment();
         for (const { proj, visibleWOs } of visibleProjects)
         {
-            const projectRow = renderProjectRow(proj, visibleWOs);
-            fragment.appendChild(projectRow);
-            if (expandedProjectJobs.has(proj.job_no))
-            {
-                fragment.appendChild(renderSubtableRow(proj, visibleWOs));
-            }
+            fragment.appendChild(renderProjectRow(proj, visibleWOs));
         }
         tbodyEl.appendChild(fragment);
 
@@ -1092,10 +1098,6 @@
         const tr = document.createElement('tr');
         tr.className = 'project-row';
         tr.dataset.normJob = normJob;
-        if (expandedProjectJobs.has(proj.job_no))
-        {
-            tr.classList.add('project-row-expanded');
-        }
 
         // Project No cell
         const tdNo = document.createElement('td');
@@ -1111,19 +1113,6 @@
 
             switch (colKey)
             {
-                case 'workorders':
-                    {
-                        const btn = document.createElement('button');
-                        btn.type = 'button';
-                        btn.className = 'subtable-toggle-btn';
-                        btn.textContent = visibleWOs.length + ' WO' + (visibleWOs.length !== 1 ? '\'s' : '');
-                        btn.addEventListener('click', function ()
-                        {
-                            toggleSubtable(proj, visibleWOs, tr);
-                        });
-                        td.appendChild(btn);
-                        break;
-                    }
                 case 'total_costs':
                     td.style.textAlign = 'right';
                     td.innerHTML = '<span class="aggregate-source-link ' + amountClass(-computed.costs) + '">' + escapeHtml(fmtCurrency(computed.costs)) + '</span>';
@@ -1132,50 +1121,18 @@
                         showProjectSourceModal(
                             proj,
                             'Totale kosten t/m heden – project ' + proj.job_no,
-                            ['Boekdatum', 'Taak', 'Type', 'Nr.', 'Omschrijving', 'Bedrag'],
+                            OHW_DETAIL_HEADERS,
                             function (breakdown)
                             {
                                 return breakdown.total_costs_lines.map(function (line)
                                 {
-                                    return [
-                                        line.Posting_Date || '',
-                                        line.Job_Task_No || '',
-                                        line.Entry_Type || line.Type || '',
-                                        line.No || '',
-                                        line.Description || '',
-                                        fmtCurrency(line.Total_Cost || line.Line_Amount || 0),
-                                    ];
+                                    return mapOhwBreakdownRowToModal(line, true);
                                 });
                             },
                             function (breakdown)
                             {
                                 const lines = Array.isArray(breakdown.total_costs_lines) ? breakdown.total_costs_lines : [];
-                                let verkoopTotal = 0;
-                                let gebruikTotal = 0;
-                                let hasVerkoop = false;
-                                let hasGebruik = false;
-
-                                for (const line of lines)
-                                {
-                                    const entryType = toTrimmedString(line && (line.Entry_Type || line.Type) || '').toLowerCase();
-                                    const amount = parseDecimal(line && (line.Total_Cost || line.Line_Amount) || 0);
-                                    if (entryType === 'verkoop')
-                                    {
-                                        verkoopTotal += amount;
-                                        hasVerkoop = true;
-                                    }
-                                    else if (entryType === 'gebruik')
-                                    {
-                                        gebruikTotal += amount;
-                                        hasGebruik = true;
-                                    }
-                                }
-
-                                const result = [];
-                                if (hasVerkoop) { result.push({ label: 'Verkoop', value: verkoopTotal }); }
-                                if (hasGebruik) { result.push({ label: 'Gebruik', value: gebruikTotal }); }
-                                if (hasVerkoop && hasGebruik) { result.push({ label: 'Resultaat', value: verkoopTotal + gebruikTotal, isResult: true }); }
-                                return result;
+                                return aggregateOhwLinesFooter(lines, ['Total_Cost', 'WIP_Entry_Amount']);
                             }
                         );
                     });
@@ -1188,50 +1145,18 @@
                         showProjectSourceModal(
                             proj,
                             'Totale opbrengst t/m heden – project ' + proj.job_no,
-                            ['Boekdatum', 'Taak', 'Type', 'Nr.', 'Omschrijving', 'Bedrag'],
+                            OHW_DETAIL_HEADERS,
                             function (breakdown)
                             {
                                 return breakdown.total_revenue_lines.map(function (line)
                                 {
-                                    return [
-                                        line.Posting_Date || '',
-                                        line.Job_Task_No || '',
-                                        line.Entry_Type || line.Type || '',
-                                        line.No || '',
-                                        line.Description || '',
-                                        fmtCurrency(line.Line_Amount || 0),
-                                    ];
+                                    return mapOhwBreakdownRowToModal(line, false);
                                 });
                             },
                             function (breakdown)
                             {
                                 const lines = Array.isArray(breakdown.total_revenue_lines) ? breakdown.total_revenue_lines : [];
-                                let verkoopTotal = 0;
-                                let gebruikTotal = 0;
-                                let hasVerkoop = false;
-                                let hasGebruik = false;
-
-                                for (const line of lines)
-                                {
-                                    const entryType = toTrimmedString(line && (line.Entry_Type || line.Type) || '').toLowerCase();
-                                    const amount = parseDecimal(line && line.Line_Amount || 0);
-                                    if (entryType === 'verkoop')
-                                    {
-                                        verkoopTotal += amount;
-                                        hasVerkoop = true;
-                                    }
-                                    else if (entryType === 'gebruik')
-                                    {
-                                        gebruikTotal += amount;
-                                        hasGebruik = true;
-                                    }
-                                }
-
-                                const result = [];
-                                if (hasVerkoop) { result.push({ label: 'Verkoop', value: verkoopTotal }); }
-                                if (hasGebruik) { result.push({ label: 'Gebruik', value: gebruikTotal }); }
-                                if (hasVerkoop && hasGebruik) { result.push({ label: 'Resultaat', value: verkoopTotal + gebruikTotal, isResult: true }); }
-                                return result;
+                                return aggregateOhwLinesFooter(lines, ['Line_Amount', 'WIP_Entry_Amount']);
                             }
                         );
                     });
@@ -1344,62 +1269,12 @@
                     td.style.textAlign = 'right';
                     td.innerHTML = '<span class="' + amountClass(computed.winstOhw) + '">' + escapeHtml(fmtCurrency(computed.winstOhw)) + '</span>';
                     break;
-                case 'notes':
-                    {
-                        const btn = document.createElement('button');
-                        btn.type = 'button';
-                        btn.className = 'notes-btn';
-                        btn.textContent = 'Notities';
-                        btn.addEventListener('click', function () { showNotesModal(proj); });
-                        td.appendChild(btn);
-                        break;
-                    }
                 case 'project_manager':
                     td.textContent = proj.project_manager || '';
                     break;
                 case 'reason_code':
                     td.textContent = proj.reason_code || '';
                     break;
-                case 'invoices':
-                    {
-                        const ids = proj.invoice_ids || [];
-                        const maxVisibleInvoiceIds = 3;
-                        if (ids.length === 0)
-                        {
-                            td.textContent = '–';
-                            td.style.color = '#94a3b8';
-                        }
-                        else
-                        {
-                            const frag = document.createDocumentFragment();
-                            const visibleIds = ids.slice(0, maxVisibleInvoiceIds);
-                            for (let i = 0; i < visibleIds.length; i++)
-                            {
-                                if (i > 0)
-                                {
-                                    frag.appendChild(document.createTextNode(', '));
-                                }
-                                const link = document.createElement('span');
-                                link.className = 'invoice-id-link';
-                                link.textContent = visibleIds[i];
-                                link.dataset.invoiceId = visibleIds[i];
-                                link.addEventListener('click', function ()
-                                {
-                                    showInvoiceModal(ids, proj.job_no);
-                                });
-                                frag.appendChild(link);
-                            }
-
-                            const remainingCount = ids.length - visibleIds.length;
-                            if (remainingCount > 0)
-                            {
-                                frag.appendChild(document.createTextNode(' +' + remainingCount));
-                            }
-
-                            td.appendChild(frag);
-                        }
-                        break;
-                    }
                 default:
                     td.textContent = '';
             }
@@ -1592,204 +1467,6 @@
         summaryBar.appendChild(stat('Omzet', totalRevenue, ''));
         summaryBar.appendChild(stat('Kosten', totalCosts, ''));
         summaryBar.appendChild(stat('Winst', profit, profit >= 0 ? 'stat-positive' : 'stat-negative'));
-    }
-
-    /**
-     * Functies: Notes modal
-     */
-    function showNotesModal (proj)
-    {
-        if (!notesOverlay || !notesModalBody)
-        {
-            return;
-        }
-
-        if (notesModalTitle)
-        {
-            notesModalTitle.textContent = 'Notities – Project ' + proj.job_no;
-        }
-
-        notesModalBody.innerHTML = '';
-
-        // All workorders under this project
-        const wos = proj.workorders;
-        if (wos.length === 0)
-        {
-            const p = document.createElement('p');
-            p.textContent = 'Geen werkorders gevonden.';
-            notesModalBody.appendChild(p);
-        }
-        else
-        {
-            for (const wo of wos)
-            {
-                const header = document.createElement('div');
-                header.className = 'notes-workorder-header';
-                header.textContent = 'Werkorder: ' + (wo.No || '') + (wo.Description ? ' – ' + wo.Description : '');
-                notesModalBody.appendChild(header);
-
-                const notes = Array.isArray(wo.Notes) ? wo.Notes : [];
-                const nonEmpty = notes.filter(function (n) { return (n.value || '').trim() !== ''; });
-
-                if (nonEmpty.length === 0)
-                {
-                    const empty = document.createElement('p');
-                    empty.style.color = '#94a3b8';
-                    empty.style.fontSize = '12px';
-                    empty.textContent = 'Geen notities.';
-                    notesModalBody.appendChild(empty);
-                }
-                else
-                {
-                    for (const note of nonEmpty)
-                    {
-                        const section = document.createElement('div');
-                        section.className = 'notes-section';
-                        const titleEl = document.createElement('div');
-                        titleEl.className = 'notes-section-title';
-                        titleEl.textContent = note.label || '';
-                        const textEl = document.createElement('pre');
-                        textEl.className = 'notes-section-text';
-                        textEl.textContent = note.value || '';
-                        section.appendChild(titleEl);
-                        section.appendChild(textEl);
-                        notesModalBody.appendChild(section);
-                    }
-                }
-            }
-        }
-
-        notesOverlay.style.display = 'flex';
-    }
-
-    function closeNotesModal ()
-    {
-        if (notesOverlay)
-        {
-            notesOverlay.style.display = 'none';
-        }
-    }
-
-    /**
-     * Functies: Invoice modal
-     */
-    function showInvoiceModal (invoiceIds, projectNo)
-    {
-        if (!invoiceOverlay || !invoiceModalBody)
-        {
-            return;
-        }
-
-        const ids = Array.isArray(invoiceIds)
-            ? invoiceIds.filter(function (id) { return typeof id === 'string' && id.trim() !== ''; })
-            : [];
-
-        if (invoiceModalTitle)
-        {
-            if (projectNo)
-            {
-                invoiceModalTitle.textContent = 'Facturen project ' + projectNo;
-            }
-            else
-            {
-                invoiceModalTitle.textContent = 'Facturen';
-            }
-        }
-
-        invoiceModalBody.innerHTML = '';
-
-        if (ids.length === 0)
-        {
-            const p = document.createElement('p');
-            p.textContent = 'Geen facturen beschikbaar.';
-            invoiceModalBody.appendChild(p);
-        }
-        else
-        {
-            const table = document.createElement('table');
-            table.style.width = '100%';
-            table.style.borderCollapse = 'collapse';
-            table.style.fontSize = '12px';
-
-            const thead = document.createElement('thead');
-            const hRow = document.createElement('tr');
-            for (const lbl of ['Factuur', 'Klant', 'Omschrijving', 'Bedrag', 'Korting %'])
-            {
-                const th = document.createElement('th');
-                th.textContent = lbl;
-                th.style.cssText = 'background:#f1f5fb;padding:6px 8px;text-align:left;border-bottom:1px solid #e7edf5;font-weight:700;';
-                if (['Bedrag', 'Korting %'].includes(lbl))
-                {
-                    th.style.textAlign = 'right';
-                }
-                hRow.appendChild(th);
-            }
-            thead.appendChild(hRow);
-            table.appendChild(thead);
-
-            const tbody = document.createElement('tbody');
-            for (const invoiceId of ids)
-            {
-                const details = invoiceDetailsById[invoiceId];
-                const lines = details && Array.isArray(details.Lines) ? details.Lines : [];
-
-                if (lines.length === 0)
-                {
-                    const tr = document.createElement('tr');
-                    const cells = [invoiceId, '', 'Geen details beschikbaar', fmtCurrency(0), '0.00%'];
-                    cells.forEach(function (val, i)
-                    {
-                        const td = document.createElement('td');
-                        td.textContent = val;
-                        td.style.cssText = 'padding:5px 8px;border-bottom:1px solid #e7edf5;';
-                        if (i >= 3)
-                        {
-                            td.style.textAlign = 'right';
-                        }
-                        tr.appendChild(td);
-                    });
-                    tbody.appendChild(tr);
-                    continue;
-                }
-
-                for (const line of lines)
-                {
-                    const tr = document.createElement('tr');
-                    const cells = [
-                        invoiceId,
-                        line.Customer_No || '',
-                        line.Description || '',
-                        fmtCurrency(line.Amount || 0),
-                        (line.Line_Discount_Percent || 0).toFixed(2) + '%',
-                    ];
-                    cells.forEach(function (val, i)
-                    {
-                        const td = document.createElement('td');
-                        td.textContent = val;
-                        td.style.cssText = 'padding:5px 8px;border-bottom:1px solid #e7edf5;';
-                        if (i >= 3)
-                        {
-                            td.style.textAlign = 'right';
-                        }
-                        tr.appendChild(td);
-                    });
-                    tbody.appendChild(tr);
-                }
-            }
-
-            table.appendChild(tbody);
-            invoiceModalBody.appendChild(table);
-        }
-
-        invoiceOverlay.style.display = 'flex';
-    }
-
-    function closeInvoiceModal ()
-    {
-        if (invoiceOverlay)
-        {
-            invoiceOverlay.style.display = 'none';
-        }
     }
 
     function showSourceModal (title, headers, rows, summaryRows)
@@ -2079,7 +1756,7 @@
         let startLeft = 0, startTop = 0, startWinY = 0;
         let canScrollY = false, rafId = 0;
 
-        const interactive = 'button,a,input,select,textarea,[role="button"],.subtable-toggle-btn,.notes-btn,.invoice-id-link';
+        const interactive = 'button,a,input,select,textarea,[role="button"],.subtable-toggle-btn';
 
         function endDrag ()
         {
@@ -2158,35 +1835,30 @@
         pageLoader.classList.remove('is-visible');
     }
 
+    function persistSelectedCompany (company)
+    {
+        if (!saveSettingsUrl || !company)
+        {
+            return;
+        }
+
+        fetch(saveSettingsUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ selected_company: company }),
+        }).catch(function () {});
+    }
+
     // Company select
     if (companySelect)
     {
         companySelect.addEventListener('change', function ()
         {
             const ym = (payload.year_month || '');
-            window.location.href = 'maand-detail.php?company=' + encodeURIComponent(companySelect.value)
-                + (ym ? '&year_month=' + encodeURIComponent(ym) : '');
+            persistSelectedCompany(companySelect.value);
+            window.location.href = 'maand-detail.php'
+                + (ym ? '?year_month=' + encodeURIComponent(ym) : '');
         });
-    }
-
-    // Notes modal
-    if (notesClose)
-    {
-        notesClose.addEventListener('click', closeNotesModal);
-    }
-    if (notesOverlay)
-    {
-        notesOverlay.addEventListener('click', function (e) { if (e.target === notesOverlay) { closeNotesModal(); } });
-    }
-
-    // Invoice modal
-    if (invoiceClose)
-    {
-        invoiceClose.addEventListener('click', closeInvoiceModal);
-    }
-    if (invoiceOverlay)
-    {
-        invoiceOverlay.addEventListener('click', function (e) { if (e.target === invoiceOverlay) { closeInvoiceModal(); } });
     }
 
     if (sourceClose)
@@ -2263,9 +1935,8 @@
 
     // Initial render
     const hasRenderableProjects = Object.keys(projectMap).length > 0;
-    if (appEl && (workorderRows.length > 0 || hasRenderableProjects))
+    if (appEl && hasRenderableProjects)
     {
-        renderStatusFilterBar();
         renderDepartmentFilterBar();
         renderTable();
         updateSummary();
@@ -2274,7 +1945,7 @@
     {
         const empty = document.createElement('div');
         empty.className = 'empty';
-        empty.textContent = monthData ? 'Geen projecten of werkorders gevonden voor deze maand.' : 'Geen maanddata geladen.';
+        empty.textContent = monthData ? 'Geen projecten gevonden voor deze maand.' : 'Geen maanddata geladen.';
         appEl.appendChild(empty);
         if (summaryBar) { summaryBar.style.display = 'none'; }
     }
