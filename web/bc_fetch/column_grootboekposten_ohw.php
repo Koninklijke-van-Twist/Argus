@@ -113,6 +113,17 @@ function bc_fetch_ohw_gl_account_kind(string $glAccountNo): ?string
 }
 
 /**
+ * Regels waarbij G/L-rekening gelijk is aan balansrekening worden overgeslagen.
+ */
+function bc_fetch_ohw_should_ignore_row(array $row): bool
+{
+    $glAccount = preg_replace('/\s+/', '', trim((string) ($row['G_L_Account_No'] ?? '')));
+    $glBalAccount = preg_replace('/\s+/', '', trim((string) ($row['G_L_Bal_Account_No'] ?? '')));
+
+    return $glAccount !== '' && $glBalAccount !== '' && $glAccount === $glBalAccount;
+}
+
+/**
  * Berekent de kosten-/opbrengstmutatie voor één OHW-regel.
  *
  * Kosten (899900): negatief bedrag telt positief op, positief bedrag trekt af.
@@ -122,6 +133,10 @@ function bc_fetch_ohw_gl_account_kind(string $glAccountNo): ?string
  */
 function bc_fetch_ohw_amount_delta(array $row): ?array
 {
+    if (bc_fetch_ohw_should_ignore_row($row)) {
+        return null;
+    }
+
     $kind = bc_fetch_ohw_gl_account_kind((string) ($row['G_L_Account_No'] ?? ''));
     if ($kind === null) {
         return null;
@@ -259,6 +274,10 @@ function bc_fetch_column_grootboekposten_ohw(string $company, string $yearMonth,
 
         $projectNo = trim((string) ($row['Job_No'] ?? ''));
         if ($projectNo === '') {
+            continue;
+        }
+
+        if (bc_fetch_ohw_should_ignore_row($row)) {
             continue;
         }
 
