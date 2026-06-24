@@ -91,8 +91,8 @@ function bc_fetch_ohw_job_complete_label($value): string
 /**
  * Grootboekrekeningen voor OHW-kosten en -opbrengst.
  */
-const OHW_GL_ACCOUNT_COSTS = '399900';
-const OHW_GL_ACCOUNT_REVENUE = '399901';
+const OHW_GL_ACCOUNT_COSTS = '899900';
+const OHW_GL_ACCOUNT_REVENUE = '899901';
 
 /**
  * Bepaalt of een OHW-regel kosten of opbrengst is op basis van G_L_Account_No.
@@ -115,8 +115,8 @@ function bc_fetch_ohw_gl_account_kind(string $glAccountNo): ?string
 /**
  * Berekent de kosten-/opbrengstmutatie voor één OHW-regel.
  *
- * Kosten (399900): negatief bedrag telt positief op, positief bedrag trekt af.
- * Opbrengst (399901): positief telt op, negatief trekt af.
+ * Kosten (899900): negatief bedrag telt positief op, positief bedrag trekt af.
+ * Opbrengst (899901): positief telt op, negatief trekt af.
  *
  * @return array{kind:string,delta:float}|null
  */
@@ -185,7 +185,7 @@ function bc_fetch_primary_department_from_breakdown(array $breakdown): string
 }
 
 /**
- * Aggregateert OHW-rijen naar projecttotalen (G_L_Account_No 399900/399901).
+ * Aggregateert OHW-rijen naar projecttotalen (G_L_Account_No 899900/899901).
  */
 function bc_fetch_aggregate_ohw_rows(array $rows): array
 {
