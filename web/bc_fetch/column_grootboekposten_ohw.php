@@ -89,12 +89,64 @@ function bc_fetch_ohw_job_complete_label($value): string
 }
 
 /**
+ * Grootboekrekeningen voor OHW-kosten en -opbrengst.
+ */
+const OHW_GL_ACCOUNT_COSTS = '399900';
+const OHW_GL_ACCOUNT_REVENUE = '399901';
+
+/**
+ * Bepaalt of een OHW-regel kosten of opbrengst is op basis van G_L_Account_No.
+ *
+ * @return 'costs'|'revenue'|null
+ */
+function bc_fetch_ohw_gl_account_kind(string $glAccountNo): ?string
+{
+    $normalized = preg_replace('/\s+/', '', trim($glAccountNo));
+    if ($normalized === OHW_GL_ACCOUNT_COSTS) {
+        return 'costs';
+    }
+    if ($normalized === OHW_GL_ACCOUNT_REVENUE) {
+        return 'revenue';
+    }
+
+    return null;
+}
+
+/**
+ * Berekent de kosten-/opbrengstmutatie voor één OHW-regel.
+ *
+ * Kosten (399900): negatief bedrag telt positief op, positief bedrag trekt af.
+ * Opbrengst (399901): positief telt op, negatief trekt af.
+ *
+ * @return array{kind:string,delta:float}|null
+ */
+function bc_fetch_ohw_amount_delta(array $row): ?array
+{
+    $kind = bc_fetch_ohw_gl_account_kind((string) ($row['G_L_Account_No'] ?? ''));
+    if ($kind === null) {
+        return null;
+    }
+
+    $amount = bc_fetch_float_value($row, 'WIP_Entry_Amount');
+    if ($amount === 0.0) {
+        return null;
+    }
+
+    if ($kind === 'costs') {
+        return ['kind' => 'costs', 'delta' => -$amount];
+    }
+
+    return ['kind' => 'revenue', 'delta' => $amount];
+}
+
+/**
  * Zet een Grootboekposten_OHW-rij om naar een breakdownregel voor detailmodals.
  */
-function bc_fetch_ohw_breakdown_line_from_row(array $sourceRow, bool $isCost): array
+function bc_fetch_ohw_breakdown_line_from_row(array $sourceRow): array
 {
     $amount = bc_fetch_float_value($sourceRow, 'WIP_Entry_Amount');
-    $absAmount = abs($amount);
+    $kind = bc_fetch_ohw_gl_account_kind((string) ($sourceRow['G_L_Account_No'] ?? ''));
+    $isCost = $kind === 'costs';
 
     return [
         'Posting_Date' => (string) ($sourceRow['Posting_Date'] ?? ''),
@@ -104,8 +156,8 @@ function bc_fetch_ohw_breakdown_line_from_row(array $sourceRow, bool $isCost): a
         'WIP_Method_Used' => (string) ($sourceRow['WIP_Method_Used'] ?? ''),
         'Type' => (string) ($sourceRow['Type'] ?? ''),
         'Global_Dimension_1_Code' => (string) ($sourceRow['Global_Dimension_1_Code'] ?? ''),
-        'WIP_Entry_Amount' => $isCost ? $absAmount : $amount,
-        'Total_Cost' => $isCost ? $absAmount : 0.0,
+        'WIP_Entry_Amount' => $amount,
+        'Total_Cost' => $isCost ? -$amount : 0.0,
         'Line_Amount' => $isCost ? 0.0 : $amount,
     ];
 }
@@ -133,7 +185,7 @@ function bc_fetch_primary_department_from_breakdown(array $breakdown): string
 }
 
 /**
- * Aggregateert OHW-rijen naar projecttotalen (negatief = kosten, positief = opbrengst).
+ * Aggregateert OHW-rijen naar projecttotalen (G_L_Account_No 399900/399901).
  */
 function bc_fetch_aggregate_ohw_rows(array $rows): array
 {
@@ -151,26 +203,25 @@ function bc_fetch_aggregate_ohw_rows(array $rows): array
             continue;
         }
 
-        $normJob = bc_fetch_normalize_project_no($jobNo);
-        $amount = bc_fetch_float_value($row, 'WIP_Entry_Amount');
-        if ($amount === 0.0) {
+        $deltaInfo = bc_fetch_ohw_amount_delta($row);
+        if ($deltaInfo === null) {
             continue;
         }
 
+        $normJob = bc_fetch_normalize_project_no($jobNo);
         if (!isset($projectTotalsByJob[$normJob])) {
             $projectTotalsByJob[$normJob] = ['costs' => 0.0, 'revenue' => 0.0, 'resultaat' => 0.0];
         }
 
-        if ($amount < 0) {
-            $costAmount = abs($amount);
+        if ($deltaInfo['kind'] === 'costs') {
             $projectTotalsByJob[$normJob]['costs'] = bc_fetch_add(
                 (float) ($projectTotalsByJob[$normJob]['costs'] ?? 0.0),
-                $costAmount
+                (float) $deltaInfo['delta']
             );
         } else {
             $projectTotalsByJob[$normJob]['revenue'] = bc_fetch_add(
                 (float) ($projectTotalsByJob[$normJob]['revenue'] ?? 0.0),
-                $amount
+                (float) $deltaInfo['delta']
             );
         }
 
@@ -221,17 +272,19 @@ function bc_fetch_column_grootboekposten_ohw(string $company, string $yearMonth,
             $projectDictionary[$normProjectNo]['revenue'] = 0.0;
         }
 
-        $amount = bc_fetch_float_value($row, 'WIP_Entry_Amount');
-        if ($amount < 0) {
-            $projectDictionary[$normProjectNo]['costs'] = bc_fetch_add(
-                (float) ($projectDictionary[$normProjectNo]['costs'] ?? 0.0),
-                abs($amount)
-            );
-        } elseif ($amount > 0) {
-            $projectDictionary[$normProjectNo]['revenue'] = bc_fetch_add(
-                (float) ($projectDictionary[$normProjectNo]['revenue'] ?? 0.0),
-                $amount
-            );
+        $deltaInfo = bc_fetch_ohw_amount_delta($row);
+        if ($deltaInfo !== null) {
+            if ($deltaInfo['kind'] === 'costs') {
+                $projectDictionary[$normProjectNo]['costs'] = bc_fetch_add(
+                    (float) ($projectDictionary[$normProjectNo]['costs'] ?? 0.0),
+                    (float) $deltaInfo['delta']
+                );
+            } else {
+                $projectDictionary[$normProjectNo]['revenue'] = bc_fetch_add(
+                    (float) ($projectDictionary[$normProjectNo]['revenue'] ?? 0.0),
+                    (float) $deltaInfo['delta']
+                );
+            }
         }
 
         $projectDictionary[$normProjectNo]['rows'][] = $row;

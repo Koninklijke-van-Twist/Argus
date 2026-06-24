@@ -976,11 +976,11 @@ function build_snapshot_from_column_wip(string $company, string $targetYm, array
                 continue;
             }
 
-            $amount = finance_to_float($sourceRow['WIP_Entry_Amount'] ?? 0.0);
-            if ($amount < 0) {
-                $ohwCostLinesByProject[$normProjectNo][] = bc_fetch_ohw_breakdown_line_from_row($sourceRow, true);
-            } elseif ($amount > 0) {
-                $ohwRevenueLinesByProject[$normProjectNo][] = bc_fetch_ohw_breakdown_line_from_row($sourceRow, false);
+            $kind = bc_fetch_ohw_gl_account_kind((string) ($sourceRow['G_L_Account_No'] ?? ''));
+            if ($kind === 'costs') {
+                $ohwCostLinesByProject[$normProjectNo][] = bc_fetch_ohw_breakdown_line_from_row($sourceRow);
+            } elseif ($kind === 'revenue') {
+                $ohwRevenueLinesByProject[$normProjectNo][] = bc_fetch_ohw_breakdown_line_from_row($sourceRow);
             }
         }
     }
