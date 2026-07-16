@@ -1265,7 +1265,7 @@ $initialData = [
     <div id="departmentFilterBar" class="status-filter-bar"></div>
     <div class="search-bar">
         <input type="search" id="searchInput" placeholder="Zoeken in projecten...">
-        <button type="button" id="exportCsvBtn" class="status-toggle-all-btn">CSV export</button>
+        <button type="button" id="exportExcelBtn" class="status-toggle-all-btn">Excel export</button>
     </div>
 
     <div id="summaryBar" class="summary-bar"></div>
