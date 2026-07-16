@@ -324,6 +324,7 @@ $defaultColumns = [
     'pct_ready',
     'winst_ohw',
     'project_manager',
+    'document_status',
     'reason_code',
 ];
 
