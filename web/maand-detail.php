@@ -299,6 +299,7 @@ if (is_array($monthData)) {
 
         $projectColumnValuesByJob[$normJobNo] = [
             'total_costs' => $totalCosts,
+            'costs_to_date' => finance_to_float($summaryRow['Project_Actual_Costs_To_Date'] ?? 0.0),
             'total_revenue' => $totalRevenue,
             'costs_vc' => $expectedCostsVc,
             'margin_total' => $marginTotal,
@@ -319,6 +320,7 @@ $hiddenColumns = $savedHiddenColumns !== []
 // Default columns definition (keys)
 $defaultColumns = [
     'total_costs',
+    'costs_to_date',
     'total_revenue',
     'customer',
     'description',
@@ -361,6 +363,14 @@ $orderedColumns = array_values(array_filter($orderedColumns, static function ($k
 $winstOhwPos = array_search('winst_ohw', $orderedColumns, true);
 $insertMargeAt = $winstOhwPos === false ? count($orderedColumns) : $winstOhwPos;
 array_splice($orderedColumns, $insertMargeAt, 0, ['margin_total']);
+
+// Keep Kosten t/m heden directly after period costs.
+$orderedColumns = array_values(array_filter($orderedColumns, static function ($key): bool {
+    return $key !== 'costs_to_date';
+}));
+$totalCostsPos = array_search('total_costs', $orderedColumns, true);
+$insertCostsToDateAt = $totalCostsPos === false ? 0 : ($totalCostsPos + 1);
+array_splice($orderedColumns, $insertCostsToDateAt, 0, ['costs_to_date']);
 
 $initialData = [
     'companies' => $companies,

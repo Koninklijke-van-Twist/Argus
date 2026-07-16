@@ -81,6 +81,7 @@
     const periodMonthLabel = formatMonthLabel(selectedYearMonth);
     const columnLabels = {
         total_costs: periodMonthLabel ? ('Kosten t/m ' + periodMonthLabel) : 'Kosten t/m periode',
+        costs_to_date: 'Kosten t/m heden',
         total_revenue: periodMonthLabel ? ('Opbrengst t/m ' + periodMonthLabel) : 'Opbrengst t/m periode',
         customer: 'Deb.',
         description: 'Proj. Beschr.',
@@ -202,6 +203,7 @@
                 cost_center: primaryDepartmentFromBreakdown(breakdown)
                     || toTrimmedString(projSummary.Cost_Center || projDetail.LVS_Global_Dimension_1_Code || ''),
                 project_total_costs: projectTotalCosts,
+                project_total_costs_to_date: parseDecimal(projSummary.Project_Actual_Costs_To_Date || 0),
                 project_total_revenue: projectTotalRevenue,
                 expected_revenue: expectedRevenueFromBreakdown !== 0 ? expectedRevenueFromBreakdown : expectedRevenueFallback,
                 expected_costs_vc: expectedCostsVcFallback,
@@ -736,6 +738,7 @@
                     case 'description': return p.description || '';
                     case 'customer': return p.customer_name || '';
                     case 'total_costs': return computeProjectTotals(p).costs;
+                    case 'costs_to_date': return getProjectComputedValues(p).costsToDate;
                     case 'total_revenue': return computeProjectTotals(p).revenue;
                     case 'costs_vc': return getProjectComputedValues(p).costsVc;
                     case 'margin_total': return getProjectComputedValues(p).marginTotal;
@@ -778,6 +781,7 @@
     {
         return {
             costs: parseDecimal(proj.project_total_costs || 0),
+            costsToDate: parseDecimal(proj.project_total_costs_to_date || 0),
             revenue: parseDecimal(proj.project_total_revenue || 0),
         };
     }
@@ -790,6 +794,9 @@
             : null;
         const totals = computeProjectTotals(proj);
         const costs = columnValues ? parseDecimal(columnValues.total_costs) : totals.costs;
+        const costsToDate = columnValues && columnValues.costs_to_date !== null && columnValues.costs_to_date !== undefined
+            ? parseDecimal(columnValues.costs_to_date)
+            : totals.costsToDate;
         const revenue = columnValues ? parseDecimal(columnValues.total_revenue) : totals.revenue;
         const expected = parseDecimal(proj.expected_revenue);
         const costsVc = columnValues ? parseDecimal(columnValues.costs_vc) : parseDecimal(proj.expected_costs_vc);
@@ -806,6 +813,7 @@
 
         return {
             costs,
+            costsToDate,
             revenue,
             expected,
             costsVc,
@@ -828,6 +836,8 @@
         {
             case 'total_costs':
                 return fmtCurrency(computed.costs);
+            case 'costs_to_date':
+                return fmtCurrency(computed.costsToDate);
             case 'total_revenue':
                 return fmtCurrency(computed.revenue);
             case 'customer':
@@ -868,6 +878,8 @@
         {
             case 'total_costs':
                 return { type: 'bc-field', name: 'WIP_Entry_Amount', source: 'Grootboekposten_OHW', filters: baseFilter + ',G_L_Account_No=899900' };
+            case 'costs_to_date':
+                return { type: 'bc-field', name: 'WIP_Entry_Amount', source: 'Grootboekposten_OHW', filters: baseFilter + ',G_L_Account_No=899900,as_of=today' };
             case 'total_revenue':
                 return { type: 'bc-field', name: 'WIP_Entry_Amount', source: 'Grootboekposten_OHW', filters: baseFilter + ',G_L_Account_No=899901' };
             case 'customer':
@@ -1054,13 +1066,13 @@
             th.textContent = lbl;
 
             // Sortable columns
-            if (['description', 'customer', 'total_costs', 'total_revenue', 'costs_vc', 'margin_total', 'project_manager', 'document_status', 'reason_code', 'cost_center', 'pct_ready'].includes(colKey))
+            if (['description', 'customer', 'total_costs', 'costs_to_date', 'total_revenue', 'costs_vc', 'margin_total', 'project_manager', 'document_status', 'reason_code', 'cost_center', 'pct_ready'].includes(colKey))
             {
                 th.className = 'sortable';
                 th.dataset.sortKey = colKey;
             }
 
-            if (['total_costs', 'total_revenue', 'expected_revenue', 'costs_vc', 'extra_work', 'margin_total', 'winst_ohw'].includes(colKey))
+            if (['total_costs', 'costs_to_date', 'total_revenue', 'expected_revenue', 'costs_vc', 'extra_work', 'margin_total', 'winst_ohw'].includes(colKey))
             {
                 th.style.minWidth = '100px';
                 th.style.textAlign = 'right';
@@ -1155,7 +1167,7 @@
                     {
                         showProjectSourceModal(
                             proj,
-                            'Totale kosten t/m heden – project ' + proj.job_no,
+                            (columnLabels.total_costs || 'Kosten') + ' – project ' + proj.job_no,
                             OHW_DETAIL_HEADERS,
                             function (breakdown)
                             {
@@ -1171,6 +1183,10 @@
                             }
                         );
                     });
+                    break;
+                case 'costs_to_date':
+                    td.style.textAlign = 'right';
+                    td.innerHTML = '<span class="' + amountClass(-computed.costsToDate) + '">' + escapeHtml(fmtCurrency(computed.costsToDate)) + '</span>';
                     break;
                 case 'total_revenue':
                     td.style.textAlign = 'right';
@@ -1561,6 +1577,8 @@
         {
             case 'total_costs':
                 return computed.costs;
+            case 'costs_to_date':
+                return computed.costsToDate;
             case 'total_revenue':
                 return computed.revenue;
             case 'expected_revenue':

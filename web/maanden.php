@@ -767,6 +767,7 @@ function build_month_rows(
             'Project_Manager' => (string) ($proj['Project_Manager'] ?? $proj['Person_Responsible'] ?? ''),
             'Cost_Center' => (string) ($proj['LVS_Global_Dimension_1_Code'] ?? ''),
             'Project_Actual_Costs' => (float) ($projectTotals['costs'] ?? 0.0),
+            'Project_Actual_Costs_To_Date' => 0.0,
             'Project_Total_Revenue' => (float) ($projectTotals['revenue'] ?? 0.0),
             'Expected_Revenue' => (float) ($planningTotals['expected_revenue'] ?? 0),
             'Expected_Costs_VC' => (float) ($planningTotals['expected_costs'] ?? 0),
@@ -1027,6 +1028,19 @@ function build_snapshot_from_column_wip(string $company, string $targetYm, array
     $data['project_breakdowns'] = $projectBreakdowns;
 
     if (is_array($data['project_summaries'] ?? null)) {
+        $costsThroughTodayByProject = [];
+        try {
+            $environmentForCompany = auth_get_environment_for_company($company, 300);
+            $auth = auth_get_auth_for_environment($environmentForCompany);
+            $costsThroughTodayByProject = bc_fetch_ohw_costs_through_date(
+                $company,
+                $auth,
+                odata_ttl_for_month($targetYm)
+            );
+        } catch (Throwable $ignoredCostsToDateError) {
+            $costsThroughTodayByProject = [];
+        }
+
         foreach ($data['project_summaries'] as $summaryIndex => $summaryRow) {
             if (!is_array($summaryRow)) {
                 continue;
@@ -1044,6 +1058,10 @@ function build_snapshot_from_column_wip(string $company, string $targetYm, array
             if ($departmentCode !== '') {
                 $data['project_summaries'][$summaryIndex]['Cost_Center'] = $departmentCode;
             }
+
+            $data['project_summaries'][$summaryIndex]['Project_Actual_Costs_To_Date'] = finance_to_float(
+                $costsThroughTodayByProject[$normProjectNo] ?? 0.0
+            );
         }
     }
 
