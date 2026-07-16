@@ -289,7 +289,9 @@ if (is_array($monthData)) {
 
         $expectedRevenue = finance_to_float($summaryRow['Expected_Revenue'] ?? 0.0);
         $expectedCostsVc = finance_to_float($summaryRow['Expected_Costs_VC'] ?? 0.0);
-        $pctCompleted = finance_to_float($detailRow['Percent_Completed'] ?? 0.0);
+        $pctCompleted = $expectedCostsVc != 0.0
+            ? (($totalCosts / $expectedCostsVc) * 100.0)
+            : 0.0;
         $marginTotal = finance_column_margin_total($expectedRevenue, $expectedCostsVc);
         $winstOhw = finance_column_winst_ohw($marginTotal, $pctCompleted);
         $prevProfit = finance_column_prev_profit($prevProfitByProject[$normJobNo] ?? null);

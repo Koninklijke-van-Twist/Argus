@@ -727,7 +727,7 @@
                     case 'document_status': return p.document_status || '';
                     case 'reason_code': return p.reason_code || '';
                     case 'cost_center': return p.cost_center || '';
-                    case 'pct_ready': return Math.max(0, parseDecimal(p.pct_completed));
+                    case 'pct_ready': return getProjectComputedValues(p).pctDisplay;
                     default: return p.job_no || '';
                 }
             }
@@ -778,7 +778,7 @@
         const expected = parseDecimal(proj.expected_revenue);
         const costsVc = columnValues ? parseDecimal(columnValues.costs_vc) : parseDecimal(proj.expected_costs_vc);
         const extraWork = parseDecimal(proj.extra_work);
-        const pctRaw = parseDecimal(proj.pct_completed);
+        const pctRaw = costsVc !== 0 ? ((costs / costsVc) * 100) : 0;
         const pctDisplay = Math.max(0, pctRaw);
         const isPctOverrun = pctDisplay > 100;
         const marginTotal = columnValues && columnValues.margin_total !== null && columnValues.margin_total !== undefined
@@ -869,7 +869,7 @@
             case 'margin_total':
                 return { type: 'computed-field', formula: 'Sum(FactureerbareProjectPlanningsRegels.Line_Amount_LCY) - Sum(ProjectenJobTaskLines.Schedule_Total_Cost)' };
             case 'pct_ready':
-                return { type: 'bc-field', name: 'Percent_Completed', source: 'Projecten', filters: baseFilter.replace('Job_No=', 'No=') };
+                return { type: 'computed-field', formula: 'Kosten t/m periode / Kosten VC' };
             case 'winst_ohw':
                 return { type: 'computed-field', formula: '(Opbrengst VC - Kosten VC) * (Projecten.Percent_Completed / 100)' };
             case 'project_manager':
@@ -1539,7 +1539,7 @@
         });
     }
 
-    function getProjectCellExcelValue (proj, visibleWOs, computed, colKey)
+    function getProjectCellExcelValue (proj, visibleWOs, computed, colKey, colKeys, excelRow)
     {
         switch (colKey)
         {
@@ -1556,7 +1556,21 @@
             case 'margin_total':
                 return computed.marginTotal;
             case 'pct_ready':
-                return computed.pctDisplay / 100;
+                {
+                    const costsIdx = Array.isArray(colKeys) ? colKeys.indexOf('total_costs') : -1;
+                    const costsVcIdx = Array.isArray(colKeys) ? colKeys.indexOf('costs_vc') : -1;
+                    if (costsIdx >= 0 && costsVcIdx >= 0 && excelRow)
+                    {
+                        // +1 because export column 0 is Project
+                        const costsRef = excelColName(costsIdx + 1) + String(excelRow);
+                        const costsVcRef = excelColName(costsVcIdx + 1) + String(excelRow);
+                        return {
+                            formula: 'IF(' + costsVcRef + '=0,0,' + costsRef + '/' + costsVcRef + ')',
+                            value: computed.pctDisplay / 100,
+                        };
+                    }
+                    return computed.pctDisplay / 100;
+                }
             case 'winst_ohw':
                 return computed.winstOhw;
             default:
@@ -1575,15 +1589,17 @@
         }));
 
         const rows = [];
-        for (const entry of visibleProjects)
+        for (let rowIndex = 0; rowIndex < visibleProjects.length; rowIndex++)
         {
+            const entry = visibleProjects[rowIndex];
             const proj = entry.proj;
             const visibleWOs = entry.visibleWOs;
             const computed = getProjectComputedValues(proj);
+            const excelRow = rowIndex + 2;
             const row = [proj.job_no || ''];
             for (const colKey of visibleColKeys)
             {
-                row.push(getProjectCellExcelValue(proj, visibleWOs, computed, colKey));
+                row.push(getProjectCellExcelValue(proj, visibleWOs, computed, colKey, visibleColKeys, excelRow));
             }
             rows.push(row);
         }
