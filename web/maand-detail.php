@@ -324,8 +324,8 @@ $defaultColumns = [
     'expected_revenue',
     'costs_vc',
     'extra_work',
-    'margin_total',
     'pct_ready',
+    'margin_total',
     'winst_ohw',
     'project_manager',
     'document_status',
@@ -351,6 +351,14 @@ $orderedColumns = array_values(array_filter($orderedColumns, static function ($k
 $costCenterPos = array_search('cost_center', $orderedColumns, true);
 $insertAt = $costCenterPos === false ? count($orderedColumns) : ($costCenterPos + 1);
 array_splice($orderedColumns, $insertAt, 0, $vcColumns);
+
+// Keep Marge Ttl directly before Winst OHW.
+$orderedColumns = array_values(array_filter($orderedColumns, static function ($key): bool {
+    return $key !== 'margin_total';
+}));
+$winstOhwPos = array_search('winst_ohw', $orderedColumns, true);
+$insertMargeAt = $winstOhwPos === false ? count($orderedColumns) : $winstOhwPos;
+array_splice($orderedColumns, $insertMargeAt, 0, ['margin_total']);
 
 $initialData = [
     'companies' => $companies,
