@@ -309,6 +309,10 @@ if (is_array($monthData)) {
 
 $savedColumnOrder = is_array($userSettings['detail_column_order'] ?? null) ? $userSettings['detail_column_order'] : [];
 $savedHiddenColumns = is_array($userSettings['detail_hidden_columns'] ?? null) ? $userSettings['detail_hidden_columns'] : [];
+$defaultHiddenColumns = ['extra_work'];
+$hiddenColumns = $savedHiddenColumns !== []
+    ? $savedHiddenColumns
+    : $defaultHiddenColumns;
 
 // Default columns definition (keys)
 $defaultColumns = [
@@ -350,7 +354,7 @@ $initialData = [
     'error' => $errorMessage,
     'default_columns' => $defaultColumns,
     'column_order' => $orderedColumns,
-    'hidden_columns' => $savedHiddenColumns,
+    'hidden_columns' => $hiddenColumns,
     'save_settings_url' => 'maand-detail.php?action=save_user_settings',
 ];
 ?>
