@@ -63,9 +63,25 @@
     );
 
     // Column label map
+    const selectedYearMonth = typeof payload.year_month === 'string' ? payload.year_month : '';
+    function formatMonthLabel (ym)
+    {
+        const months = ['januari', 'februari', 'maart', 'april', 'mei', 'juni',
+            'juli', 'augustus', 'september', 'oktober', 'november', 'december'];
+        const parts = String(ym || '').split('-');
+        const year = parts[0] || '';
+        const mIdx = parseInt(parts[1] || '0', 10) - 1;
+        if (!year || mIdx < 0 || mIdx > 11)
+        {
+            return ym || '';
+        }
+        return months[mIdx] + ' ' + year;
+    }
+
+    const periodMonthLabel = formatMonthLabel(selectedYearMonth);
     const columnLabels = {
-        total_costs: 'Kosten t/m heden',
-        total_revenue: 'Opbrengst. t/m heden',
+        total_costs: periodMonthLabel ? ('Kosten t/m ' + periodMonthLabel) : 'Kosten t/m periode',
+        total_revenue: periodMonthLabel ? ('Opbrengst t/m ' + periodMonthLabel) : 'Opbrengst t/m periode',
         customer: 'Deb.',
         description: 'Proj. Beschr.',
         cost_center: 'Afd.',
