@@ -343,6 +343,15 @@ foreach ($defaultColumns as $col) {
     }
 }
 
+// Keep Opbrengst VC + Kosten VC directly after Afd.
+$vcColumns = ['expected_revenue', 'costs_vc'];
+$orderedColumns = array_values(array_filter($orderedColumns, static function ($key) use ($vcColumns): bool {
+    return !in_array($key, $vcColumns, true);
+}));
+$costCenterPos = array_search('cost_center', $orderedColumns, true);
+$insertAt = $costCenterPos === false ? count($orderedColumns) : ($costCenterPos + 1);
+array_splice($orderedColumns, $insertAt, 0, $vcColumns);
+
 $initialData = [
     'companies' => $companies,
     'selected_company' => $selectedCompany,
