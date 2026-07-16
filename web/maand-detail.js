@@ -180,7 +180,7 @@
                 description: toTrimmedString(projDetail.Description || projSummary.Description || row.Description || ''),
                 customer_id: toTrimmedString(projDetail.Bill_to_Customer_No || projSummary.Customer_Id || row.Customer_Id || ''),
                 customer_name: toTrimmedString(projDetail.Bill_to_Name || projSummary.Customer_Name || row.Customer_Name || ''),
-                project_manager: toTrimmedString(projDetail.Project_Manager || projSummary.Project_Manager || projDetail.Person_Responsible || ''),
+                project_manager: formatProjectManagerName(projDetail.Project_Manager || projSummary.Project_Manager || projDetail.Person_Responsible || ''),
                 document_status: toTrimmedString(projDetail.LVS_Document_Status || ''),
                 reason_code: toTrimmedString(projDetail.KVT_Reason_Code || ''),
                 cost_center: primaryDepartmentFromBreakdown(breakdown)
@@ -235,6 +235,18 @@
     function toTrimmedString (value)
     {
         return String(value === null || value === undefined ? '' : value).trim();
+    }
+
+    function formatProjectManagerName (value)
+    {
+        let name = toTrimmedString(value);
+        if (name === '')
+        {
+            return '';
+        }
+
+        name = name.replace(/^KVT[\/\\]/i, '');
+        return name.trim();
     }
 
     function primaryDepartmentFromBreakdown (breakdown)
