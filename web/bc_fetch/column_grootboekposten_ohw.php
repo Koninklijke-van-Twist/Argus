@@ -29,6 +29,20 @@ function bc_fetch_snapshot_ohw_bounds(string $targetYearMonth): ?array
 }
 
 /**
+ * OHW-bounds voor een willekeurige peildatum (inclusief die dag).
+ *
+ * @return array{posting_before:string,reverse_after:string,blank_reverse:string}
+ */
+function bc_fetch_ohw_bounds_for_date(DateTimeImmutable $asOfDate): array
+{
+    return [
+        'posting_before' => $asOfDate->modify('+1 day')->format('Y-m-d'),
+        'reverse_after' => $asOfDate->format('Y-m-d'),
+        'blank_reverse' => '0001-01-01',
+    ];
+}
+
+/**
  * OData-filter: geboekt vóór snapshot, niet (of later) teruggedraaid t.o.v. snapshot.
  */
 function bc_fetch_snapshot_ohw_filter(string $targetYearMonth): string
@@ -66,6 +80,63 @@ function bc_fetch_grootboekposten_ohw_rows(string $company, string $targetYearMo
     );
 
     return odata_get_all($url, $auth, $ttl);
+}
+
+/**
+ * Aggregateert OHW-kosten per project tot en met een peildatum (standaard vandaag).
+ *
+ * @return array<string,float> genormaliseerd projectnummer => kostentotaal
+ */
+function bc_fetch_ohw_costs_through_date(string $company, array $auth, int $ttl, ?DateTimeImmutable $asOfDate = null): array
+{
+    $asOfDate = $asOfDate ?? new DateTimeImmutable('today');
+    $bounds = bc_fetch_ohw_bounds_for_date($asOfDate);
+    $filter = sprintf(
+        'Posting_Date lt %s and (Reverse_Date gt %s or Reverse_Date eq %s)',
+        $bounds['posting_before'],
+        $bounds['reverse_after'],
+        $bounds['blank_reverse']
+    );
+
+    $auth = auth_get_auth_for_environment(auth_get_environment_for_company($company, 300));
+    $url = company_entity_url_with_query(
+        $GLOBALS['baseUrl'],
+        auth_get_environment_for_company($company, 300),
+        $company,
+        'Grootboekposten_OHW',
+        ['$filter' => $filter]
+    );
+
+    try {
+        $rows = odata_get_all($url, $auth, $ttl);
+    } catch (Throwable $ignored) {
+        return [];
+    }
+
+    $costsByProject = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+
+        $jobNo = trim((string) ($row['Job_No'] ?? ''));
+        if ($jobNo === '') {
+            continue;
+        }
+
+        $deltaInfo = bc_fetch_ohw_amount_delta($row);
+        if ($deltaInfo === null || $deltaInfo['kind'] !== 'costs') {
+            continue;
+        }
+
+        $normJob = bc_fetch_normalize_project_no($jobNo);
+        $costsByProject[$normJob] = bc_fetch_add(
+            (float) ($costsByProject[$normJob] ?? 0.0),
+            (float) $deltaInfo['delta']
+        );
+    }
+
+    return $costsByProject;
 }
 
 /**

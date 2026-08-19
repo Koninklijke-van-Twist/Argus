@@ -16,7 +16,7 @@
     const statusFilterBar = document.getElementById('statusFilterBar');
     const departmentFilterBar = document.getElementById('departmentFilterBar');
     const searchInput = document.getElementById('searchInput');
-    const exportCsvBtn = document.getElementById('exportCsvBtn');
+    const exportExcelBtn = document.getElementById('exportExcelBtn');
     const sourceOverlay = document.getElementById('sourceOverlay');
     const sourceModalTitle = document.getElementById('sourceModalTitle');
     const sourceModalBody = document.getElementById('sourceModalBody');
@@ -63,9 +63,26 @@
     );
 
     // Column label map
+    const selectedYearMonth = typeof payload.year_month === 'string' ? payload.year_month : '';
+    function formatMonthLabel (ym)
+    {
+        const months = ['januari', 'februari', 'maart', 'april', 'mei', 'juni',
+            'juli', 'augustus', 'september', 'oktober', 'november', 'december'];
+        const parts = String(ym || '').split('-');
+        const year = parts[0] || '';
+        const mIdx = parseInt(parts[1] || '0', 10) - 1;
+        if (!year || mIdx < 0 || mIdx > 11)
+        {
+            return ym || '';
+        }
+        return months[mIdx] + ' ' + year;
+    }
+
+    const periodMonthLabel = formatMonthLabel(selectedYearMonth);
     const columnLabels = {
-        total_costs: 'Kosten t/m heden',
-        total_revenue: 'Opbrengst. t/m heden',
+        total_costs: periodMonthLabel ? ('Kosten t/m ' + periodMonthLabel) : 'Kosten t/m periode',
+        costs_to_date: 'Kosten t/m heden',
+        total_revenue: periodMonthLabel ? ('Opbrengst t/m ' + periodMonthLabel) : 'Opbrengst t/m periode',
         customer: 'Deb.',
         description: 'Proj. Beschr.',
         cost_center: 'Afd.',
@@ -76,6 +93,7 @@
         pct_ready: '% Gereed',
         winst_ohw: 'Winst OHW',
         project_manager: 'Projectmanager',
+        document_status: 'Documentstatus',
         reason_code: 'Redencode',
     };
 
@@ -179,11 +197,13 @@
                 description: toTrimmedString(projDetail.Description || projSummary.Description || row.Description || ''),
                 customer_id: toTrimmedString(projDetail.Bill_to_Customer_No || projSummary.Customer_Id || row.Customer_Id || ''),
                 customer_name: toTrimmedString(projDetail.Bill_to_Name || projSummary.Customer_Name || row.Customer_Name || ''),
-                project_manager: toTrimmedString(projDetail.Project_Manager || projSummary.Project_Manager || projDetail.Person_Responsible || ''),
+                project_manager: formatProjectManagerName(projDetail.Project_Manager || projSummary.Project_Manager || projDetail.Person_Responsible || ''),
+                document_status: toTrimmedString(projDetail.LVS_Document_Status || ''),
                 reason_code: toTrimmedString(projDetail.KVT_Reason_Code || ''),
                 cost_center: primaryDepartmentFromBreakdown(breakdown)
                     || toTrimmedString(projSummary.Cost_Center || projDetail.LVS_Global_Dimension_1_Code || ''),
                 project_total_costs: projectTotalCosts,
+                project_total_costs_to_date: parseDecimal(projSummary.Project_Actual_Costs_To_Date || 0),
                 project_total_revenue: projectTotalRevenue,
                 expected_revenue: expectedRevenueFromBreakdown !== 0 ? expectedRevenueFromBreakdown : expectedRevenueFallback,
                 expected_costs_vc: expectedCostsVcFallback,
@@ -233,6 +253,18 @@
     function toTrimmedString (value)
     {
         return String(value === null || value === undefined ? '' : value).trim();
+    }
+
+    function formatProjectManagerName (value)
+    {
+        let name = toTrimmedString(value);
+        if (name === '')
+        {
+            return '';
+        }
+
+        name = name.replace(/^KVT[\/\\]/i, '');
+        return name.trim();
     }
 
     function primaryDepartmentFromBreakdown (breakdown)
@@ -706,13 +738,15 @@
                     case 'description': return p.description || '';
                     case 'customer': return p.customer_name || '';
                     case 'total_costs': return computeProjectTotals(p).costs;
+                    case 'costs_to_date': return getProjectComputedValues(p).costsToDate;
                     case 'total_revenue': return computeProjectTotals(p).revenue;
                     case 'costs_vc': return getProjectComputedValues(p).costsVc;
                     case 'margin_total': return getProjectComputedValues(p).marginTotal;
                     case 'project_manager': return p.project_manager || '';
+                    case 'document_status': return p.document_status || '';
                     case 'reason_code': return p.reason_code || '';
                     case 'cost_center': return p.cost_center || '';
-                    case 'pct_ready': return Math.max(0, parseDecimal(p.pct_completed));
+                    case 'pct_ready': return getProjectComputedValues(p).pctDisplay;
                     default: return p.job_no || '';
                 }
             }
@@ -747,6 +781,7 @@
     {
         return {
             costs: parseDecimal(proj.project_total_costs || 0),
+            costsToDate: parseDecimal(proj.project_total_costs_to_date || 0),
             revenue: parseDecimal(proj.project_total_revenue || 0),
         };
     }
@@ -759,11 +794,14 @@
             : null;
         const totals = computeProjectTotals(proj);
         const costs = columnValues ? parseDecimal(columnValues.total_costs) : totals.costs;
+        const costsToDate = columnValues && columnValues.costs_to_date !== null && columnValues.costs_to_date !== undefined
+            ? parseDecimal(columnValues.costs_to_date)
+            : totals.costsToDate;
         const revenue = columnValues ? parseDecimal(columnValues.total_revenue) : totals.revenue;
         const expected = parseDecimal(proj.expected_revenue);
         const costsVc = columnValues ? parseDecimal(columnValues.costs_vc) : parseDecimal(proj.expected_costs_vc);
         const extraWork = parseDecimal(proj.extra_work);
-        const pctRaw = parseDecimal(proj.pct_completed);
+        const pctRaw = costsVc !== 0 ? ((costs / costsVc) * 100) : 0;
         const pctDisplay = Math.max(0, pctRaw);
         const isPctOverrun = pctDisplay > 100;
         const marginTotal = columnValues && columnValues.margin_total !== null && columnValues.margin_total !== undefined
@@ -775,6 +813,7 @@
 
         return {
             costs,
+            costsToDate,
             revenue,
             expected,
             costsVc,
@@ -797,6 +836,8 @@
         {
             case 'total_costs':
                 return fmtCurrency(computed.costs);
+            case 'costs_to_date':
+                return fmtCurrency(computed.costsToDate);
             case 'total_revenue':
                 return fmtCurrency(computed.revenue);
             case 'customer':
@@ -819,6 +860,8 @@
                 return fmtCurrency(computed.winstOhw);
             case 'project_manager':
                 return proj.project_manager || '';
+            case 'document_status':
+                return proj.document_status || '';
             case 'reason_code':
                 return proj.reason_code || '';
             default:
@@ -835,6 +878,8 @@
         {
             case 'total_costs':
                 return { type: 'bc-field', name: 'WIP_Entry_Amount', source: 'Grootboekposten_OHW', filters: baseFilter + ',G_L_Account_No=899900' };
+            case 'costs_to_date':
+                return { type: 'bc-field', name: 'WIP_Entry_Amount', source: 'Grootboekposten_OHW', filters: baseFilter + ',G_L_Account_No=899900,as_of=today' };
             case 'total_revenue':
                 return { type: 'bc-field', name: 'WIP_Entry_Amount', source: 'Grootboekposten_OHW', filters: baseFilter + ',G_L_Account_No=899901' };
             case 'customer':
@@ -852,11 +897,13 @@
             case 'margin_total':
                 return { type: 'computed-field', formula: 'Sum(FactureerbareProjectPlanningsRegels.Line_Amount_LCY) - Sum(ProjectenJobTaskLines.Schedule_Total_Cost)' };
             case 'pct_ready':
-                return { type: 'bc-field', name: 'Percent_Completed', source: 'Projecten', filters: baseFilter.replace('Job_No=', 'No=') };
+                return { type: 'computed-field', formula: 'Kosten t/m periode / Kosten VC' };
             case 'winst_ohw':
                 return { type: 'computed-field', formula: '(Opbrengst VC - Kosten VC) * (Projecten.Percent_Completed / 100)' };
             case 'project_manager':
                 return { type: 'bc-field', name: 'Project_Manager,Person_Responsible', source: 'Projecten', filters: baseFilter.replace('Job_No=', 'No=') };
+            case 'document_status':
+                return { type: 'bc-field', name: 'LVS_Document_Status', source: 'Projecten', filters: baseFilter.replace('Job_No=', 'No=') };
             case 'reason_code':
                 return { type: 'bc-field', name: 'KVT_Reason_Code', source: 'Projecten', filters: baseFilter.replace('Job_No=', 'No=') };
             default:
@@ -1019,13 +1066,13 @@
             th.textContent = lbl;
 
             // Sortable columns
-            if (['description', 'customer', 'total_costs', 'total_revenue', 'costs_vc', 'margin_total', 'project_manager', 'reason_code', 'cost_center', 'pct_ready'].includes(colKey))
+            if (['description', 'customer', 'total_costs', 'costs_to_date', 'total_revenue', 'costs_vc', 'margin_total', 'project_manager', 'document_status', 'reason_code', 'cost_center', 'pct_ready'].includes(colKey))
             {
                 th.className = 'sortable';
                 th.dataset.sortKey = colKey;
             }
 
-            if (['total_costs', 'total_revenue', 'expected_revenue', 'costs_vc', 'extra_work', 'margin_total', 'winst_ohw'].includes(colKey))
+            if (['total_costs', 'costs_to_date', 'total_revenue', 'expected_revenue', 'costs_vc', 'extra_work', 'margin_total', 'winst_ohw'].includes(colKey))
             {
                 th.style.minWidth = '100px';
                 th.style.textAlign = 'right';
@@ -1120,7 +1167,7 @@
                     {
                         showProjectSourceModal(
                             proj,
-                            'Totale kosten t/m heden – project ' + proj.job_no,
+                            (columnLabels.total_costs || 'Kosten') + ' – project ' + proj.job_no,
                             OHW_DETAIL_HEADERS,
                             function (breakdown)
                             {
@@ -1136,6 +1183,10 @@
                             }
                         );
                     });
+                    break;
+                case 'costs_to_date':
+                    td.style.textAlign = 'right';
+                    td.innerHTML = '<span class="' + amountClass(-computed.costsToDate) + '">' + escapeHtml(fmtCurrency(computed.costsToDate)) + '</span>';
                     break;
                 case 'total_revenue':
                     td.style.textAlign = 'right';
@@ -1272,6 +1323,9 @@
                 case 'project_manager':
                     td.textContent = proj.project_manager || '';
                     break;
+                case 'document_status':
+                    td.textContent = proj.document_status || '';
+                    break;
                 case 'reason_code':
                     td.textContent = proj.reason_code || '';
                     break;
@@ -1285,54 +1339,280 @@
         return tr;
     }
 
-    function csvEscape (value)
+    function crc32 (bytes)
     {
-        const text = value === null || value === undefined ? '' : String(value);
-        if (!/[";\r\n]/.test(text))
+        let crc = 0xffffffff;
+        for (let i = 0; i < bytes.length; i++)
         {
-            return text;
+            crc ^= bytes[i];
+            for (let j = 0; j < 8; j++)
+            {
+                crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+            }
         }
-        return '"' + text.replace(/"/g, '""') + '"';
+        return (crc ^ 0xffffffff) >>> 0;
     }
 
-    function formatCsvNumberNl (value, minFractionDigits, maxFractionDigits)
+    function u16 (value)
     {
-        const num = typeof value === 'number' ? value : parseDecimal(value);
-        return num.toLocaleString('nl-NL', {
-            useGrouping: false,
-            minimumFractionDigits: minFractionDigits,
-            maximumFractionDigits: maxFractionDigits,
+        return new Uint8Array([value & 255, (value >>> 8) & 255]);
+    }
+
+    function u32 (value)
+    {
+        return new Uint8Array([
+            value & 255,
+            (value >>> 8) & 255,
+            (value >>> 16) & 255,
+            (value >>> 24) & 255,
+        ]);
+    }
+
+    function concatBytes (parts)
+    {
+        let total = 0;
+        for (const part of parts)
+        {
+            total += part.length;
+        }
+        const out = new Uint8Array(total);
+        let offset = 0;
+        for (const part of parts)
+        {
+            out.set(part, offset);
+            offset += part.length;
+        }
+        return out;
+    }
+
+    function encodeUtf8 (text)
+    {
+        return new TextEncoder().encode(String(text));
+    }
+
+    function buildZip (files)
+    {
+        const localParts = [];
+        const centralParts = [];
+        let offset = 0;
+
+        for (const file of files)
+        {
+            const nameBytes = encodeUtf8(file.name);
+            const dataBytes = file.data instanceof Uint8Array ? file.data : encodeUtf8(file.data);
+            const crc = crc32(dataBytes);
+            const localHeader = concatBytes([
+                u32(0x04034b50),
+                u16(20),
+                u16(0),
+                u16(0),
+                u16(0),
+                u16(0),
+                u32(crc),
+                u32(dataBytes.length),
+                u32(dataBytes.length),
+                u16(nameBytes.length),
+                u16(0),
+                nameBytes,
+            ]);
+            localParts.push(localHeader, dataBytes);
+
+            const centralHeader = concatBytes([
+                u32(0x02014b50),
+                u16(20),
+                u16(20),
+                u16(0),
+                u16(0),
+                u16(0),
+                u16(0),
+                u32(crc),
+                u32(dataBytes.length),
+                u32(dataBytes.length),
+                u16(nameBytes.length),
+                u16(0),
+                u16(0),
+                u16(0),
+                u16(0),
+                u32(0),
+                u32(offset),
+                nameBytes,
+            ]);
+            centralParts.push(centralHeader);
+            offset += localHeader.length + dataBytes.length;
+        }
+
+        const central = concatBytes(centralParts);
+        const end = concatBytes([
+            u32(0x06054b50),
+            u16(0),
+            u16(0),
+            u16(files.length),
+            u16(files.length),
+            u32(central.length),
+            u32(offset),
+            u16(0),
+        ]);
+
+        return concatBytes(localParts.concat([central, end]));
+    }
+
+    function excelColName (index)
+    {
+        let n = index + 1;
+        let name = '';
+        while (n > 0)
+        {
+            const rem = (n - 1) % 26;
+            name = String.fromCharCode(65 + rem) + name;
+            n = Math.floor((n - 1) / 26);
+        }
+        return name;
+    }
+
+    function xmlEscape (value)
+    {
+        return String(value === null || value === undefined ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    function buildSheetCellXml (colIndex, rowIndex, value)
+    {
+        const ref = excelColName(colIndex) + String(rowIndex);
+        if (value && typeof value === 'object' && value.formula)
+        {
+            const cached = typeof value.value === 'number' && isFinite(value.value) ? value.value : 0;
+            return '<c r="' + ref + '"><f>' + xmlEscape(value.formula) + '</f><v>' + cached + '</v></c>';
+        }
+        if (typeof value === 'number' && isFinite(value))
+        {
+            return '<c r="' + ref + '"><v>' + value + '</v></c>';
+        }
+        return '<c r="' + ref + '" t="inlineStr"><is><t>' + xmlEscape(value) + '</t></is></c>';
+    }
+
+    function buildXlsxBlob (headers, rows)
+    {
+        const sheetRows = [];
+        sheetRows.push('<row r="1">' + headers.map(function (header, colIndex)
+        {
+            return buildSheetCellXml(colIndex, 1, header);
+        }).join('') + '</row>');
+
+        for (let rowIndex = 0; rowIndex < rows.length; rowIndex++)
+        {
+            const excelRow = rowIndex + 2;
+            const row = rows[rowIndex];
+            sheetRows.push('<row r="' + excelRow + '">' + row.map(function (value, colIndex)
+            {
+                return buildSheetCellXml(colIndex, excelRow, value);
+            }).join('') + '</row>');
+        }
+
+        const sheetXml = [
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+            '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
+            '<sheetData>',
+            sheetRows.join(''),
+            '</sheetData>',
+            '</worksheet>',
+        ].join('');
+
+        const files = [
+            {
+                name: '[Content_Types].xml',
+                data: [
+                    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+                    '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">',
+                    '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>',
+                    '<Default Extension="xml" ContentType="application/xml"/>',
+                    '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>',
+                    '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>',
+                    '</Types>',
+                ].join(''),
+            },
+            {
+                name: '_rels/.rels',
+                data: [
+                    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+                    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">',
+                    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>',
+                    '</Relationships>',
+                ].join(''),
+            },
+            {
+                name: 'xl/workbook.xml',
+                data: [
+                    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+                    '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">',
+                    '<sheets><sheet name="Maanddetail" sheetId="1" r:id="rId1"/></sheets>',
+                    '</workbook>',
+                ].join(''),
+            },
+            {
+                name: 'xl/_rels/workbook.xml.rels',
+                data: [
+                    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+                    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">',
+                    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>',
+                    '</Relationships>',
+                ].join(''),
+            },
+            {
+                name: 'xl/worksheets/sheet1.xml',
+                data: sheetXml,
+            },
+        ];
+
+        return new Blob([buildZip(files)], {
+            type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         });
     }
 
-    function getProjectCellExportValue (proj, visibleWOs, computed, colKey)
+    function getProjectCellExcelValue (proj, visibleWOs, computed, colKey, colKeys, excelRow)
     {
         switch (colKey)
         {
-            case 'workorders':
-                return visibleWOs.length;
             case 'total_costs':
-                return formatCsvNumberNl(computed.costs, 2, 2);
+                return computed.costs;
+            case 'costs_to_date':
+                return computed.costsToDate;
             case 'total_revenue':
-                return formatCsvNumberNl(computed.revenue, 2, 2);
+                return computed.revenue;
             case 'expected_revenue':
-                return formatCsvNumberNl(computed.expected, 2, 2);
+                return computed.expected;
             case 'costs_vc':
-                return formatCsvNumberNl(computed.costsVc, 2, 2);
+                return computed.costsVc;
             case 'extra_work':
-                return formatCsvNumberNl(computed.extraWork, 2, 2);
+                return computed.extraWork;
             case 'margin_total':
-                return formatCsvNumberNl(computed.marginTotal, 2, 2);
+                return computed.marginTotal;
             case 'pct_ready':
-                return formatCsvNumberNl(computed.pctDisplay / 100, 0, 4);
+                {
+                    const costsIdx = Array.isArray(colKeys) ? colKeys.indexOf('total_costs') : -1;
+                    const costsVcIdx = Array.isArray(colKeys) ? colKeys.indexOf('costs_vc') : -1;
+                    if (costsIdx >= 0 && costsVcIdx >= 0 && excelRow)
+                    {
+                        // +1 because export column 0 is Project
+                        const costsRef = excelColName(costsIdx + 1) + String(excelRow);
+                        const costsVcRef = excelColName(costsVcIdx + 1) + String(excelRow);
+                        return {
+                            formula: 'IF(' + costsVcRef + '=0,0,' + costsRef + '/' + costsVcRef + ')',
+                            value: computed.pctDisplay / 100,
+                        };
+                    }
+                    return computed.pctDisplay / 100;
+                }
             case 'winst_ohw':
-                return formatCsvNumberNl(computed.winstOhw, 2, 2);
+                return computed.winstOhw;
             default:
                 return getProjectCellDisplayText(proj, visibleWOs, computed, colKey);
         }
     }
 
-    function exportVisibleTableToCsv ()
+    function exportVisibleTableToExcel ()
     {
         const visibleProjects = getVisibleProjects();
         const visibleColKeys = getVisibleColumnKeys();
@@ -1342,30 +1622,28 @@
             return columnLabels[colKey] || colKey;
         }));
 
-        const lines = [];
-        lines.push(headers.map(csvEscape).join(';'));
-
-        for (const entry of visibleProjects)
+        const rows = [];
+        for (let rowIndex = 0; rowIndex < visibleProjects.length; rowIndex++)
         {
+            const entry = visibleProjects[rowIndex];
             const proj = entry.proj;
             const visibleWOs = entry.visibleWOs;
             const computed = getProjectComputedValues(proj);
-
+            const excelRow = rowIndex + 2;
             const row = [proj.job_no || ''];
             for (const colKey of visibleColKeys)
             {
-                row.push(getProjectCellExportValue(proj, visibleWOs, computed, colKey));
+                row.push(getProjectCellExcelValue(proj, visibleWOs, computed, colKey, visibleColKeys, excelRow));
             }
-            lines.push(row.map(csvEscape).join(';'));
+            rows.push(row);
         }
 
-        const csvText = '\uFEFF' + lines.join('\r\n');
-        const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8;' });
+        const blob = buildXlsxBlob(headers, rows);
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
         const ym = String(payload.year_month || 'maanddetail');
         link.href = url;
-        link.download = 'maanddetail_' + ym + '.csv';
+        link.download = 'maanddetail_' + ym + '.xlsx';
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
@@ -1922,9 +2200,9 @@
         });
     }
 
-    if (exportCsvBtn)
+    if (exportExcelBtn)
     {
-        exportCsvBtn.addEventListener('click', exportVisibleTableToCsv);
+        exportExcelBtn.addEventListener('click', exportVisibleTableToExcel);
     }
 
     // Window resize: re-sync table height

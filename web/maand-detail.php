@@ -289,7 +289,9 @@ if (is_array($monthData)) {
 
         $expectedRevenue = finance_to_float($summaryRow['Expected_Revenue'] ?? 0.0);
         $expectedCostsVc = finance_to_float($summaryRow['Expected_Costs_VC'] ?? 0.0);
-        $pctCompleted = finance_to_float($detailRow['Percent_Completed'] ?? 0.0);
+        $pctCompleted = $expectedCostsVc != 0.0
+            ? (($totalCosts / $expectedCostsVc) * 100.0)
+            : 0.0;
         $marginTotal = finance_column_margin_total($expectedRevenue, $expectedCostsVc);
         $winstOhw = finance_column_winst_ohw($marginTotal, $pctCompleted);
         $prevProfit = finance_column_prev_profit($prevProfitByProject[$normJobNo] ?? null);
@@ -297,6 +299,7 @@ if (is_array($monthData)) {
 
         $projectColumnValuesByJob[$normJobNo] = [
             'total_costs' => $totalCosts,
+            'costs_to_date' => finance_to_float($summaryRow['Project_Actual_Costs_To_Date'] ?? 0.0),
             'total_revenue' => $totalRevenue,
             'costs_vc' => $expectedCostsVc,
             'margin_total' => $marginTotal,
@@ -309,10 +312,15 @@ if (is_array($monthData)) {
 
 $savedColumnOrder = is_array($userSettings['detail_column_order'] ?? null) ? $userSettings['detail_column_order'] : [];
 $savedHiddenColumns = is_array($userSettings['detail_hidden_columns'] ?? null) ? $userSettings['detail_hidden_columns'] : [];
+$defaultHiddenColumns = ['extra_work'];
+$hiddenColumns = $savedHiddenColumns !== []
+    ? $savedHiddenColumns
+    : $defaultHiddenColumns;
 
 // Default columns definition (keys)
 $defaultColumns = [
     'total_costs',
+    'costs_to_date',
     'total_revenue',
     'customer',
     'description',
@@ -320,10 +328,11 @@ $defaultColumns = [
     'expected_revenue',
     'costs_vc',
     'extra_work',
-    'margin_total',
     'pct_ready',
+    'margin_total',
     'winst_ohw',
     'project_manager',
+    'document_status',
     'reason_code',
 ];
 
@@ -338,6 +347,31 @@ foreach ($defaultColumns as $col) {
     }
 }
 
+// Keep Opbrengst VC + Kosten VC directly after Afd.
+$vcColumns = ['expected_revenue', 'costs_vc'];
+$orderedColumns = array_values(array_filter($orderedColumns, static function ($key) use ($vcColumns): bool {
+    return !in_array($key, $vcColumns, true);
+}));
+$costCenterPos = array_search('cost_center', $orderedColumns, true);
+$insertAt = $costCenterPos === false ? count($orderedColumns) : ($costCenterPos + 1);
+array_splice($orderedColumns, $insertAt, 0, $vcColumns);
+
+// Keep Marge Ttl directly before Winst OHW.
+$orderedColumns = array_values(array_filter($orderedColumns, static function ($key): bool {
+    return $key !== 'margin_total';
+}));
+$winstOhwPos = array_search('winst_ohw', $orderedColumns, true);
+$insertMargeAt = $winstOhwPos === false ? count($orderedColumns) : $winstOhwPos;
+array_splice($orderedColumns, $insertMargeAt, 0, ['margin_total']);
+
+// Keep Kosten t/m heden directly after period costs.
+$orderedColumns = array_values(array_filter($orderedColumns, static function ($key): bool {
+    return $key !== 'costs_to_date';
+}));
+$totalCostsPos = array_search('total_costs', $orderedColumns, true);
+$insertCostsToDateAt = $totalCostsPos === false ? 0 : ($totalCostsPos + 1);
+array_splice($orderedColumns, $insertCostsToDateAt, 0, ['costs_to_date']);
+
 $initialData = [
     'companies' => $companies,
     'selected_company' => $selectedCompany,
@@ -349,7 +383,7 @@ $initialData = [
     'error' => $errorMessage,
     'default_columns' => $defaultColumns,
     'column_order' => $orderedColumns,
-    'hidden_columns' => $savedHiddenColumns,
+    'hidden_columns' => $hiddenColumns,
     'save_settings_url' => 'maand-detail.php?action=save_user_settings',
 ];
 ?>
@@ -1243,7 +1277,7 @@ $initialData = [
     <div id="departmentFilterBar" class="status-filter-bar"></div>
     <div class="search-bar">
         <input type="search" id="searchInput" placeholder="Zoeken in projecten...">
-        <button type="button" id="exportCsvBtn" class="status-toggle-all-btn">CSV export</button>
+        <button type="button" id="exportExcelBtn" class="status-toggle-all-btn">Excel export</button>
     </div>
 
     <div id="summaryBar" class="summary-bar"></div>
