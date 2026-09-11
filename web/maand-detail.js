@@ -891,11 +891,11 @@
             case 'expected_revenue':
                 return { type: 'bc-field', name: 'Line_Amount_LCY', source: 'FactureerbareProjectPlanningsRegels', filters: baseFilter };
             case 'costs_vc':
-                return { type: 'bc-field', name: 'Schedule_Total_Cost', source: 'ProjectenJobTaskLines', filters: baseFilter };
+                return { type: 'bc-field', name: 'LVS_Baseline_Total_Cost', source: 'ProjectTaken', filters: baseFilter + ',Job_Task_No=000' };
             case 'extra_work':
                 return { type: 'computed-field', formula: 'Meerwerk (nog niet gekoppeld aan nieuwe voorcalculatie-bronnen)' };
             case 'margin_total':
-                return { type: 'computed-field', formula: 'Sum(FactureerbareProjectPlanningsRegels.Line_Amount_LCY) - Sum(ProjectenJobTaskLines.Schedule_Total_Cost)' };
+                return { type: 'computed-field', formula: 'Sum(FactureerbareProjectPlanningsRegels.Line_Amount_LCY) - ProjectTaken.LVS_Baseline_Total_Cost (Job_Task_No=000)' };
             case 'pct_ready':
                 return { type: 'computed-field', formula: 'Kosten t/m periode / Kosten VC' };
             case 'winst_ohw':
