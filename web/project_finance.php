@@ -103,10 +103,10 @@ class ProjectFinanceService
                 ],
             ],
             // Voorcalculatie (statisch, huidige BC-stand):
-            // - kosten: ProjectenJobTaskLines.Schedule_Total_Cost per Job_No
+            // - kosten: ProjectTaken.LVS_Baseline_Total_Cost voor Job_Task_No '000' (Project TOTAAL / basislijn)
             // - opbrengst: FactureerbareProjectPlanningsRegels.Line_Amount_LCY per Job_No
             'project_forecast' => [
-                'cost_entity_set' => 'ProjectenJobTaskLines',
+                'cost_entity_set' => 'ProjectTaken',
                 'revenue_entity_set' => 'FactureerbareProjectPlanningsRegels',
                 'project_key_field' => 'Job_No',
             ],
@@ -516,7 +516,7 @@ class ProjectFinanceService
     /**
      * Haalt voorcalculatie op per project (huidige BC-stand, geen historie).
      *
-     * Kosten: ProjectenJobTaskLines.Schedule_Total_Cost (taakregels, geen totalen).
+     * Kosten: ProjectTaken.LVS_Baseline_Total_Cost (Job_Task_No 000 / Project TOTAAL).
      * Opbrengst: FactureerbareProjectPlanningsRegels.Line_Amount_LCY.
      */
     public function collectProjectForecastForProjects(array $projectNumbers, int $ttl = 3600): array
@@ -625,7 +625,9 @@ class ProjectFinanceService
     }
 
     /**
-     * Voorcalculatie kosten uit ProjectenJobTaskLines (Schedule_Total_Cost).
+     * Voorcalculatie kosten uit ProjectTaken (LVS_Baseline_Total_Cost van taak 000 / Project TOTAAL).
+     *
+     * Eén basislijnwaarde per project; niet sommeren over taakregels of LVS_Baseline_*.
      *
      * @return array{totals:array<string,float>,breakdown:array<string,array<int,array<string,mixed>>>}
      */
@@ -634,6 +636,7 @@ class ProjectFinanceService
         $totals = [];
         $breakdown = [];
         $projectChunks = self::chunkValues($projectNumbers, 20);
+        $projectTotaalTaskNo = '000';
 
         foreach ($projectChunks as $chunk) {
             $projectFilter = self::buildJobNoOrFilter($chunk);
@@ -641,16 +644,16 @@ class ProjectFinanceService
                 continue;
             }
 
-            $url = $this->companyEntityUrlWithQuery('ProjectenJobTaskLines', [
-                '$select' => 'Job_No,Job_Task_No,Description,Job_Task_Type,Schedule_Total_Cost',
-                '$filter' => $projectFilter,
+            $url = $this->companyEntityUrlWithQuery('ProjectTaken', [
+                '$select' => 'Job_No,Job_Task_No,Description,Job_Task_Type,LVS_Baseline_Total_Cost',
+                '$filter' => $projectFilter . " and Job_Task_No eq '" . self::escapeOdataString($projectTotaalTaskNo) . "'",
             ]);
 
             try {
                 $rows = odata_get_all($url, $this->auth, $ttl);
             } catch (Throwable $loadError) {
                 throw new RuntimeException(
-                    'Voorcalculatie kosten ophalen mislukt (ProjectenJobTaskLines): ' . $projectFilter,
+                    'Voorcalculatie kosten ophalen mislukt (ProjectTaken): ' . $projectFilter,
                     0,
                     $loadError
                 );
@@ -667,30 +670,28 @@ class ProjectFinanceService
                     continue;
                 }
 
-                if (self::isTotalJobTaskType((string) ($row['Job_Task_Type'] ?? ''))) {
+                if ($taskNo !== $projectTotaalTaskNo) {
                     continue;
                 }
 
-                $amount = finance_to_float($row['Schedule_Total_Cost'] ?? 0.0);
+                $amount = finance_to_float($row['LVS_Baseline_Total_Cost'] ?? 0.0);
                 if ($amount === 0.0) {
                     continue;
                 }
 
                 $normalizedProject = self::normalizeMatchValue($projectNo);
-                $totals[$normalizedProject] = finance_add_amount((float) ($totals[$normalizedProject] ?? 0.0), $amount);
+                $totals[$normalizedProject] = $amount;
 
-                if (!isset($breakdown[$normalizedProject])) {
-                    $breakdown[$normalizedProject] = [];
-                }
-
-                $breakdown[$normalizedProject][] = [
-                    'Job_Task_No' => $taskNo,
-                    'Line_No' => 0,
-                    'Type' => (string) ($row['Job_Task_Type'] ?? ''),
-                    'No' => '',
-                    'Description' => (string) ($row['Description'] ?? ''),
-                    'Line_Amount' => $amount,
-                    'Line_Type' => '',
+                $breakdown[$normalizedProject] = [
+                    [
+                        'Job_Task_No' => $taskNo,
+                        'Line_No' => 0,
+                        'Type' => (string) ($row['Job_Task_Type'] ?? ''),
+                        'No' => '',
+                        'Description' => (string) ($row['Description'] ?? ''),
+                        'Line_Amount' => $amount,
+                        'Line_Type' => '',
+                    ],
                 ];
             }
         }
