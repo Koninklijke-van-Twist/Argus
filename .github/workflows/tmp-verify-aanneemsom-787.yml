@@ -1,0 +1,26 @@
+# TEMPORARY GitHub Actions check for Asclepius #787 / Argus PR verification.
+# Remove after CI is green; do not leave this workflow on main.
+name: Temporary aanneemsom verification (#787)
+
+on:
+  pull_request:
+    branches:
+      - master
+  push:
+    branches:
+      - cursor/fix-aanneemsom-800000-67cb
+
+jobs:
+  verify-aanneemsom:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install PHP CLI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y php-cli
+
+      - name: Run temporary #787 aanneemsom filter test
+        run: php tests/tmp_verify_aanneemsom_787.php
