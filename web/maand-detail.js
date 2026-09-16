@@ -889,13 +889,13 @@
             case 'cost_center':
                 return { type: 'bc-field', name: 'Global_Dimension_1_Code', source: 'Grootboekposten_OHW', filters: baseFilter };
             case 'expected_revenue':
-                return { type: 'bc-field', name: 'Line_Amount_LCY', source: 'FactureerbareProjectPlanningsRegels', filters: baseFilter + ',No=800000' };
+                return { type: 'bc-field', name: 'Line_Amount_LCY', source: 'FactureerbareProjectPlanningsRegels', filters: baseFilter + ',Type=GB-rekening,No=800000' };
             case 'costs_vc':
                 return { type: 'bc-field', name: 'LVS_Baseline_Total_Cost', source: 'ProjectTaken', filters: baseFilter + ',Job_Task_No=000' };
             case 'extra_work':
                 return { type: 'computed-field', formula: 'Meerwerk (nog niet gekoppeld aan nieuwe voorcalculatie-bronnen)' };
             case 'margin_total':
-                return { type: 'computed-field', formula: 'Sum(FactureerbareProjectPlanningsRegels.Line_Amount_LCY where No=800000) - ProjectTaken.LVS_Baseline_Total_Cost (Job_Task_No=000)' };
+                return { type: 'computed-field', formula: 'Sum(FactureerbareProjectPlanningsRegels.Line_Amount_LCY where Type=GB-rekening and No=800000) - ProjectTaken.LVS_Baseline_Total_Cost (Job_Task_No=000)' };
             case 'pct_ready':
                 return { type: 'computed-field', formula: 'Kosten t/m periode / Kosten VC' };
             case 'winst_ohw':
