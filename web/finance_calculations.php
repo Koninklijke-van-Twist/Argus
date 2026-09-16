@@ -1,6 +1,12 @@
 <?php
 
 /**
+ * Constants
+ */
+const FINANCE_REVENUE_GL_ACCOUNT_TYPE = 'GB-rekening';
+const FINANCE_REVENUE_GL_ACCOUNT_NO = '800000';
+
+/**
  * Functies
  */
 
@@ -256,4 +262,19 @@ function finance_workorder_actual_costs(array $workorder): float
 function finance_workorder_total_revenue(array $workorder): float
 {
     return finance_abs_amount($workorder['KVT_Sum_Work_Order_Revenue'] ?? 0);
+}
+
+/**
+ * Bepaalt of een BC-projectplanningsregel (FactureerbareProjectPlanningsRegels)
+ * meetelt voor aanneemsom/omzet (Opbrengst VC).
+ * Alleen G/L-omzetrekening Type = GB-rekening en No = 800000 telt mee;
+ * resource-/artikelboekingen op dezelfde planning blijven buiten deze som.
+ */
+function finance_is_revenue_gl_account_line(array $row): bool
+{
+    $type = trim((string) ($row['Type'] ?? ''));
+    $no = trim((string) ($row['No'] ?? ''));
+
+    return strcasecmp($type, FINANCE_REVENUE_GL_ACCOUNT_TYPE) === 0
+        && $no === FINANCE_REVENUE_GL_ACCOUNT_NO;
 }
