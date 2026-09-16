@@ -104,7 +104,7 @@ class ProjectFinanceService
             ],
             // Voorcalculatie (statisch, huidige BC-stand):
             // - kosten: ProjectTaken.LVS_Baseline_Total_Cost voor Job_Task_No '000' (Project TOTAAL / basislijn)
-            // - opbrengst: FactureerbareProjectPlanningsRegels.Line_Amount_LCY per Job_No
+            // - opbrengst: FactureerbareProjectPlanningsRegels.Line_Amount_LCY per Job_No, alleen No '800000' (aanneemsom)
             'project_forecast' => [
                 'cost_entity_set' => 'ProjectTaken',
                 'revenue_entity_set' => 'FactureerbareProjectPlanningsRegels',
@@ -517,7 +517,7 @@ class ProjectFinanceService
      * Haalt voorcalculatie op per project (huidige BC-stand, geen historie).
      *
      * Kosten: ProjectTaken.LVS_Baseline_Total_Cost (Job_Task_No 000 / Project TOTAAL).
-     * Opbrengst: FactureerbareProjectPlanningsRegels.Line_Amount_LCY.
+     * Opbrengst: FactureerbareProjectPlanningsRegels.Line_Amount_LCY (alleen No 800000).
      */
     public function collectProjectForecastForProjects(array $projectNumbers, int $ttl = 3600): array
     {
@@ -705,6 +705,9 @@ class ProjectFinanceService
     /**
      * Voorcalculatie opbrengst uit FactureerbareProjectPlanningsRegels (Line_Amount_LCY).
      *
+     * Alleen regels met No/Nr 800000 (GB-rekening aanneemsom), gelijk aan Fin Rap.
+     * Overige planningsboekingen (resources, andere rekeningen) tellen niet mee.
+     *
      * @return array{totals:array<string,float>,breakdown:array<string,array<int,array<string,mixed>>>}
      */
     private function fetchVoorcalculatieRevenueForProjects(array $projectNumbers, int $ttl): array
@@ -712,6 +715,7 @@ class ProjectFinanceService
         $totals = [];
         $breakdown = [];
         $projectChunks = self::chunkValues($projectNumbers, 20);
+        $aanneemsomAccountNo = '800000';
 
         foreach ($projectChunks as $chunk) {
             $projectFilter = self::buildJobNoOrFilter($chunk);
@@ -721,7 +725,7 @@ class ProjectFinanceService
 
             $url = $this->companyEntityUrlWithQuery('FactureerbareProjectPlanningsRegels', [
                 '$select' => 'Job_No,Job_Task_No,Line_No,Line_Type,Type,No,Description,Description_2,Line_Amount_LCY,LVS_Cancelled_Original_Line',
-                '$filter' => $projectFilter,
+                '$filter' => $projectFilter . " and No eq '" . self::escapeOdataString($aanneemsomAccountNo) . "'",
             ]);
 
             try {
@@ -744,7 +748,8 @@ class ProjectFinanceService
                 }
 
                 $projectNo = trim((string) ($row['Job_No'] ?? ''));
-                if ($projectNo === '') {
+                $accountNo = trim((string) ($row['No'] ?? ''));
+                if ($projectNo === '' || $accountNo !== $aanneemsomAccountNo) {
                     continue;
                 }
 
