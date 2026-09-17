@@ -548,6 +548,10 @@ class ProjectFinanceService
 
         $costData = $this->fetchVoorcalculatieCostsForProjects($projectNumbers, $ttl);
         $revenueData = $this->fetchVoorcalculatieRevenueForProjects($projectNumbers, $ttl);
+        $forecastWarning = self::joinForecastWarnings([
+            $costData['warning'] ?? null,
+            $revenueData['warning'] ?? null,
+        ]);
 
         foreach ($costData['totals'] as $normalizedProject => $amount) {
             if (!isset($totalsByProject[$normalizedProject])) {
@@ -622,6 +626,7 @@ class ProjectFinanceService
         return [
             'forecast_totals_by_job' => $totalsByProject,
             'forecast_breakdown_by_job' => $breakdownByProject,
+            'warning' => $forecastWarning,
         ];
     }
 
@@ -630,76 +635,66 @@ class ProjectFinanceService
      *
      * Eén basislijnwaarde per project; niet sommeren over taakregels of LVS_Baseline_*.
      *
-     * @return array{totals:array<string,float>,breakdown:array<string,array<int,array<string,mixed>>>}
+     * @return array{totals:array<string,float>,breakdown:array<string,array<int,array<string,mixed>>>,warning:?string}
      */
     private function fetchVoorcalculatieCostsForProjects(array $projectNumbers, int $ttl): array
     {
         $totals = [];
         $breakdown = [];
-        $projectChunks = self::chunkValues($projectNumbers, 20);
         $projectTotaalTaskNo = '000';
+        $loaded = $this->fetchRowsForJobChunks(
+            $projectNumbers,
+            $ttl,
+            8,
+            function (string $projectFilter) use ($projectTotaalTaskNo): string {
+                return $this->companyEntityUrlWithQuery('ProjectTaken', [
+                    '$select' => 'Job_No,Job_Task_No,Description,LVS_Baseline_Total_Cost',
+                    '$filter' => $projectFilter . " and Job_Task_No eq '" . self::escapeOdataString($projectTotaalTaskNo) . "'",
+                ]);
+            },
+            'Voorcalculatie kosten ophalen mislukt (ProjectTaken)'
+        );
 
-        foreach ($projectChunks as $chunk) {
-            $projectFilter = self::buildJobNoOrFilter($chunk);
-            if ($projectFilter === '') {
+        foreach ($loaded['rows'] as $row) {
+            if (!is_array($row)) {
                 continue;
             }
 
-            $url = $this->companyEntityUrlWithQuery('ProjectTaken', [
-                '$select' => 'Job_No,Job_Task_No,Description,Job_Task_Type,LVS_Baseline_Total_Cost',
-                '$filter' => $projectFilter . " and Job_Task_No eq '" . self::escapeOdataString($projectTotaalTaskNo) . "'",
-            ]);
-
-            try {
-                $rows = odata_get_all($url, $this->auth, $ttl);
-            } catch (Throwable $loadError) {
-                throw new RuntimeException(
-                    'Voorcalculatie kosten ophalen mislukt (ProjectTaken): ' . $projectFilter,
-                    0,
-                    $loadError
-                );
+            $projectNo = trim((string) ($row['Job_No'] ?? ''));
+            $taskNo = trim((string) ($row['Job_Task_No'] ?? ''));
+            if ($projectNo === '' || $taskNo === '') {
+                continue;
             }
 
-            foreach ($rows as $row) {
-                if (!is_array($row)) {
-                    continue;
-                }
-
-                $projectNo = trim((string) ($row['Job_No'] ?? ''));
-                $taskNo = trim((string) ($row['Job_Task_No'] ?? ''));
-                if ($projectNo === '' || $taskNo === '') {
-                    continue;
-                }
-
-                if ($taskNo !== $projectTotaalTaskNo) {
-                    continue;
-                }
-
-                $amount = finance_to_float($row['LVS_Baseline_Total_Cost'] ?? 0.0);
-                if ($amount === 0.0) {
-                    continue;
-                }
-
-                $normalizedProject = self::normalizeMatchValue($projectNo);
-                $totals[$normalizedProject] = $amount;
-
-                $breakdown[$normalizedProject] = [
-                    [
-                        'Job_Task_No' => $taskNo,
-                        'Line_No' => 0,
-                        'Type' => (string) ($row['Job_Task_Type'] ?? ''),
-                        'No' => '',
-                        'Description' => (string) ($row['Description'] ?? ''),
-                        'Line_Amount' => $amount,
-                        'Line_Type' => '',
-                    ],
-                ];
+            if ($taskNo !== $projectTotaalTaskNo) {
+                continue;
             }
+
+            $amount = finance_to_float($row['LVS_Baseline_Total_Cost'] ?? 0.0);
+            if ($amount === 0.0) {
+                continue;
+            }
+
+            $normalizedProject = self::normalizeMatchValue($projectNo);
+            $totals[$normalizedProject] = $amount;
+
+            $breakdown[$normalizedProject] = [
+                [
+                    'Job_Task_No' => $taskNo,
+                    'Line_No' => 0,
+                    'Type' => (string) ($row['Job_Task_Type'] ?? ''),
+                    'No' => '',
+                    'Description' => (string) ($row['Description'] ?? ''),
+                    'Line_Amount' => $amount,
+                    'Line_Type' => '',
+                ],
+            ];
         }
 
         return [
             'totals' => $totals,
             'breakdown' => $breakdown,
+            'warning' => $loaded['warning'],
         ];
     }
 
@@ -709,87 +704,276 @@ class ProjectFinanceService
      * Alleen regels met Type GB-rekening (G/L Account) en No/Nr 800000, gelijk aan Fin Rap.
      * Overige planningsboekingen (resources, artikelen, andere rekeningen) tellen niet mee.
      *
-     * @return array{totals:array<string,float>,breakdown:array<string,array<int,array<string,mixed>>>}
+     * @return array{totals:array<string,float>,breakdown:array<string,array<int,array<string,mixed>>>,warning:?string}
      */
     private function fetchVoorcalculatieRevenueForProjects(array $projectNumbers, int $ttl): array
     {
         $totals = [];
         $breakdown = [];
-        $projectChunks = self::chunkValues($projectNumbers, 20);
         $aanneemsomType = FINANCE_REVENUE_GL_ACCOUNT_TYPE;
         $aanneemsomAccountNo = FINANCE_REVENUE_GL_ACCOUNT_NO;
+        $loaded = $this->fetchRowsForJobChunks(
+            $projectNumbers,
+            $ttl,
+            8,
+            function (string $projectFilter) use ($aanneemsomType, $aanneemsomAccountNo): string {
+                return $this->companyEntityUrlWithQuery('FactureerbareProjectPlanningsRegels', [
+                    '$select' => 'Job_No,Job_Task_No,Line_No,Line_Type,Type,No,Description,Description_2,Line_Amount_LCY,LVS_Cancelled_Original_Line',
+                    '$filter' => $projectFilter
+                        . " and Type eq '" . self::escapeOdataString($aanneemsomType) . "'"
+                        . " and No eq '" . self::escapeOdataString($aanneemsomAccountNo) . "'",
+                ]);
+            },
+            'Voorcalculatie opbrengst ophalen mislukt (FactureerbareProjectPlanningsRegels)'
+        );
 
-        foreach ($projectChunks as $chunk) {
-            $projectFilter = self::buildJobNoOrFilter($chunk);
-            if ($projectFilter === '') {
+        foreach ($loaded['rows'] as $row) {
+            if (!is_array($row)) {
                 continue;
             }
 
-            $url = $this->companyEntityUrlWithQuery('FactureerbareProjectPlanningsRegels', [
-                '$select' => 'Job_No,Job_Task_No,Line_No,Line_Type,Type,No,Description,Description_2,Line_Amount_LCY,LVS_Cancelled_Original_Line',
-                '$filter' => $projectFilter
-                    . " and Type eq '" . self::escapeOdataString($aanneemsomType) . "'"
-                    . " and No eq '" . self::escapeOdataString($aanneemsomAccountNo) . "'",
-            ]);
-
-            try {
-                $rows = odata_get_all($url, $this->auth, $ttl);
-            } catch (Throwable $loadError) {
-                throw new RuntimeException(
-                    'Voorcalculatie opbrengst ophalen mislukt (FactureerbareProjectPlanningsRegels): ' . $projectFilter,
-                    0,
-                    $loadError
-                );
+            if (self::isTruthyOdataBoolean($row['LVS_Cancelled_Original_Line'] ?? false)) {
+                continue;
             }
 
-            foreach ($rows as $row) {
-                if (!is_array($row)) {
-                    continue;
-                }
-
-                if (self::isTruthyOdataBoolean($row['LVS_Cancelled_Original_Line'] ?? false)) {
-                    continue;
-                }
-
-                $projectNo = trim((string) ($row['Job_No'] ?? ''));
-                if ($projectNo === '' || !finance_is_revenue_gl_account_line($row)) {
-                    continue;
-                }
-
-                $amount = finance_to_float($row['Line_Amount_LCY'] ?? 0.0);
-                if ($amount === 0.0) {
-                    continue;
-                }
-
-                $normalizedProject = self::normalizeMatchValue($projectNo);
-                $totals[$normalizedProject] = finance_add_amount((float) ($totals[$normalizedProject] ?? 0.0), $amount);
-
-                $lineDescription = trim((string) ($row['Description'] ?? ''));
-                $lineDescription2 = trim((string) ($row['Description_2'] ?? ''));
-                if ($lineDescription2 !== '') {
-                    $lineDescription = trim($lineDescription . ' / ' . $lineDescription2);
-                }
-
-                if (!isset($breakdown[$normalizedProject])) {
-                    $breakdown[$normalizedProject] = [];
-                }
-
-                $breakdown[$normalizedProject][] = [
-                    'Job_Task_No' => (string) ($row['Job_Task_No'] ?? ''),
-                    'Line_No' => (int) ($row['Line_No'] ?? 0),
-                    'Type' => (string) ($row['Type'] ?? ''),
-                    'No' => (string) ($row['No'] ?? ''),
-                    'Description' => $lineDescription,
-                    'Line_Amount' => $amount,
-                    'Line_Type' => (string) ($row['Line_Type'] ?? ''),
-                ];
+            $projectNo = trim((string) ($row['Job_No'] ?? ''));
+            if ($projectNo === '' || !finance_is_revenue_gl_account_line($row)) {
+                continue;
             }
+
+            $amount = finance_to_float($row['Line_Amount_LCY'] ?? 0.0);
+            if ($amount === 0.0) {
+                continue;
+            }
+
+            $normalizedProject = self::normalizeMatchValue($projectNo);
+            $totals[$normalizedProject] = finance_add_amount((float) ($totals[$normalizedProject] ?? 0.0), $amount);
+
+            $lineDescription = trim((string) ($row['Description'] ?? ''));
+            $lineDescription2 = trim((string) ($row['Description_2'] ?? ''));
+            if ($lineDescription2 !== '') {
+                $lineDescription = trim($lineDescription . ' / ' . $lineDescription2);
+            }
+
+            if (!isset($breakdown[$normalizedProject])) {
+                $breakdown[$normalizedProject] = [];
+            }
+
+            $breakdown[$normalizedProject][] = [
+                'Job_Task_No' => (string) ($row['Job_Task_No'] ?? ''),
+                'Line_No' => (int) ($row['Line_No'] ?? 0),
+                'Type' => (string) ($row['Type'] ?? ''),
+                'No' => (string) ($row['No'] ?? ''),
+                'Description' => $lineDescription,
+                'Line_Amount' => $amount,
+                'Line_Type' => (string) ($row['Line_Type'] ?? ''),
+            ];
         }
 
         return [
             'totals' => $totals,
             'breakdown' => $breakdown,
+            'warning' => $loaded['warning'],
         ];
+    }
+
+    /**
+     * Haalt OData-rijen op in Job_No-chunks; bij een mislukte batch opnieuw per project.
+     *
+     * @param callable(string):string $urlBuilder
+     * @return array{rows:array<int,mixed>,warning:?string}
+     */
+    private function fetchRowsForJobChunks(
+        array $projectNumbers,
+        int $ttl,
+        int $chunkSize,
+        callable $urlBuilder,
+        string $errorPrefix
+    ): array {
+        $rows = [];
+        $warnings = [];
+
+        foreach (self::chunkValues($projectNumbers, $chunkSize) as $chunk) {
+            $chunkResult = $this->fetchRowsForJobChunk($chunk, $ttl, $urlBuilder, $errorPrefix);
+            foreach ($chunkResult['rows'] as $row) {
+                $rows[] = $row;
+            }
+            if (is_string($chunkResult['warning']) && $chunkResult['warning'] !== '') {
+                $warnings[] = $chunkResult['warning'];
+            }
+        }
+
+        return [
+            'rows' => $rows,
+            'warning' => self::joinForecastWarnings($warnings),
+        ];
+    }
+
+    /**
+     * @param callable(string):string $urlBuilder
+     * @return array{rows:array<int,mixed>,warning:?string}
+     */
+    private function fetchRowsForJobChunk(
+        array $chunk,
+        int $ttl,
+        callable $urlBuilder,
+        string $errorPrefix
+    ): array {
+        $projectFilter = self::buildJobNoOrFilter($chunk);
+        if ($projectFilter === '') {
+            return ['rows' => [], 'warning' => null];
+        }
+
+        try {
+            $url = $urlBuilder($projectFilter);
+            return [
+                'rows' => odata_get_all($url, $this->auth, $ttl),
+                'warning' => null,
+            ];
+        } catch (Throwable $loadError) {
+            if (count($chunk) <= 1) {
+                return [
+                    'rows' => [],
+                    'warning' => self::formatForecastLoadError($errorPrefix, $loadError),
+                ];
+            }
+
+            $rows = [];
+            $failedCount = 0;
+            foreach ($chunk as $projectNo) {
+                $singleResult = $this->fetchRowsForJobChunk([$projectNo], $ttl, $urlBuilder, $errorPrefix);
+                foreach ($singleResult['rows'] as $row) {
+                    $rows[] = $row;
+                }
+                if (is_string($singleResult['warning']) && $singleResult['warning'] !== '') {
+                    $failedCount++;
+                }
+            }
+
+            if ($failedCount === 0) {
+                return ['rows' => $rows, 'warning' => null];
+            }
+
+            return [
+                'rows' => $rows,
+                'warning' => self::formatForecastLoadError($errorPrefix, $loadError),
+            ];
+        }
+    }
+
+    /**
+     * Korte, toonbare OData-fout zonder het ruwe $filter in de toast.
+     */
+    private static function formatForecastLoadError(string $prefix, Throwable $error): string
+    {
+        return $prefix . ': ' . self::summarizeOdataThrowable($error);
+    }
+
+    /**
+     * @param array<int,mixed> $warnings
+     */
+    private static function joinForecastWarnings(array $warnings): ?string
+    {
+        $clean = [];
+        foreach ($warnings as $warning) {
+            if (!is_string($warning)) {
+                continue;
+            }
+
+            $warning = trim($warning);
+            if ($warning === '') {
+                continue;
+            }
+
+            $clean[] = $warning;
+        }
+
+        $clean = array_values(array_unique($clean));
+        if ($clean === []) {
+            return null;
+        }
+
+        return implode(' | ', $clean);
+    }
+
+    /**
+     * Haalt de leesbare BC/OData-fout uit een exception-keten.
+     */
+    private static function summarizeOdataThrowable(Throwable $error): string
+    {
+        $best = trim($error->getMessage());
+        $current = $error;
+        $depth = 0;
+
+        while ($current !== null && $depth < 4) {
+            $extracted = self::extractOdataErrorText($current->getMessage());
+            if ($extracted !== '') {
+                $best = $extracted;
+            }
+
+            $current = $current->getPrevious();
+            $depth++;
+        }
+
+        $best = trim((string) preg_replace('/\s+/', ' ', $best));
+        if (strlen($best) > 280) {
+            return substr($best, 0, 277) . '...';
+        }
+
+        return $best;
+    }
+
+    private static function extractOdataErrorText(string $message): string
+    {
+        $message = trim($message);
+        if ($message === '') {
+            return '';
+        }
+
+        if (preg_match('/HTTP\s+(\d+)\s+from OData:\s*(.*)$/s', $message, $matches) !== 1) {
+            return $message;
+        }
+
+        $httpCode = $matches[1];
+        $raw = trim($matches[2]);
+        $decoded = json_decode($raw, true);
+        $detail = self::extractOdataErrorMessageFromPayload($decoded);
+        if ($detail !== '') {
+            return 'HTTP ' . $httpCode . ': ' . $detail;
+        }
+
+        if ($raw !== '' && $raw[0] !== '{' && $raw[0] !== '<') {
+            $raw = trim((string) preg_replace('/\s+/', ' ', $raw));
+            if (strlen($raw) > 200) {
+                $raw = substr($raw, 0, 197) . '...';
+            }
+
+            return 'HTTP ' . $httpCode . ': ' . $raw;
+        }
+
+        return 'HTTP ' . $httpCode;
+    }
+
+    /**
+     * @param mixed $payload
+     */
+    private static function extractOdataErrorMessageFromPayload($payload): string
+    {
+        if (!is_array($payload)) {
+            return '';
+        }
+
+        $error = $payload['error'] ?? $payload['odata.error'] ?? null;
+        if (!is_array($error)) {
+            return '';
+        }
+
+        $message = $error['message'] ?? '';
+        if (is_array($message)) {
+            $message = $message['value'] ?? '';
+        }
+
+        return trim((string) $message);
     }
 
     /**

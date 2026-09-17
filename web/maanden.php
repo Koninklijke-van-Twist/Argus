@@ -1548,6 +1548,10 @@ if (($_GET['action'] ?? '') === 'fetch_sub_planning') {
                 $planningBreakdownByJob = is_array($projectForecast['forecast_breakdown_by_job'] ?? null)
                     ? $projectForecast['forecast_breakdown_by_job']
                     : [];
+                $forecastWarning = $projectForecast['warning'] ?? null;
+                $planningWarning = is_string($forecastWarning) && trim($forecastWarning) !== ''
+                    ? trim($forecastWarning)
+                    : null;
             } catch (Throwable $forecastLoadError) {
                 // Forecast mag ProjectPosten-snapshot niet blokkeren.
                 $planningTotalsByJob = [];

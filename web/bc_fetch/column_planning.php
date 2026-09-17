@@ -71,6 +71,10 @@ function bc_fetch_column_planning_project(string $company, string $projectNumber
     $result['breakdown']['extra_work_lines'] = is_array($breakdown['extra_work_lines'] ?? null)
         ? $breakdown['extra_work_lines']
         : [];
+    $forecastWarning = $forecast['warning'] ?? null;
+    $result['warning'] = is_string($forecastWarning) && trim($forecastWarning) !== ''
+        ? trim($forecastWarning)
+        : null;
 
     return $result;
 }
@@ -89,6 +93,7 @@ function bc_fetch_column_planning(string $company, string $yearMonth, array $pro
         ];
     }
 
+    $warnings = [];
     try {
         foreach ($projectNumbers as $projectNumber) {
             $projectNo = trim((string) $projectNumber);
@@ -97,7 +102,13 @@ function bc_fetch_column_planning(string $company, string $yearMonth, array $pro
             }
 
             $normProjectNo = bc_fetch_normalize_project_no($projectNo);
-            $dictionary[$normProjectNo] = bc_fetch_column_planning_project($company, $projectNo, $ttl);
+            $projectData = bc_fetch_column_planning_project($company, $projectNo, $ttl);
+            $projectWarning = $projectData['warning'] ?? null;
+            unset($projectData['warning']);
+            $dictionary[$normProjectNo] = $projectData;
+            if (is_string($projectWarning) && $projectWarning !== '') {
+                $warnings[] = $projectWarning;
+            }
         }
     } catch (Throwable $e) {
         return [
@@ -107,9 +118,11 @@ function bc_fetch_column_planning(string $company, string $yearMonth, array $pro
         ];
     }
 
+    $warnings = array_values(array_unique($warnings));
+
     return [
         'column' => 'planning',
         'by_project' => $dictionary,
-        'warning' => null,
+        'warning' => $warnings === [] ? null : implode(' | ', $warnings),
     ];
 }
