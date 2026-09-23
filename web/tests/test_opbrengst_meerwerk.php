@@ -1,8 +1,8 @@
 <?php
 
 /**
- * Opbrengst meerwerk = factureerbare G/L 800000 met gevuld LVS_Job_Change_Order_No.
- * Aanneemsom = dezelfde regels met leeg subordernummer.
+ * Opbrengst = factureerbare G/L 800000, leeg én gevuld LVS_Job_Change_Order_No.
+ * Opbrengst meerwerk = alleen het deel met gevuld subordernummer (extra informatie).
  * Q002 in Description alleen is geen meerwerk.
  */
 if (PHP_SAPI !== 'cli') {
@@ -57,11 +57,13 @@ $liveMeerwerk = [
     'LVS_Job_Change_Order_No' => 'SO-1',
 ];
 assert_same(2825.0, finance_opbrengst_meerwerk_amount($liveMeerwerk), 'project 163679 SO-1 met Type Grootboekrekening is opbrengst meerwerk');
-assert_same(0.0, finance_aanneemsom_amount($liveMeerwerk), 'gevuld subordernr. blijft buiten aanneemsom bij Type Grootboekrekening');
+assert_same(2825.0, finance_opbrengst_amount($liveMeerwerk), 'gevuld subordernr. blijft in opbrengst bij Type Grootboekrekening');
+assert_same(2825.0, finance_aanneemsom_amount($liveMeerwerk), 'gevuld subordernr. blijft in aanneemsom/opbrengst bij Type Grootboekrekening');
 
 $liveAanneemsom = $liveMeerwerk;
 $liveAanneemsom['LVS_Job_Change_Order_No'] = '';
 $liveAanneemsom['Line_Amount_LCY'] = 1000;
+assert_same(1000.0, finance_opbrengst_amount($liveAanneemsom), 'lege suborder met Type Grootboekrekening is opbrengst');
 assert_same(1000.0, finance_aanneemsom_amount($liveAanneemsom), 'lege suborder met Type Grootboekrekening is aanneemsom');
 assert_same(0.0, finance_opbrengst_meerwerk_amount($liveAanneemsom), 'lege suborder met Type Grootboekrekening is geen meerwerk');
 assert_same(false, finance_is_revenue_gl_account_line([
@@ -74,11 +76,13 @@ assert_same(false, finance_is_revenue_gl_account_line([
 ]), 'andere grootboekrekening telt niet');
 
 assert_same(2825.0, finance_opbrengst_meerwerk_amount($base), 'SO-1 op 800000 is opbrengst meerwerk');
-assert_same(0.0, finance_aanneemsom_amount($base), 'gevuld subordernr. hoort niet bij aanneemsom');
+assert_same(2825.0, finance_opbrengst_amount($base), 'gevuld subordernr. hoort bij opbrengst');
+assert_same(2825.0, finance_aanneemsom_amount($base), 'gevuld subordernr. hoort bij aanneemsom/opbrengst');
 
 $emptyChangeOrder = $base;
 $emptyChangeOrder['LVS_Job_Change_Order_No'] = '   ';
 $emptyChangeOrder['Line_Amount_LCY'] = 10000;
+assert_same(10000.0, finance_opbrengst_amount($emptyChangeOrder), 'witruimte in subordernr. blijft opbrengst');
 assert_same(10000.0, finance_aanneemsom_amount($emptyChangeOrder), 'witruimte in subordernr. blijft aanneemsom');
 assert_same(0.0, finance_opbrengst_meerwerk_amount($emptyChangeOrder), 'leeg subordernr. is geen meerwerk');
 
@@ -86,12 +90,14 @@ $descriptionOnly = $base;
 $descriptionOnly['LVS_Job_Change_Order_No'] = '';
 $descriptionOnly['Description'] = 'Meerwerk Q002';
 $descriptionOnly['Line_Amount_LCY'] = 400;
+assert_same(400.0, finance_opbrengst_amount($descriptionOnly), 'Q002 alleen in Description blijft opbrengst');
 assert_same(400.0, finance_aanneemsom_amount($descriptionOnly), 'Q002 alleen in Description blijft aanneemsom');
 assert_same(0.0, finance_opbrengst_meerwerk_amount($descriptionOnly), 'Q002 in Description is geen meerwerk');
 
 $forecast = $base;
 $forecast['Line_Type'] = 'Prognose';
 assert_same(0.0, finance_opbrengst_meerwerk_amount($forecast), 'prognose telt niet als meerwerk');
+assert_same(0.0, finance_opbrengst_amount($forecast), 'prognose telt niet als opbrengst');
 assert_same(0.0, finance_aanneemsom_amount($forecast), 'prognose telt niet als aanneemsom');
 
 $englishForecast = $base;
@@ -101,17 +107,21 @@ assert_same(0.0, finance_opbrengst_meerwerk_amount($englishForecast), 'forecast 
 $budget = $base;
 $budget['Line_Type'] = 'Budget';
 $budget['LVS_Job_Change_Order_No'] = '';
+assert_same(0.0, finance_opbrengst_amount($budget), 'budget zonder factureerbaar telt niet als opbrengst');
 assert_same(0.0, finance_aanneemsom_amount($budget), 'budget zonder factureerbaar telt niet');
 
 $both = $base;
 $both['Line_Type'] = 'Both Budget and Billable';
 $both['LVS_Job_Change_Order_No'] = '';
 $both['Line_Amount_LCY'] = 50;
+assert_same(50.0, finance_opbrengst_amount($both), 'billable combinatie zonder suborder is opbrengst');
 assert_same(50.0, finance_aanneemsom_amount($both), 'billable combinatie zonder suborder is aanneemsom');
 
 $cancelled = $base;
 $cancelled['LVS_Cancelled_Original_Line'] = true;
 assert_same(0.0, finance_opbrengst_meerwerk_amount($cancelled), 'geannuleerde regel telt niet');
+assert_same(0.0, finance_opbrengst_amount($cancelled), 'geannuleerde regel telt niet als opbrengst');
+assert_same(0.0, finance_aanneemsom_amount($cancelled), 'geannuleerde regel telt niet als aanneemsom');
 
 $split = finance_split_contract_revenue([
     [
@@ -167,7 +177,30 @@ $split = finance_split_contract_revenue([
 ]);
 
 assert_same(2825.0, $split['opbrengst_meerwerk'], 'project 163679 meerwerk somt 800000-regels met suborder SO-1');
-assert_same(1400.0, $split['aanneemsom'], 'aanneemsom laat suborderregels weg');
+assert_same(4225.0, $split['opbrengst'], 'opbrengst is lege aanneemsom plus SO-1 meerwerk');
+assert_same(4225.0, $split['aanneemsom'], 'aanneemsom/opbrengst telt suborderregels mee');
+
+$projectStyle = finance_split_contract_revenue([
+    [
+        'Job_No' => '163679',
+        'Type' => 'Grootboekrekening',
+        'No' => '800000',
+        'Line_Type' => 'Factureerbaar',
+        'Line_Amount_LCY' => 10000,
+        'LVS_Job_Change_Order_No' => '',
+    ],
+    [
+        'Job_No' => '163679',
+        'Type' => 'Grootboekrekening',
+        'No' => '800000',
+        'Line_Type' => 'Factureerbaar',
+        'Line_Amount_LCY' => 2825,
+        'LVS_Job_Change_Order_No' => 'SO-1',
+    ],
+]);
+assert_same(2825.0, $projectStyle['opbrengst_meerwerk'], 'projectstijl: SO-1 2825 blijft alleen meerwerk');
+assert_same(12825.0, $projectStyle['opbrengst'], 'projectstijl: opbrengst is lege aanneemsom plus SO-1 meerwerk');
+assert_same(12825.0, $projectStyle['aanneemsom'], 'projectstijl: aanneemsom/opbrengst is de som van beide');
 
 assert_same(0.0, finance_opbrengst_vc_amount($base), 'meerwerkregel is geen Opbrengst VC');
 

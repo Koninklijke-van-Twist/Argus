@@ -105,8 +105,9 @@ class ProjectFinanceService
             // Voorcalculatie (statisch, huidige BC-stand):
             // - kosten: ProjectTaken.LVS_Baseline_Total_Cost voor Job_Task_No '000' (Project TOTAAL / basislijn)
             // - opbrengst: ProjectTaken.LVS_Schedule_Total_Price_2 voor Job_Task_No '000' (schedule/budget)
-            //   Aanneemsom en opbrengst meerwerk blijven FactureerbareProjectPlanningsRegels G/L 800000
-            //   en horen niet in Opbrengst VC. Meerwerk = gevuld LVS_Job_Change_Order_No.
+            //   Opbrengst (aanneemsom) en opbrengst meerwerk blijven FactureerbareProjectPlanningsRegels G/L 800000
+            //   en horen niet in Opbrengst VC. Opbrengst telt leeg én gevuld subordernr.;
+            //   meerwerk is alleen het gevulde deel en wordt niet uit de opbrengst gehaald.
             'project_forecast' => [
                 'cost_entity_set' => 'ProjectTaken',
                 'revenue_entity_set' => 'ProjectTaken',
@@ -519,9 +520,10 @@ class ProjectFinanceService
      * Haalt voorcalculatie op per project (huidige BC-stand, geen historie).
      *
      * Kosten: ProjectTaken.LVS_Baseline_Total_Cost (Job_Task_No 000 / Project TOTAAL).
-     * Opbrengst: ProjectTaken.LVS_Schedule_Total_Price_2 (Job_Task_No 000 / schedule-prijs).
-     * Aanneemsom en opbrengst meerwerk: FactureerbareProjectPlanningsRegels, G/L 800000, factureerbaar.
-     * Meerwerk is het deel met gevuld LVS_Job_Change_Order_No; aanneemsom is het deel zonder.
+     * Opbrengst VC: ProjectTaken.LVS_Schedule_Total_Price_2 (Job_Task_No 000 / schedule-prijs).
+     * Opbrengst/aanneemsom en opbrengst meerwerk: FactureerbareProjectPlanningsRegels, G/L 800000, factureerbaar.
+     * Opbrengst telt regels met leeg én gevuld LVS_Job_Change_Order_No.
+     * Meerwerk is alleen het deel met gevuld subordernr. en blijft in de opbrengst zitten.
      */
     public function collectProjectForecastForProjects(array $projectNumbers, int $ttl = 3600): array
     {
@@ -824,12 +826,14 @@ class ProjectFinanceService
     }
 
     /**
-     * Aanneemsom en opbrengst meerwerk uit FactureerbareProjectPlanningsRegels.
+     * Opbrengst/aanneemsom en opbrengst meerwerk uit FactureerbareProjectPlanningsRegels.
      *
      * Beide gebruiken Type G/L (GB-rekening / Grootboekrekening / GLAccount / G/L Account), No 800000,
      * Line_Type factureerbaar/billable (niet prognose/forecast) en Line_Amount_LCY.
-     * LVS_Job_Change_Order_No leeg = aanneemsom; gevuld = opbrengst meerwerk (extra_work).
+     * Opbrengst/aanneemsom telt leeg én gevuld LVS_Job_Change_Order_No.
+     * extra_work is alleen het gevulde deel (opbrengst meerwerk) en is geen aftrek van de opbrengst.
      * Q002 alleen in Description wordt niet als meerwerk herkend.
+     * Tel extra_work niet nog eens bovenop aanneemsom: dat deel zit er al in.
      *
      * @return array{
      *   aanneemsom:array{totals:array<string,float>,breakdown:array<string,array<int,array<string,mixed>>>},
@@ -867,7 +871,7 @@ class ProjectFinanceService
                 continue;
             }
 
-            $aanneemsomAmount = finance_aanneemsom_amount($row);
+            $aanneemsomAmount = finance_opbrengst_amount($row);
             $meerwerkAmount = finance_opbrengst_meerwerk_amount($row);
             if ($aanneemsomAmount === 0.0 && $meerwerkAmount === 0.0) {
                 continue;
