@@ -826,7 +826,7 @@ class ProjectFinanceService
     /**
      * Aanneemsom en opbrengst meerwerk uit FactureerbareProjectPlanningsRegels.
      *
-     * Beide gebruiken Type G/L (GB-rekening / GLAccount / G/L Account), No 800000,
+     * Beide gebruiken Type G/L (GB-rekening / Grootboekrekening / GLAccount / G/L Account), No 800000,
      * Line_Type factureerbaar/billable (niet prognose/forecast) en Line_Amount_LCY.
      * LVS_Job_Change_Order_No leeg = aanneemsom; gevuld = opbrengst meerwerk (extra_work).
      * Q002 alleen in Description wordt niet als meerwerk herkend.

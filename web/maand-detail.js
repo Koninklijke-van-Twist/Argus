@@ -882,7 +882,7 @@
             case 'costs_vc':
                 return { type: 'bc-field', name: 'LVS_Baseline_Total_Cost', source: 'ProjectTaken', filters: baseFilter + ',Job_Task_No=000' };
             case 'extra_work':
-                return { type: 'bc-field', name: 'Line_Amount_LCY', source: 'FactureerbareProjectPlanningsRegels', filters: baseFilter + ',Type=GB-rekening|GLAccount,No=800000,Line_Type=Factureerbaar,LVS_Job_Change_Order_No=gevuld' };
+                return { type: 'bc-field', name: 'Line_Amount_LCY', source: 'FactureerbareProjectPlanningsRegels', filters: baseFilter + ',Type=GB-rekening|Grootboekrekening|GLAccount,No=800000,Line_Type=Factureerbaar,LVS_Job_Change_Order_No=gevuld' };
             case 'margin_total':
                 return { type: 'computed-field', formula: 'ProjectTaken.LVS_Schedule_Total_Price_2 (Job_Task_No=000) - ProjectTaken.LVS_Baseline_Total_Cost (Job_Task_No=000)' };
             case 'pct_ready':

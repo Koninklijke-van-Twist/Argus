@@ -41,6 +41,29 @@ assert_same(true, finance_is_revenue_gl_account_line([
     'Type' => 'GLAccount',
     'No' => '800000',
 ]), 'GLAccount-alias telt als omzetrekening');
+assert_same(true, finance_is_revenue_gl_account_type('Grootboekrekening'), 'live OData Type Grootboekrekening is een G/L-rekening');
+assert_same(true, finance_is_revenue_gl_account_type('Grootboek rekening'), 'spaties in Grootboek rekening vallen weg');
+assert_same(true, finance_is_revenue_gl_account_line([
+    'Type' => 'Grootboekrekening',
+    'No' => '800000',
+]), 'Grootboekrekening 800000 telt als omzetrekening');
+
+$liveMeerwerk = [
+    'Job_No' => '163679',
+    'Type' => 'Grootboekrekening',
+    'No' => '800000',
+    'Line_Type' => 'Factureerbaar',
+    'Line_Amount_LCY' => 2825,
+    'LVS_Job_Change_Order_No' => 'SO-1',
+];
+assert_same(2825.0, finance_opbrengst_meerwerk_amount($liveMeerwerk), 'project 163679 SO-1 met Type Grootboekrekening is opbrengst meerwerk');
+assert_same(0.0, finance_aanneemsom_amount($liveMeerwerk), 'gevuld subordernr. blijft buiten aanneemsom bij Type Grootboekrekening');
+
+$liveAanneemsom = $liveMeerwerk;
+$liveAanneemsom['LVS_Job_Change_Order_No'] = '';
+$liveAanneemsom['Line_Amount_LCY'] = 1000;
+assert_same(1000.0, finance_aanneemsom_amount($liveAanneemsom), 'lege suborder met Type Grootboekrekening is aanneemsom');
+assert_same(0.0, finance_opbrengst_meerwerk_amount($liveAanneemsom), 'lege suborder met Type Grootboekrekening is geen meerwerk');
 assert_same(false, finance_is_revenue_gl_account_line([
     'Type' => 'Resource',
     'No' => '800000',

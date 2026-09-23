@@ -8,11 +8,12 @@ const FINANCE_REVENUE_GL_ACCOUNT_NO = '800000';
 
 /**
  * Genormaliseerde Type-aliassen voor de omzetrekening (G/L Account).
- * BC levert afhankelijk van taal/OData o.a. GB-rekening, G/L Account en GLAccount.
+ * BC levert afhankelijk van taal/OData o.a. GB-rekening, Grootboekrekening, G/L Account en GLAccount.
  */
 const FINANCE_REVENUE_GL_ACCOUNT_TYPE_ALIASES = [
     'glaccount',
     'glrekening',
+    'grootboekrekening',
 ];
 
 /**
@@ -290,7 +291,7 @@ function finance_normalize_code(string $value): string
 }
 
 /**
- * Bepaalt of Type een G/L-rekening is (GB-rekening, G/L Account, GLAccount en gelijkwaardige aliassen).
+ * Bepaalt of Type een G/L-rekening is (GB-rekening, Grootboekrekening, G/L Account, GLAccount en gelijkwaardige aliassen).
  */
 function finance_is_revenue_gl_account_type(string $type): bool
 {
@@ -308,7 +309,7 @@ function finance_is_revenue_gl_account_type(string $type): bool
 
 /**
  * Bepaalt of een BC-projectplanningsregel op omzetrekening 800000 staat.
- * Alleen G/L-type (GB-rekening / G/L Account / GLAccount) en No = 800000 telt mee;
+ * Alleen G/L-type (GB-rekening / Grootboekrekening / G/L Account / GLAccount) en No = 800000 telt mee;
  * resource-/artikelboekingen op dezelfde planning blijven buiten deze som.
  * Opbrengst VC gebruikt dit filter niet; die kolom leest LVS_Schedule_Total_Price_2.
  */
