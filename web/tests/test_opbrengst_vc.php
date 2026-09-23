@@ -31,7 +31,27 @@ $prj2602236 = [
     'Type' => 'GB-rekening',
     'No' => '800000',
 ];
+assert_same('LVS_Schedule_Total_Price_2', FINANCE_OPBRENGST_VC_FIELD, 'Opbrengst VC field is schedule price');
 assert_same(219000.0, finance_opbrengst_vc_amount($prj2602236), 'PRJ2602236 schedule price is Opbrengst VC');
+
+$ariadne = [
+    'Job_No' => 'PRJ2602236',
+    'Job_Task_No' => '000',
+    'LVS_Schedule_Total_Price_2' => 219000,
+    'LVS_Baseline_Total_Price' => 0,
+];
+assert_same(219000.0, finance_opbrengst_vc_amount($ariadne), 'schedule price is kept when baseline price is 0');
+assert_same(0.0, finance_opbrengst_vc_amount([
+    'Job_No' => 'PRJ2602236',
+    'Job_Task_No' => '000',
+    'LVS_Baseline_Total_Price' => 219000,
+]), 'baseline price alone is not Opbrengst VC');
+assert_same(0.0, finance_opbrengst_vc_amount([
+    'Job_No' => 'PRJ2602236',
+    'Job_Task_No' => '000',
+    'LVS_Schedule_Total_Price_2' => 0,
+    'LVS_Baseline_Total_Price' => 219000,
+]), 'baseline price is not a fallback when schedule price is 0');
 
 assert_same(0.0, finance_opbrengst_vc_amount([
     'Job_No' => 'PRJ2602236',

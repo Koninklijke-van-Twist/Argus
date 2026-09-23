@@ -701,8 +701,9 @@ class ProjectFinanceService
     /**
      * Voorcalculatie opbrengst uit ProjectTaken (LVS_Schedule_Total_Price_2 van taak 000).
      *
-     * Eén schedule/budgetprijs per project. Niet de aanneemsom (G/L 800000 / Line_Amount_LCY)
-     * en niet de som van factureerbare planningsregels.
+     * Eén schedule/budgetprijs per project. Niet LVS_Baseline_Total_Price,
+     * niet de aanneemsom (G/L 800000 / Line_Amount_LCY) en niet de som van
+     * factureerbare planningsregels.
      *
      * @return array{totals:array<string,float>,breakdown:array<string,array<int,array<string,mixed>>>,warning:?string}
      */

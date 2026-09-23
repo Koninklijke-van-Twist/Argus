@@ -286,10 +286,12 @@ function finance_is_revenue_gl_account_line(array $row): bool
 }
 
 /**
- * Leest Opbrengst VC uit de schedule/budgetprijs van een project-totaalregel.
+ * Leest Opbrengst VC uit LVS_Schedule_Total_Price_2 (schedule/omzet VC).
  * Alleen Job_Task_No 000 (Project TOTAAL) telt; andere taken leveren 0.
  * Ontbreekt het taaknummer, dan telt de regel wel (één projectkaartwaarde).
- * Line_Amount_LCY en G/L 800000 worden genegeerd.
+ * LVS_Baseline_Total_Price wordt niet gelezen: op PRJ2602236 is dat veld 0
+ * terwijl de schedule-prijs ongeveer 219000 is.
+ * Line_Amount_LCY en G/L 800000 (aanneemsom) worden genegeerd.
  */
 function finance_opbrengst_vc_amount(array $row, string $projectTotaalTaskNo = '000'): float
 {
