@@ -259,9 +259,11 @@ function project_modal_collect_for_projects(string $company, string $yearMonth, 
                 continue;
             }
 
+            // Opbrengst/contractwaarde telt factureerbare G/L 800000 met leeg én gevuld subordernr.
+            // opbrengst_meerwerk is alleen het gevulde deel en zit al in contract_value.
             $byProject[$normProject]['contract_value'] = finance_add_amount(
                 (float) ($byProject[$normProject]['contract_value'] ?? 0.0),
-                finance_aanneemsom_amount($contractRow)
+                finance_opbrengst_amount($contractRow)
             );
             $byProject[$normProject]['opbrengst_meerwerk'] = finance_add_amount(
                 (float) ($byProject[$normProject]['opbrengst_meerwerk'] ?? 0.0),

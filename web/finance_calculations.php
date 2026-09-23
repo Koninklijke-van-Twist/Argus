@@ -363,9 +363,9 @@ function finance_is_cancelled_planning_line(array $row): bool
 }
 
 /**
- * Bepaalt of een planningsregel meetelt voor aanneemsom of opbrengst meerwerk.
+ * Bepaalt of een planningsregel meetelt voor opbrengst of opbrengst meerwerk.
  * Vereist G/L 800000, factureerbaar/billable (geen prognose/forecast) en geen geannuleerde regel.
- * De splitsing zelf zit in het subordernummer, niet in deze functie.
+ * Een gevuld subordernummer maakt de regel meerwerk, maar haalt hem niet uit de opbrengst.
  */
 function finance_is_contract_revenue_planning_line(array $row): bool
 {
@@ -381,21 +381,27 @@ function finance_is_contract_revenue_planning_line(array $row): bool
 }
 
 /**
- * Berekent aanneemsom voor één planningsregel.
- * Zelfde 800000-filter als opbrengst meerwerk, maar alleen als LVS_Job_Change_Order_No leeg is.
- * Een gevulde Description (bijv. Q002) zonder subordernummer blijft aanneemsom.
+ * Berekent kolomwaarde Opbrengst voor één planningsregel.
+ * Factureerbare G/L 800000, met leeg én gevuld LVS_Job_Change_Order_No.
+ * Meerwerk blijft in dit totaal; finance_opbrengst_meerwerk_amount is alleen extra informatie.
+ * Q002 in Description zonder subordernummer telt gewoon mee.
  */
-function finance_aanneemsom_amount(array $row): float
+function finance_opbrengst_amount(array $row): float
 {
     if (!finance_is_contract_revenue_planning_line($row)) {
         return 0.0;
     }
 
-    if (finance_planning_change_order_no($row) !== '') {
-        return 0.0;
-    }
-
     return finance_to_float($row['Line_Amount_LCY'] ?? 0.0);
+}
+
+/**
+ * Berekent de opbrengst/aanneemsom voor één planningsregel.
+ * Zelfde totaal als finance_opbrengst_amount: leeg en gevuld subordernummer tellen allebei mee.
+ */
+function finance_aanneemsom_amount(array $row): float
+{
+    return finance_opbrengst_amount($row);
 }
 
 /**
@@ -417,14 +423,15 @@ function finance_opbrengst_meerwerk_amount(array $row): float
 }
 
 /**
- * Splitst planningsregels in aanneemsom (leeg subordernr.) en opbrengst meerwerk.
+ * Telt opbrengst (leeg én gevuld subordernr.) en het meerwerk-deel (alleen gevuld).
+ * Opbrengst meerwerk zit in de opbrengst en wordt daar niet afgetrokken.
  *
  * @param array<int,mixed> $rows
- * @return array{aanneemsom:float,opbrengst_meerwerk:float}
+ * @return array{opbrengst:float,aanneemsom:float,opbrengst_meerwerk:float}
  */
 function finance_split_contract_revenue(array $rows): array
 {
-    $aanneemsom = 0.0;
+    $opbrengst = 0.0;
     $meerwerk = 0.0;
 
     foreach ($rows as $row) {
@@ -432,12 +439,13 @@ function finance_split_contract_revenue(array $rows): array
             continue;
         }
 
-        $aanneemsom = finance_add_amount($aanneemsom, finance_aanneemsom_amount($row));
+        $opbrengst = finance_add_amount($opbrengst, finance_opbrengst_amount($row));
         $meerwerk = finance_add_amount($meerwerk, finance_opbrengst_meerwerk_amount($row));
     }
 
     return [
-        'aanneemsom' => $aanneemsom,
+        'opbrengst' => $opbrengst,
+        'aanneemsom' => $opbrengst,
         'opbrengst_meerwerk' => $meerwerk,
     ];
 }
