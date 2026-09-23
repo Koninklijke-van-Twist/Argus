@@ -105,7 +105,8 @@ class ProjectFinanceService
             // Voorcalculatie (statisch, huidige BC-stand):
             // - kosten: ProjectTaken.LVS_Baseline_Total_Cost voor Job_Task_No '000' (Project TOTAAL / basislijn)
             // - opbrengst: ProjectTaken.LVS_Schedule_Total_Price_2 voor Job_Task_No '000' (schedule/budget)
-            //   Aanneemsom blijft G/L 800000 en hoort niet in Opbrengst VC.
+            //   Aanneemsom en opbrengst meerwerk blijven FactureerbareProjectPlanningsRegels G/L 800000
+            //   en horen niet in Opbrengst VC. Meerwerk = gevuld LVS_Job_Change_Order_No.
             'project_forecast' => [
                 'cost_entity_set' => 'ProjectTaken',
                 'revenue_entity_set' => 'ProjectTaken',
@@ -519,6 +520,8 @@ class ProjectFinanceService
      *
      * Kosten: ProjectTaken.LVS_Baseline_Total_Cost (Job_Task_No 000 / Project TOTAAL).
      * Opbrengst: ProjectTaken.LVS_Schedule_Total_Price_2 (Job_Task_No 000 / schedule-prijs).
+     * Aanneemsom en opbrengst meerwerk: FactureerbareProjectPlanningsRegels, G/L 800000, factureerbaar.
+     * Meerwerk is het deel met gevuld LVS_Job_Change_Order_No; aanneemsom is het deel zonder.
      */
     public function collectProjectForecastForProjects(array $projectNumbers, int $ttl = 3600): array
     {
@@ -536,11 +539,13 @@ class ProjectFinanceService
                         'expected_revenue' => 0.0,
                         'expected_costs' => 0.0,
                         'extra_work' => 0.0,
+                        'aanneemsom' => 0.0,
                     ];
                     $breakdownByProject[$normalizedProject] = [
                         'expected_revenue_lines' => [],
                         'expected_costs_lines' => [],
                         'extra_work_lines' => [],
+                        'aanneemsom_lines' => [],
                     ];
                 }
             }
@@ -548,9 +553,11 @@ class ProjectFinanceService
 
         $costData = $this->fetchVoorcalculatieCostsForProjects($projectNumbers, $ttl);
         $revenueData = $this->fetchVoorcalculatieRevenueForProjects($projectNumbers, $ttl);
+        $contractRevenueData = $this->fetchContractRevenueForProjects($projectNumbers, $ttl);
         $forecastWarning = self::joinForecastWarnings([
             $costData['warning'] ?? null,
             $revenueData['warning'] ?? null,
+            $contractRevenueData['warning'] ?? null,
         ]);
 
         foreach ($costData['totals'] as $normalizedProject => $amount) {
@@ -559,11 +566,13 @@ class ProjectFinanceService
                     'expected_revenue' => 0.0,
                     'expected_costs' => 0.0,
                     'extra_work' => 0.0,
+                    'aanneemsom' => 0.0,
                 ];
                 $breakdownByProject[$normalizedProject] = [
                     'expected_revenue_lines' => [],
                     'expected_costs_lines' => [],
                     'extra_work_lines' => [],
+                    'aanneemsom_lines' => [],
                 ];
             }
 
@@ -579,6 +588,7 @@ class ProjectFinanceService
                     'expected_revenue_lines' => [],
                     'expected_costs_lines' => [],
                     'extra_work_lines' => [],
+                    'aanneemsom_lines' => [],
                 ];
             }
 
@@ -594,11 +604,13 @@ class ProjectFinanceService
                     'expected_revenue' => 0.0,
                     'expected_costs' => 0.0,
                     'extra_work' => 0.0,
+                    'aanneemsom' => 0.0,
                 ];
                 $breakdownByProject[$normalizedProject] = [
                     'expected_revenue_lines' => [],
                     'expected_costs_lines' => [],
                     'extra_work_lines' => [],
+                    'aanneemsom_lines' => [],
                 ];
             }
 
@@ -614,6 +626,7 @@ class ProjectFinanceService
                     'expected_revenue_lines' => [],
                     'expected_costs_lines' => [],
                     'extra_work_lines' => [],
+                    'aanneemsom_lines' => [],
                 ];
             }
 
@@ -621,6 +634,53 @@ class ProjectFinanceService
                 $breakdownByProject[$normalizedProject]['expected_revenue_lines'],
                 is_array($lines) ? $lines : []
             );
+        }
+
+        foreach (['aanneemsom', 'extra_work'] as $totalKey) {
+            $sourceTotals = is_array($contractRevenueData[$totalKey]['totals'] ?? null)
+                ? $contractRevenueData[$totalKey]['totals']
+                : [];
+            foreach ($sourceTotals as $normalizedProject => $amount) {
+                if (!isset($totalsByProject[$normalizedProject])) {
+                    $totalsByProject[$normalizedProject] = [
+                        'expected_revenue' => 0.0,
+                        'expected_costs' => 0.0,
+                        'extra_work' => 0.0,
+                        'aanneemsom' => 0.0,
+                    ];
+                    $breakdownByProject[$normalizedProject] = [
+                        'expected_revenue_lines' => [],
+                        'expected_costs_lines' => [],
+                        'extra_work_lines' => [],
+                        'aanneemsom_lines' => [],
+                    ];
+                }
+
+                $totalsByProject[$normalizedProject][$totalKey] = finance_add_amount(
+                    (float) ($totalsByProject[$normalizedProject][$totalKey] ?? 0.0),
+                    (float) $amount
+                );
+            }
+
+            $lineKey = $totalKey === 'aanneemsom' ? 'aanneemsom_lines' : 'extra_work_lines';
+            $sourceLines = is_array($contractRevenueData[$totalKey]['breakdown'] ?? null)
+                ? $contractRevenueData[$totalKey]['breakdown']
+                : [];
+            foreach ($sourceLines as $normalizedProject => $lines) {
+                if (!isset($breakdownByProject[$normalizedProject])) {
+                    $breakdownByProject[$normalizedProject] = [
+                        'expected_revenue_lines' => [],
+                        'expected_costs_lines' => [],
+                        'extra_work_lines' => [],
+                        'aanneemsom_lines' => [],
+                    ];
+                }
+
+                $breakdownByProject[$normalizedProject][$lineKey] = array_merge(
+                    $breakdownByProject[$normalizedProject][$lineKey],
+                    is_array($lines) ? $lines : []
+                );
+            }
         }
 
         return [
@@ -759,6 +819,104 @@ class ProjectFinanceService
         return [
             'totals' => $totals,
             'breakdown' => $breakdown,
+            'warning' => $loaded['warning'],
+        ];
+    }
+
+    /**
+     * Aanneemsom en opbrengst meerwerk uit FactureerbareProjectPlanningsRegels.
+     *
+     * Beide gebruiken Type G/L (GB-rekening / GLAccount / G/L Account), No 800000,
+     * Line_Type factureerbaar/billable (niet prognose/forecast) en Line_Amount_LCY.
+     * LVS_Job_Change_Order_No leeg = aanneemsom; gevuld = opbrengst meerwerk (extra_work).
+     * Q002 alleen in Description wordt niet als meerwerk herkend.
+     *
+     * @return array{
+     *   aanneemsom:array{totals:array<string,float>,breakdown:array<string,array<int,array<string,mixed>>>},
+     *   extra_work:array{totals:array<string,float>,breakdown:array<string,array<int,array<string,mixed>>>},
+     *   warning:?string
+     * }
+     */
+    private function fetchContractRevenueForProjects(array $projectNumbers, int $ttl): array
+    {
+        $aanneemsomTotals = [];
+        $aanneemsomBreakdown = [];
+        $meerwerkTotals = [];
+        $meerwerkBreakdown = [];
+        $accountNo = FINANCE_REVENUE_GL_ACCOUNT_NO;
+        $loaded = $this->fetchRowsForJobChunks(
+            $projectNumbers,
+            $ttl,
+            8,
+            function (string $projectFilter) use ($accountNo): string {
+                return $this->companyEntityUrlWithQuery('FactureerbareProjectPlanningsRegels', [
+                    '$select' => 'Job_No,Job_Task_No,Line_No,Line_Type,Type,No,Description,Description_2,Line_Amount_LCY,LVS_Job_Change_Order_No,LVS_Cancelled_Original_Line',
+                    '$filter' => $projectFilter . " and No eq '" . self::escapeOdataString($accountNo) . "'",
+                ]);
+            },
+            'Aanneemsom/meerwerk ophalen mislukt (FactureerbareProjectPlanningsRegels)'
+        );
+
+        foreach ($loaded['rows'] as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $projectNo = trim((string) ($row['Job_No'] ?? ''));
+            if ($projectNo === '') {
+                continue;
+            }
+
+            $aanneemsomAmount = finance_aanneemsom_amount($row);
+            $meerwerkAmount = finance_opbrengst_meerwerk_amount($row);
+            if ($aanneemsomAmount === 0.0 && $meerwerkAmount === 0.0) {
+                continue;
+            }
+
+            $normalizedProject = self::normalizeMatchValue($projectNo);
+            $lineDescription = trim((string) ($row['Description'] ?? ''));
+            $lineDescription2 = trim((string) ($row['Description_2'] ?? ''));
+            if ($lineDescription2 !== '') {
+                $lineDescription = trim($lineDescription . ' / ' . $lineDescription2);
+            }
+
+            $line = [
+                'Job_Task_No' => (string) ($row['Job_Task_No'] ?? ''),
+                'Line_No' => (int) ($row['Line_No'] ?? 0),
+                'Type' => (string) ($row['Type'] ?? ''),
+                'No' => (string) ($row['No'] ?? ''),
+                'Description' => $lineDescription,
+                'Line_Amount' => $aanneemsomAmount !== 0.0 ? $aanneemsomAmount : $meerwerkAmount,
+                'Line_Type' => (string) ($row['Line_Type'] ?? ''),
+                'Change_Order_No' => finance_planning_change_order_no($row),
+            ];
+
+            if ($aanneemsomAmount !== 0.0) {
+                $aanneemsomTotals[$normalizedProject] = finance_add_amount(
+                    (float) ($aanneemsomTotals[$normalizedProject] ?? 0.0),
+                    $aanneemsomAmount
+                );
+                $aanneemsomBreakdown[$normalizedProject][] = $line;
+            }
+
+            if ($meerwerkAmount !== 0.0) {
+                $meerwerkTotals[$normalizedProject] = finance_add_amount(
+                    (float) ($meerwerkTotals[$normalizedProject] ?? 0.0),
+                    $meerwerkAmount
+                );
+                $meerwerkBreakdown[$normalizedProject][] = $line;
+            }
+        }
+
+        return [
+            'aanneemsom' => [
+                'totals' => $aanneemsomTotals,
+                'breakdown' => $aanneemsomBreakdown,
+            ],
+            'extra_work' => [
+                'totals' => $meerwerkTotals,
+                'breakdown' => $meerwerkBreakdown,
+            ],
             'warning' => $loaded['warning'],
         ];
     }

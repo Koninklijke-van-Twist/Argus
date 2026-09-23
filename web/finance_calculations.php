@@ -7,6 +7,15 @@ const FINANCE_REVENUE_GL_ACCOUNT_TYPE = 'GB-rekening';
 const FINANCE_REVENUE_GL_ACCOUNT_NO = '800000';
 
 /**
+ * Genormaliseerde Type-aliassen voor de omzetrekening (G/L Account).
+ * BC levert afhankelijk van taal/OData o.a. GB-rekening, G/L Account en GLAccount.
+ */
+const FINANCE_REVENUE_GL_ACCOUNT_TYPE_ALIASES = [
+    'glaccount',
+    'glrekening',
+];
+
+/**
  * Opbrengst VC (omzet voorcalculatie) op de project-totaalregel.
  * Schedule/budgetprijs; niet de aanneemsom op G/L 800000.
  */
@@ -271,8 +280,35 @@ function finance_workorder_total_revenue(array $workorder): float
 }
 
 /**
- * Bepaalt of een BC-projectplanningsregel meetelt voor aanneemsom/contractomzet.
- * Alleen G/L-omzetrekening Type = GB-rekening en No = 800000 telt mee;
+ * Normaliseert een BC-code voor vergelijking: hoofdletters, spaties en leestekens vallen weg.
+ */
+function finance_normalize_code(string $value): string
+{
+    $normalized = strtolower(trim($value));
+
+    return str_replace([' ', '-', '_', '/', '\\', '.'], '', $normalized);
+}
+
+/**
+ * Bepaalt of Type een G/L-rekening is (GB-rekening, G/L Account, GLAccount en gelijkwaardige aliassen).
+ */
+function finance_is_revenue_gl_account_type(string $type): bool
+{
+    $normalized = finance_normalize_code($type);
+    if ($normalized === '') {
+        return false;
+    }
+
+    if ($normalized === finance_normalize_code(FINANCE_REVENUE_GL_ACCOUNT_TYPE)) {
+        return true;
+    }
+
+    return in_array($normalized, FINANCE_REVENUE_GL_ACCOUNT_TYPE_ALIASES, true);
+}
+
+/**
+ * Bepaalt of een BC-projectplanningsregel op omzetrekening 800000 staat.
+ * Alleen G/L-type (GB-rekening / G/L Account / GLAccount) en No = 800000 telt mee;
  * resource-/artikelboekingen op dezelfde planning blijven buiten deze som.
  * Opbrengst VC gebruikt dit filter niet; die kolom leest LVS_Schedule_Total_Price_2.
  */
@@ -281,8 +317,128 @@ function finance_is_revenue_gl_account_line(array $row): bool
     $type = trim((string) ($row['Type'] ?? ''));
     $no = trim((string) ($row['No'] ?? ''));
 
-    return strcasecmp($type, FINANCE_REVENUE_GL_ACCOUNT_TYPE) === 0
+    return finance_is_revenue_gl_account_type($type)
         && $no === FINANCE_REVENUE_GL_ACCOUNT_NO;
+}
+
+/**
+ * Bepaalt of Line_Type factureerbaar/billable is en geen prognose/forecast.
+ */
+function finance_is_billable_planning_line_type(string $lineType): bool
+{
+    $normalized = strtolower(trim($lineType));
+    if ($normalized === '') {
+        return false;
+    }
+
+    if (str_contains($normalized, 'prognose') || str_contains($normalized, 'forecast')) {
+        return false;
+    }
+
+    return str_contains($normalized, 'factureer') || str_contains($normalized, 'billable');
+}
+
+/**
+ * Leest project subordernr. (BC-veld LVS_Job_Change_Order_No). Leeg of alleen witruimte telt als geen meerwerk.
+ */
+function finance_planning_change_order_no(array $row): string
+{
+    return trim((string) ($row['LVS_Job_Change_Order_No'] ?? ''));
+}
+
+/**
+ * Bepaalt of een planningsregel een geannuleerde originele regel is.
+ * Ontbreekt het veld, dan telt de regel gewoon mee.
+ */
+function finance_is_cancelled_planning_line(array $row): bool
+{
+    if (!array_key_exists('LVS_Cancelled_Original_Line', $row)) {
+        return false;
+    }
+
+    $value = $row['LVS_Cancelled_Original_Line'];
+
+    return $value === true || $value === 1 || $value === '1' || $value === 'true';
+}
+
+/**
+ * Bepaalt of een planningsregel meetelt voor aanneemsom of opbrengst meerwerk.
+ * Vereist G/L 800000, factureerbaar/billable (geen prognose/forecast) en geen geannuleerde regel.
+ * De splitsing zelf zit in het subordernummer, niet in deze functie.
+ */
+function finance_is_contract_revenue_planning_line(array $row): bool
+{
+    if (finance_is_cancelled_planning_line($row)) {
+        return false;
+    }
+
+    if (!finance_is_revenue_gl_account_line($row)) {
+        return false;
+    }
+
+    return finance_is_billable_planning_line_type((string) ($row['Line_Type'] ?? ''));
+}
+
+/**
+ * Berekent aanneemsom voor één planningsregel.
+ * Zelfde 800000-filter als opbrengst meerwerk, maar alleen als LVS_Job_Change_Order_No leeg is.
+ * Een gevulde Description (bijv. Q002) zonder subordernummer blijft aanneemsom.
+ */
+function finance_aanneemsom_amount(array $row): float
+{
+    if (!finance_is_contract_revenue_planning_line($row)) {
+        return 0.0;
+    }
+
+    if (finance_planning_change_order_no($row) !== '') {
+        return 0.0;
+    }
+
+    return finance_to_float($row['Line_Amount_LCY'] ?? 0.0);
+}
+
+/**
+ * Berekent kolomwaarde Opbrengst meerwerk voor één planningsregel.
+ * Factureerbare G/L 800000-regel waarvan LVS_Job_Change_Order_No gevuld is; som van Line_Amount_LCY.
+ * Q002 alleen in Description telt niet als meerwerk.
+ */
+function finance_opbrengst_meerwerk_amount(array $row): float
+{
+    if (!finance_is_contract_revenue_planning_line($row)) {
+        return 0.0;
+    }
+
+    if (finance_planning_change_order_no($row) === '') {
+        return 0.0;
+    }
+
+    return finance_to_float($row['Line_Amount_LCY'] ?? 0.0);
+}
+
+/**
+ * Splitst planningsregels in aanneemsom (leeg subordernr.) en opbrengst meerwerk.
+ *
+ * @param array<int,mixed> $rows
+ * @return array{aanneemsom:float,opbrengst_meerwerk:float}
+ */
+function finance_split_contract_revenue(array $rows): array
+{
+    $aanneemsom = 0.0;
+    $meerwerk = 0.0;
+
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+
+        $aanneemsom = finance_add_amount($aanneemsom, finance_aanneemsom_amount($row));
+        $meerwerk = finance_add_amount($meerwerk, finance_opbrengst_meerwerk_amount($row));
+    }
+
+    return [
+        'aanneemsom' => $aanneemsom,
+        'opbrengst_meerwerk' => $meerwerk,
+    ];
 }
 
 /**

@@ -219,6 +219,7 @@ function project_modal_collect_for_projects(string $company, string $yearMonth, 
         $byProject[$normProject] = [
             'project_no' => $projectNo,
             'contract_value' => 0.0,
+            'opbrengst_meerwerk' => 0.0,
             'installments_received' => 0.0,
             'budget_cost_total' => 0.0,
             'task_rows' => [],
@@ -240,8 +241,8 @@ function project_modal_collect_for_projects(string $company, string $yearMonth, 
 
         try {
             $contractUrl = company_entity_url_with_query($baseUrl, $environmentForCompany, $company, 'FactureerbareProjectPlanningsRegels', [
-                '$select' => 'Job_No,Line_Type,Line_Amount_LCY',
-                '$filter' => $projectFilter,
+                '$select' => 'Job_No,Line_Type,Type,No,Line_Amount_LCY,LVS_Job_Change_Order_No,LVS_Cancelled_Original_Line',
+                '$filter' => '(' . $projectFilter . ") and No eq '" . str_replace("'", "''", FINANCE_REVENUE_GL_ACCOUNT_NO) . "'",
             ]);
             $contractRows = odata_get_all($contractUrl, $auth, $ttl);
         } catch (Throwable $ignoredContractLoadError) {
@@ -258,17 +259,13 @@ function project_modal_collect_for_projects(string $company, string $yearMonth, 
                 continue;
             }
 
-            $lineType = strtolower(trim((string) ($contractRow['Line_Type'] ?? '')));
-            $isFactureerbaar = str_contains($lineType, 'factureer');
-            $isForecast = str_contains($lineType, 'prognose') || str_contains($lineType, 'forecast');
-            if (!$isFactureerbaar || $isForecast) {
-                continue;
-            }
-
-            $lineAmount = finance_to_float($contractRow['Line_Amount_LCY'] ?? 0.0);
             $byProject[$normProject]['contract_value'] = finance_add_amount(
                 (float) ($byProject[$normProject]['contract_value'] ?? 0.0),
-                $lineAmount
+                finance_aanneemsom_amount($contractRow)
+            );
+            $byProject[$normProject]['opbrengst_meerwerk'] = finance_add_amount(
+                (float) ($byProject[$normProject]['opbrengst_meerwerk'] ?? 0.0),
+                finance_opbrengst_meerwerk_amount($contractRow)
             );
         }
 
@@ -755,8 +752,8 @@ function build_month_rows(
 
         $proj = $projectDetails[$normJob] ?? null;
         $jobNo = trim((string) (($proj['No'] ?? '') ?: strtoupper($normJob)));
-        $planningTotals = $planningTotalsByJob[$normJob] ?? ['expected_revenue' => 0.0, 'expected_costs' => 0.0, 'extra_work' => 0.0];
-        $planningBreakdown = $planningBreakdownByJob[$normJob] ?? ['expected_revenue_lines' => [], 'expected_costs_lines' => [], 'extra_work_lines' => []];
+        $planningTotals = $planningTotalsByJob[$normJob] ?? ['expected_revenue' => 0.0, 'expected_costs' => 0.0, 'extra_work' => 0.0, 'aanneemsom' => 0.0];
+        $planningBreakdown = $planningBreakdownByJob[$normJob] ?? ['expected_revenue_lines' => [], 'expected_costs_lines' => [], 'extra_work_lines' => [], 'aanneemsom_lines' => []];
         $projectTotals = $projectTotalsByJob[$normJob] ?? ['costs' => 0.0, 'revenue' => 0.0, 'resultaat' => 0.0];
 
         $projectRows[$normJob] = [
@@ -772,12 +769,14 @@ function build_month_rows(
             'Expected_Revenue' => (float) ($planningTotals['expected_revenue'] ?? 0),
             'Expected_Costs_VC' => (float) ($planningTotals['expected_costs'] ?? 0),
             'Extra_Work' => (float) ($planningTotals['extra_work'] ?? 0),
+            'Aanneemsom' => (float) ($planningTotals['aanneemsom'] ?? 0),
             'Breakdown' => [
                 'total_costs_lines' => [],
                 'total_revenue_lines' => [],
                 'expected_revenue_lines' => is_array($planningBreakdown['expected_revenue_lines'] ?? null) ? $planningBreakdown['expected_revenue_lines'] : [],
                 'expected_costs_lines' => is_array($planningBreakdown['expected_costs_lines'] ?? null) ? $planningBreakdown['expected_costs_lines'] : [],
                 'extra_work_lines' => is_array($planningBreakdown['extra_work_lines'] ?? null) ? $planningBreakdown['extra_work_lines'] : [],
+                'aanneemsom_lines' => is_array($planningBreakdown['aanneemsom_lines'] ?? null) ? $planningBreakdown['aanneemsom_lines'] : [],
             ],
         ];
     }
@@ -804,6 +803,7 @@ function build_month_rows(
                 'expected_revenue_lines' => [],
                 'expected_costs_lines' => [],
                 'extra_work_lines' => [],
+                'aanneemsom_lines' => [],
             ];
     }
 
