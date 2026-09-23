@@ -312,7 +312,7 @@ if (is_array($monthData)) {
 
 $savedColumnOrder = is_array($userSettings['detail_column_order'] ?? null) ? $userSettings['detail_column_order'] : [];
 $savedHiddenColumns = is_array($userSettings['detail_hidden_columns'] ?? null) ? $userSettings['detail_hidden_columns'] : [];
-$defaultHiddenColumns = ['extra_work'];
+$defaultHiddenColumns = [];
 $hiddenColumns = $savedHiddenColumns !== []
     ? $savedHiddenColumns
     : $defaultHiddenColumns;
@@ -347,8 +347,8 @@ foreach ($defaultColumns as $col) {
     }
 }
 
-// Keep Opbrengst VC + Kosten VC directly after Afd.
-$vcColumns = ['expected_revenue', 'costs_vc'];
+// Keep Opbrengst VC, Opbrengst meerwerk and Kosten VC directly after Afd.
+$vcColumns = ['expected_revenue', 'extra_work', 'costs_vc'];
 $orderedColumns = array_values(array_filter($orderedColumns, static function ($key) use ($vcColumns): bool {
     return !in_array($key, $vcColumns, true);
 }));

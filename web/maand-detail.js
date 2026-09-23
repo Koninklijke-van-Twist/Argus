@@ -88,7 +88,7 @@
         cost_center: 'Afd.',
         expected_revenue: 'Opbrengst VC',
         costs_vc: 'Kosten VC',
-        extra_work: 'Opbr. MW',
+        extra_work: 'Opbrengst meerwerk',
         margin_total: 'Marge Ttl',
         pct_ready: '% Gereed',
         winst_ohw: 'Winst OHW',
@@ -182,12 +182,16 @@
             const row = seedRow && typeof seedRow === 'object' ? seedRow : {};
             const projDetail = projectDetails[normJob] || {};
             const projSummary = projectSummaryByJob[normJob] || {};
-            const breakdown = normalizeProjectBreakdown(projectBreakdowns[normJob]);
+            const rawBreakdown = projectBreakdowns[normJob];
+            const breakdown = normalizeProjectBreakdown(rawBreakdown);
             const expectedRevenueFromBreakdown = sumAmountField(breakdown.expected_revenue_lines, 'Line_Amount');
-            const extraWorkFromBreakdown = sumAmountField(breakdown.extra_work_lines, 'Line_Amount');
+            const hasExtraWorkLines = !!(rawBreakdown && typeof rawBreakdown === 'object' && Array.isArray(rawBreakdown.extra_work_lines));
+            const extraWorkFromBreakdown = hasExtraWorkLines ? sumAmountField(breakdown.extra_work_lines, 'Line_Amount') : null;
             const expectedRevenueFallback = parseDecimal(projSummary.Expected_Revenue || projDetail.Recog_Sales_Amount || projDetail.Calc_Recog_Sales_Amount || projDetail.Total_WIP_Sales_Amount || 0);
             const expectedCostsVcFallback = parseDecimal(projSummary.Expected_Costs_VC || 0);
-            const extraWorkFallback = parseDecimal(projSummary.Extra_Work || computeExtraWork(projDetail) || 0);
+            const extraWorkFromSummary = projSummary.Extra_Work !== undefined && projSummary.Extra_Work !== null && projSummary.Extra_Work !== ''
+                ? parseDecimal(projSummary.Extra_Work)
+                : null;
             const projectTotalCosts = parseDecimal(projSummary.Project_Actual_Costs || row.Project_Actual_Costs || 0);
             const projectTotalRevenue = parseDecimal(projSummary.Project_Total_Revenue || row.Project_Total_Revenue || 0);
             const jobNo = toTrimmedString(projSummary.Job_No || projDetail.No || row.Job_No || '');
@@ -207,7 +211,7 @@
                 project_total_revenue: projectTotalRevenue,
                 expected_revenue: expectedRevenueFromBreakdown !== 0 ? expectedRevenueFromBreakdown : expectedRevenueFallback,
                 expected_costs_vc: expectedCostsVcFallback,
-                extra_work: extraWorkFromBreakdown !== 0 ? extraWorkFromBreakdown : extraWorkFallback,
+                extra_work: extraWorkFromBreakdown !== null ? extraWorkFromBreakdown : (extraWorkFromSummary !== null ? extraWorkFromSummary : 0),
                 pct_completed: parseDecimal(projDetail.Percent_Completed),
                 breakdown: breakdown,
             };
@@ -358,22 +362,6 @@
         }
 
         return result;
-    }
-
-    function computeExtraWork (projDetail)
-    {
-        // Change orders / extra werk is represented by LVS_No_Of_Job_Change_Orders > 0
-        // We approximate by capturing additional invoiced revenue beyond base contract
-        const changeOrders = parseInt(projDetail.LVS_No_Of_Job_Change_Orders || 0, 10);
-        if (changeOrders === 0)
-        {
-            return 0;
-        }
-        // Best available field: difference between acc/calc sales and base contract price
-        const recogSales = parseDecimal(projDetail.Recog_Sales_Amount || projDetail.Calc_Recog_Sales_Amount || 0);
-        const contractPrice = parseDecimal(projDetail.Contract_Total_Price || 0);
-        const diff = recogSales - contractPrice;
-        return diff > 0 ? diff : 0;
     }
 
     function sumAmountField (rows, key)
@@ -741,6 +729,7 @@
                     case 'costs_to_date': return getProjectComputedValues(p).costsToDate;
                     case 'total_revenue': return computeProjectTotals(p).revenue;
                     case 'costs_vc': return getProjectComputedValues(p).costsVc;
+                    case 'extra_work': return getProjectComputedValues(p).extraWork;
                     case 'margin_total': return getProjectComputedValues(p).marginTotal;
                     case 'project_manager': return p.project_manager || '';
                     case 'document_status': return p.document_status || '';
@@ -893,7 +882,7 @@
             case 'costs_vc':
                 return { type: 'bc-field', name: 'LVS_Baseline_Total_Cost', source: 'ProjectTaken', filters: baseFilter + ',Job_Task_No=000' };
             case 'extra_work':
-                return { type: 'computed-field', formula: 'Meerwerk (nog niet gekoppeld aan nieuwe voorcalculatie-bronnen)' };
+                return { type: 'bc-field', name: 'Line_Amount_LCY', source: 'FactureerbareProjectPlanningsRegels', filters: baseFilter + ',Type=GB-rekening|Grootboekrekening|GLAccount,No=800000,Line_Type=Factureerbaar,LVS_Job_Change_Order_No=gevuld' };
             case 'margin_total':
                 return { type: 'computed-field', formula: 'ProjectTaken.LVS_Schedule_Total_Price_2 (Job_Task_No=000) - ProjectTaken.LVS_Baseline_Total_Cost (Job_Task_No=000)' };
             case 'pct_ready':
@@ -1066,7 +1055,7 @@
             th.textContent = lbl;
 
             // Sortable columns
-            if (['description', 'customer', 'total_costs', 'costs_to_date', 'total_revenue', 'costs_vc', 'margin_total', 'project_manager', 'document_status', 'reason_code', 'cost_center', 'pct_ready'].includes(colKey))
+            if (['description', 'customer', 'total_costs', 'costs_to_date', 'total_revenue', 'costs_vc', 'extra_work', 'margin_total', 'project_manager', 'document_status', 'reason_code', 'cost_center', 'pct_ready'].includes(colKey))
             {
                 th.className = 'sortable';
                 th.dataset.sortKey = colKey;
@@ -1074,7 +1063,7 @@
 
             if (['total_costs', 'costs_to_date', 'total_revenue', 'expected_revenue', 'costs_vc', 'extra_work', 'margin_total', 'winst_ohw'].includes(colKey))
             {
-                th.style.minWidth = '100px';
+                th.style.minWidth = colKey === 'extra_work' ? '148px' : '100px';
                 th.style.textAlign = 'right';
             }
             if (colKey === 'pct_ready')
@@ -1282,7 +1271,7 @@
                     {
                         showProjectSourceModal(
                             proj,
-                            'Meerwerk – project ' + proj.job_no,
+                            'Opbrengst meerwerk – project ' + proj.job_no,
                             ['Taak', 'Regel', 'Type', 'Change order', 'Omschrijving', 'Bedrag'],
                             function (breakdown)
                             {

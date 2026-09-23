@@ -19,11 +19,13 @@ function bc_fetch_empty_planning_project(): array
             'expected_revenue' => 0.0,
             'expected_costs' => 0.0,
             'extra_work' => 0.0,
+            'aanneemsom' => 0.0,
         ],
         'breakdown' => [
             'expected_revenue_lines' => [],
             'expected_costs_lines' => [],
             'extra_work_lines' => [],
+            'aanneemsom_lines' => [],
         ],
     ];
 }
@@ -62,6 +64,7 @@ function bc_fetch_column_planning_project(string $company, string $projectNumber
     $result['totals']['expected_revenue'] = bc_fetch_float_value($totals, 'expected_revenue');
     $result['totals']['expected_costs'] = bc_fetch_float_value($totals, 'expected_costs');
     $result['totals']['extra_work'] = bc_fetch_float_value($totals, 'extra_work');
+    $result['totals']['aanneemsom'] = bc_fetch_float_value($totals, 'aanneemsom');
     $result['breakdown']['expected_revenue_lines'] = is_array($breakdown['expected_revenue_lines'] ?? null)
         ? $breakdown['expected_revenue_lines']
         : [];
@@ -70,6 +73,9 @@ function bc_fetch_column_planning_project(string $company, string $projectNumber
         : [];
     $result['breakdown']['extra_work_lines'] = is_array($breakdown['extra_work_lines'] ?? null)
         ? $breakdown['extra_work_lines']
+        : [];
+    $result['breakdown']['aanneemsom_lines'] = is_array($breakdown['aanneemsom_lines'] ?? null)
+        ? $breakdown['aanneemsom_lines']
         : [];
     $forecastWarning = $forecast['warning'] ?? null;
     $result['warning'] = is_string($forecastWarning) && trim($forecastWarning) !== ''
