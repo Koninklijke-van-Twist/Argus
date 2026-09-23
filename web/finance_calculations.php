@@ -7,6 +7,12 @@ const FINANCE_REVENUE_GL_ACCOUNT_TYPE = 'GB-rekening';
 const FINANCE_REVENUE_GL_ACCOUNT_NO = '800000';
 
 /**
+ * Opbrengst VC (omzet voorcalculatie) op de project-totaalregel.
+ * Schedule/budgetprijs; niet de aanneemsom op G/L 800000.
+ */
+const FINANCE_OPBRENGST_VC_FIELD = 'LVS_Schedule_Total_Price_2';
+
+/**
  * Functies
  */
 
@@ -265,10 +271,10 @@ function finance_workorder_total_revenue(array $workorder): float
 }
 
 /**
- * Bepaalt of een BC-projectplanningsregel (FactureerbareProjectPlanningsRegels)
- * meetelt voor aanneemsom/omzet (Opbrengst VC).
+ * Bepaalt of een BC-projectplanningsregel meetelt voor aanneemsom/contractomzet.
  * Alleen G/L-omzetrekening Type = GB-rekening en No = 800000 telt mee;
  * resource-/artikelboekingen op dezelfde planning blijven buiten deze som.
+ * Opbrengst VC gebruikt dit filter niet; die kolom leest LVS_Schedule_Total_Price_2.
  */
 function finance_is_revenue_gl_account_line(array $row): bool
 {
@@ -277,4 +283,26 @@ function finance_is_revenue_gl_account_line(array $row): bool
 
     return strcasecmp($type, FINANCE_REVENUE_GL_ACCOUNT_TYPE) === 0
         && $no === FINANCE_REVENUE_GL_ACCOUNT_NO;
+}
+
+/**
+ * Leest Opbrengst VC uit de schedule/budgetprijs van een project-totaalregel.
+ * Alleen Job_Task_No 000 (Project TOTAAL) telt; andere taken leveren 0.
+ * Ontbreekt het taaknummer, dan telt de regel wel (één projectkaartwaarde).
+ * Line_Amount_LCY en G/L 800000 worden genegeerd.
+ */
+function finance_opbrengst_vc_amount(array $row, string $projectTotaalTaskNo = '000'): float
+{
+    if (array_key_exists('Job_Task_No', $row)) {
+        $taskNo = trim((string) $row['Job_Task_No']);
+        if ($taskNo !== $projectTotaalTaskNo) {
+            return 0.0;
+        }
+    }
+
+    if (!array_key_exists(FINANCE_OPBRENGST_VC_FIELD, $row)) {
+        return 0.0;
+    }
+
+    return finance_to_float($row[FINANCE_OPBRENGST_VC_FIELD]);
 }

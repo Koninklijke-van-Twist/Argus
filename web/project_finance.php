@@ -104,11 +104,11 @@ class ProjectFinanceService
             ],
             // Voorcalculatie (statisch, huidige BC-stand):
             // - kosten: ProjectTaken.LVS_Baseline_Total_Cost voor Job_Task_No '000' (Project TOTAAL / basislijn)
-            // - opbrengst: FactureerbareProjectPlanningsRegels.Line_Amount_LCY per Job_No,
-            //   alleen Type 'GB-rekening' en No '800000' (aanneemsom)
+            // - opbrengst: ProjectTaken.LVS_Schedule_Total_Price_2 voor Job_Task_No '000' (schedule/budget)
+            //   Aanneemsom blijft G/L 800000 en hoort niet in Opbrengst VC.
             'project_forecast' => [
                 'cost_entity_set' => 'ProjectTaken',
-                'revenue_entity_set' => 'FactureerbareProjectPlanningsRegels',
+                'revenue_entity_set' => 'ProjectTaken',
                 'project_key_field' => 'Job_No',
             ],
             'project' => [
@@ -518,7 +518,7 @@ class ProjectFinanceService
      * Haalt voorcalculatie op per project (huidige BC-stand, geen historie).
      *
      * Kosten: ProjectTaken.LVS_Baseline_Total_Cost (Job_Task_No 000 / Project TOTAAL).
-     * Opbrengst: FactureerbareProjectPlanningsRegels.Line_Amount_LCY (Type GB-rekening, No 800000).
+     * Opbrengst: ProjectTaken.LVS_Schedule_Total_Price_2 (Job_Task_No 000 / schedule-prijs).
      */
     public function collectProjectForecastForProjects(array $projectNumbers, int $ttl = 3600): array
     {
@@ -699,10 +699,10 @@ class ProjectFinanceService
     }
 
     /**
-     * Voorcalculatie opbrengst uit FactureerbareProjectPlanningsRegels (Line_Amount_LCY).
+     * Voorcalculatie opbrengst uit ProjectTaken (LVS_Schedule_Total_Price_2 van taak 000).
      *
-     * Alleen regels met Type GB-rekening (G/L Account) en No/Nr 800000, gelijk aan Fin Rap.
-     * Overige planningsboekingen (resources, artikelen, andere rekeningen) tellen niet mee.
+     * Eén schedule/budgetprijs per project. Niet de aanneemsom (G/L 800000 / Line_Amount_LCY)
+     * en niet de som van factureerbare planningsregels.
      *
      * @return array{totals:array<string,float>,breakdown:array<string,array<int,array<string,mixed>>>,warning:?string}
      */
@@ -710,21 +710,19 @@ class ProjectFinanceService
     {
         $totals = [];
         $breakdown = [];
-        $aanneemsomType = FINANCE_REVENUE_GL_ACCOUNT_TYPE;
-        $aanneemsomAccountNo = FINANCE_REVENUE_GL_ACCOUNT_NO;
+        $projectTotaalTaskNo = '000';
+        $schedulePriceField = FINANCE_OPBRENGST_VC_FIELD;
         $loaded = $this->fetchRowsForJobChunks(
             $projectNumbers,
             $ttl,
             8,
-            function (string $projectFilter) use ($aanneemsomType, $aanneemsomAccountNo): string {
-                return $this->companyEntityUrlWithQuery('FactureerbareProjectPlanningsRegels', [
-                    '$select' => 'Job_No,Job_Task_No,Line_No,Line_Type,Type,No,Description,Description_2,Line_Amount_LCY,LVS_Cancelled_Original_Line',
-                    '$filter' => $projectFilter
-                        . " and Type eq '" . self::escapeOdataString($aanneemsomType) . "'"
-                        . " and No eq '" . self::escapeOdataString($aanneemsomAccountNo) . "'",
+            function (string $projectFilter) use ($projectTotaalTaskNo, $schedulePriceField): string {
+                return $this->companyEntityUrlWithQuery('ProjectTaken', [
+                    '$select' => 'Job_No,Job_Task_No,Description,' . $schedulePriceField,
+                    '$filter' => $projectFilter . " and Job_Task_No eq '" . self::escapeOdataString($projectTotaalTaskNo) . "'",
                 ]);
             },
-            'Voorcalculatie opbrengst ophalen mislukt (FactureerbareProjectPlanningsRegels)'
+            'Voorcalculatie opbrengst ophalen mislukt (ProjectTaken)'
         );
 
         foreach ($loaded['rows'] as $row) {
@@ -732,41 +730,28 @@ class ProjectFinanceService
                 continue;
             }
 
-            if (self::isTruthyOdataBoolean($row['LVS_Cancelled_Original_Line'] ?? false)) {
-                continue;
-            }
-
             $projectNo = trim((string) ($row['Job_No'] ?? ''));
-            if ($projectNo === '' || !finance_is_revenue_gl_account_line($row)) {
+            if ($projectNo === '') {
                 continue;
             }
 
-            $amount = finance_to_float($row['Line_Amount_LCY'] ?? 0.0);
+            $amount = finance_opbrengst_vc_amount($row, $projectTotaalTaskNo);
             if ($amount === 0.0) {
                 continue;
             }
 
             $normalizedProject = self::normalizeMatchValue($projectNo);
-            $totals[$normalizedProject] = finance_add_amount((float) ($totals[$normalizedProject] ?? 0.0), $amount);
-
-            $lineDescription = trim((string) ($row['Description'] ?? ''));
-            $lineDescription2 = trim((string) ($row['Description_2'] ?? ''));
-            if ($lineDescription2 !== '') {
-                $lineDescription = trim($lineDescription . ' / ' . $lineDescription2);
-            }
-
-            if (!isset($breakdown[$normalizedProject])) {
-                $breakdown[$normalizedProject] = [];
-            }
-
-            $breakdown[$normalizedProject][] = [
-                'Job_Task_No' => (string) ($row['Job_Task_No'] ?? ''),
-                'Line_No' => (int) ($row['Line_No'] ?? 0),
-                'Type' => (string) ($row['Type'] ?? ''),
-                'No' => (string) ($row['No'] ?? ''),
-                'Description' => $lineDescription,
-                'Line_Amount' => $amount,
-                'Line_Type' => (string) ($row['Line_Type'] ?? ''),
+            $totals[$normalizedProject] = $amount;
+            $breakdown[$normalizedProject] = [
+                [
+                    'Job_Task_No' => (string) ($row['Job_Task_No'] ?? $projectTotaalTaskNo),
+                    'Line_No' => 0,
+                    'Type' => '',
+                    'No' => '',
+                    'Description' => (string) ($row['Description'] ?? ''),
+                    'Line_Amount' => $amount,
+                    'Line_Type' => '',
+                ],
             ];
         }
 
@@ -1001,11 +986,6 @@ class ProjectFinanceService
     private static function isTotalJobTaskType(string $taskType): bool
     {
         return str_contains(strtolower(trim($taskType)), 'totaal');
-    }
-
-    private static function isTruthyOdataBoolean($value): bool
-    {
-        return $value === true || $value === 1 || $value === '1' || $value === 'true';
     }
 
     /**
