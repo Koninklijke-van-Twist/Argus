@@ -51,8 +51,14 @@ class ProjectFinanceService
         $this->company = trim($company);
         $this->baseUrl = trim((string) $baseUrl);
 
+        $mimirOn = function_exists('odata_mimir_enabled') && odata_mimir_enabled();
         if ($this->baseUrl === '') {
-            throw new RuntimeException('baseUrl ontbreekt in auth.php.');
+            if ($mimirOn) {
+                // Placeholder so URL builders still produce parseable OData paths for Mímir.
+                $this->baseUrl = 'https://mimir.invalid/';
+            } else {
+                throw new RuntimeException('baseUrl ontbreekt in auth.php.');
+            }
         }
 
         // Bepaal environment
@@ -61,8 +67,11 @@ class ProjectFinanceService
             $environmentToUse = auth_get_primary_environment();
         }
 
-        if ($environmentToUse === '') {
+        if ($environmentToUse === '' && !$mimirOn) {
             throw new RuntimeException('Geen environment beschikbaar.');
+        }
+        if ($environmentToUse === '') {
+            $environmentToUse = 'mimir';
         }
 
         $this->environment = $environmentToUse;
