@@ -76,7 +76,10 @@ function bc_fetch_grootboekposten_ohw_rows(string $company, string $targetYearMo
         auth_get_environment_for_company($company, 300),
         $company,
         'Grootboekposten_OHW',
-        ['$filter' => $filter]
+        [
+            '$select' => 'Job_No,Posting_Date,Job_Complete,Document_No,G_L_Account_No,G_L_Bal_Account_No,WIP_Method_Used,Type,Global_Dimension_1_Code,WIP_Entry_Amount',
+            '$filter' => $filter,
+        ]
     );
 
     return odata_get_all($url, $auth, $ttl);
@@ -104,7 +107,10 @@ function bc_fetch_ohw_costs_through_date(string $company, array $auth, int $ttl,
         auth_get_environment_for_company($company, 300),
         $company,
         'Grootboekposten_OHW',
-        ['$filter' => $filter]
+        [
+            '$select' => 'Job_No,G_L_Account_No,G_L_Bal_Account_No,WIP_Entry_Amount',
+            '$filter' => $filter,
+        ]
     );
 
     try {
