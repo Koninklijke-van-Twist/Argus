@@ -280,7 +280,7 @@ function project_modal_collect_for_projects(string $company, string $yearMonth, 
         if ($customerFilters !== []) {
             try {
                 $customerUrl = company_entity_url_with_query($baseUrl, $environmentForCompany, $company, 'Customer_Ledger_Entries', [
-                    '$select' => 'Amount_LCY,Open,Your_Reference,External_Document_No',
+                    '$select' => 'Amount_LCY,Your_Reference,External_Document_No',
                     '$filter' => '(Open eq true) and (' . implode(' or ', $customerFilters) . ')',
                 ]);
                 $customerRows = odata_get_all($customerUrl, $auth, $ttl);
@@ -868,7 +868,7 @@ function fetch_month_data(string $company, string $yearMonth, array $auth): arra
         $filter = implode(' or ', $filterParts);
         try {
             $projectUrl = company_entity_url_with_query($baseUrl, $environmentForCompany, $company, 'Projecten', [
-                '$select' => 'No,Description,Sell_to_Customer_No,Sell_to_Customer_Name,Bill_to_Customer_No,Bill_to_Name,Person_Responsible,Project_Manager,LVS_Global_Dimension_1_Code,Status,LVS_Document_Status,Percent_Completed,Total_WIP_Cost_Amount,Total_WIP_Sales_Amount,Recog_Costs_Amount,Recog_Sales_Amount,Calc_Recog_Costs_Amount,Calc_Recog_Sales_Amount,Acc_WIP_Costs_Amount,Acc_WIP_Sales_Amount,LVS_No_Of_Job_Change_Orders,External_Document_No,Your_Reference',
+                '$select' => 'No,Description,Bill_to_Customer_No,Bill_to_Name,Person_Responsible,Project_Manager,LVS_Global_Dimension_1_Code,LVS_Document_Status,Percent_Completed,Total_WIP_Sales_Amount,Recog_Sales_Amount,Calc_Recog_Sales_Amount',
                 '$filter' => $filter,
             ]);
             $batchProjects = odata_get_all($projectUrl, $auth, odata_ttl_for_month($yearMonth));
@@ -1483,7 +1483,7 @@ if (($_GET['action'] ?? '') === 'fetch_sub_projects') {
             $filter = implode(' or ', $filterParts);
             try {
                 $projectUrl = company_entity_url_with_query($baseUrl, $environmentForCompany, $company, 'Projecten', [
-                    '$select' => 'No,Description,Sell_to_Customer_No,Sell_to_Customer_Name,Bill_to_Customer_No,Bill_to_Name,Person_Responsible,Project_Manager,KVT_Sales_Person_Code,LVS_Global_Dimension_1_Code,Status,LVS_Document_Status,Percent_Completed,Total_WIP_Cost_Amount,Total_WIP_Sales_Amount,Recog_Costs_Amount,Recog_Sales_Amount,Calc_Recog_Costs_Amount,Calc_Recog_Sales_Amount,Acc_WIP_Costs_Amount,Acc_WIP_Sales_Amount,LVS_No_Of_Job_Change_Orders,External_Document_No,Your_Reference,LVS_Your_reference,Creation_Date,Ending_Date',
+                    '$select' => 'No,Description,Bill_to_Customer_No,Bill_to_Name,Person_Responsible,Project_Manager,LVS_Global_Dimension_1_Code,LVS_Document_Status,Percent_Completed,Total_WIP_Sales_Amount,Recog_Sales_Amount,Calc_Recog_Sales_Amount',
                     '$filter' => $filter,
                 ]);
                 $batchProjects = odata_get_all($projectUrl, $auth, $ttl);
