@@ -8,7 +8,8 @@ Webapp voor maand-/projectoverzicht (OHW, planning, finance) uit Business Centra
 - `web/maand-detail.php` — maanddetail
 - `web/project_finance.php` — kosten/opbrengsten/facturen
 - `web/bc_fetch/` — kolom-fetches (OHW, planning, projectdetails)
-- `web/odata.php` — OData-client, lokale filecache-widget, optionele Mímir-proxy
+- `web/odata.php` — OData-client, lokale filecache-widget, optionele Mímir-proxy (alleen een hook naar de fallback)
+- `web/mimir_fallback.php` — circuit breaker en directe BC-fallback als Mímir faalt
 - `web/auth.php` — credentials (niet in git)
 
 ## Mímir (optioneel)
@@ -46,6 +47,11 @@ Tim moet `$mimirApi` (en optioneel `$mimirBase`) lokaal/op de server zetten, mé
 ## auth.php
 
 Geen `auth.php` in deze repository (staat in `.gitignore`). Lokaal/op de server blijven `$mimirApi` en de BC-credentials (`$baseUrl`, `$auth`, `$auth_list`, `$environment`) naast elkaar staan. Die BC-gegevens zijn de automatische fallback als Mímir uitvalt; zonder `$mimirApi` zijn ze het enige pad.
+
+## Change notes
+
+- `web/odata.php`: goedgekeurde uitzondering op de regel dat dit bestand niet wijzigt. Alleen een minimale hook (timeouts, foutpad en doorgifte naar de fallback). De fallback-logica staat in `web/mimir_fallback.php`.
+- `web/project_finance.php`: alleen commentaar bij de `mimir.invalid`-placeholder. Dat legt uit dat `odata_get_all` die URL naar `$baseUrl` herschrijft als Mímir uitvalt. Geen logicawijziging. Dezelfde opmerking kan nodig zijn in andere projecten die dit patroon kopiëren.
 
 ## Tests
 

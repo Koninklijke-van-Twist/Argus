@@ -177,6 +177,69 @@ if (!is_array($listEnvCall) || strpos($listEnvCall['url'], 'https://bc.example:7
 }
 $environment = 'Production';
 
+$auth_list = [
+    'Production' => ['mode' => 'basic', 'user' => 'bcuser', 'pass' => 'bc-secret'],
+    'Sandbox' => ['mode' => 'basic', 'user' => 'sandbox-user', 'pass' => 'sandbox-secret'],
+];
+$auth = $auth_list['Production'];
+$GLOBALS['demeter_company_environment_map'] = [
+    'Hunter van Twist' => 'Sandbox',
+    'KVT Gas' => 'Production',
+];
+odata_mimir_circuit_reset();
+$mimirBase = 'http://127.0.0.1:9';
+$beforeCompanyEnv = count($calls);
+$companyEnvRows = odata_mimir_query('Hunter van Twist', 'AppResource', ['$select' => 'No'], 30);
+if (($companyEnvRows[0]['No'] ?? '') !== 'WO-1') {
+    fail('company-environment fallback gaf geen rijen');
+}
+$companyEnvCall = $calls[$beforeCompanyEnv] ?? null;
+if (!is_array($companyEnvCall)
+    || strpos($companyEnvCall['url'], "https://bc.example:7148/Sandbox/ODataV4/Company('Hunter%20van%20Twist')/AppResource?") !== 0
+    || $companyEnvCall['user'] !== 'sandbox-user'
+) {
+    fail('query gebruikte niet het environment en de auth van het bedrijf: ' . json_encode($companyEnvCall));
+}
+
+odata_mimir_circuit_reset();
+$beforeUrlEnv = count($calls);
+$urlEnvRows = odata_get_all(
+    "https://mimir.invalid/Sandbox/ODataV4/Company('Hunter%20van%20Twist')/AppWerkorders?\$select=No",
+    $auth,
+    12
+);
+if (($urlEnvRows[0]['No'] ?? '') !== 'WO-1') {
+    fail('URL-environment fallback gaf geen rijen');
+}
+$urlEnvCall = $calls[$beforeUrlEnv] ?? null;
+if (!is_array($urlEnvCall)
+    || $urlEnvCall['url'] !== "https://bc.example:7148/Sandbox/ODataV4/Company('Hunter%20van%20Twist')/AppWerkorders?\$select=No"
+    || $urlEnvCall['user'] !== 'sandbox-user'
+) {
+    fail('URL-segment werd vervangen door het primaire environment: ' . json_encode($urlEnvCall));
+}
+
+odata_mimir_circuit_reset();
+$beforeMapped = count($calls);
+$mappedRows = odata_get_all(
+    "https://mimir.invalid/mimir/ODataV4/Company('Hunter%20van%20Twist')/AppWerkorders?\$select=No",
+    $auth,
+    12
+);
+if (($mappedRows[0]['No'] ?? '') !== 'WO-1') {
+    fail('company-map fallback gaf geen rijen');
+}
+$mappedCall = $calls[$beforeMapped] ?? null;
+if (!is_array($mappedCall)
+    || strpos((string) ($mappedCall['url'] ?? ''), 'https://bc.example:7148/Sandbox/ODataV4/') !== 0
+    || $mappedCall['user'] !== 'sandbox-user'
+) {
+    fail('placeholder-environment negeerde de company-map: ' . json_encode($mappedCall));
+}
+if (strpos(fallback_log(), 'sandbox-secret') !== false || strpos(fallback_log(), 'bc-secret') !== false) {
+    fail('log bevat een geheim na company-environment fallback');
+}
+
 $loggedBeforeRethrow = fallback_count();
 $callsBeforeRethrow = count($calls);
 odata_mimir_circuit_reset();
@@ -227,6 +290,43 @@ if (fallback_count() !== $loggedBeforeDirect) {
 $directCall = $calls[count($calls) - 1] ?? null;
 if (($directRows[0]['No'] ?? '') !== 'WO-1' || !is_array($directCall) || $directCall['url'] !== $directOnlyUrl) {
     fail('lege $mimirApi moet de oude directe route ongewijzigd gebruiken: ' . json_encode($directCall));
+}
+
+$tmpAuth = sys_get_temp_dir() . '/argus-auth-fallback-' . getmypid() . '.php';
+file_put_contents($tmpAuth, <<<'PHP'
+<?php
+$baseUrl = 'https://loaded-bc.example:7148/';
+$environment = 'LoadedEnv';
+$auth_list = [
+    'LoadedEnv' => ['mode' => 'basic', 'user' => 'loaded-user', 'pass' => 'loaded-secret'],
+];
+$auth = $auth_list['LoadedEnv'];
+PHP);
+$baseUrl = 'https://mimir.invalid/';
+$environment = 'mimir';
+$auth = [];
+$auth_list = [];
+unset($GLOBALS['ARGUS_BC_AUTH_LOAD_TRIED']);
+$GLOBALS['ARGUS_AUTH_PHP_PATH'] = $tmpAuth;
+odata_bc_ensure_auth_loaded();
+$loadedBase = odata_bc_base_url();
+$loadedUser = (string) ($GLOBALS['auth_list']['LoadedEnv']['user'] ?? '');
+$loadedEnv = odata_bc_environment();
+require_once $tmpAuth;
+$baseAfterSecondInclude = odata_bc_base_url();
+@unlink($tmpAuth);
+unset($GLOBALS['ARGUS_AUTH_PHP_PATH']);
+if ($loadedBase !== 'https://loaded-bc.example:7148/') {
+    fail('auth.php-variabelen bleven buiten $GLOBALS, base=' . var_export($loadedBase, true));
+}
+if ($loadedUser !== 'loaded-user' || $loadedEnv !== 'LoadedEnv') {
+    fail('auth_list/environment uit auth.php zijn niet globaal: user=' . $loadedUser . ' env=' . var_export($loadedEnv, true));
+}
+if ($baseAfterSecondInclude !== 'https://loaded-bc.example:7148/') {
+    fail('tweede require_once maakte de BC-globals weer leeg');
+}
+if (strpos(fallback_log(), 'loaded-secret') !== false) {
+    fail('log bevat het wachtwoord uit auth.php');
 }
 
 echo "OK\n";
