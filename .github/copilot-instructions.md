@@ -7,7 +7,7 @@
 
 ## Niet wijzigen
 - Bestand `web/logincheck.php` niet aanpassen.
-- Bestand `web/odata.php` niet aanpassen.
+- Bestand `web/odata.php` niet aanpassen, behalve de goedgekeurde Mímir-fallback: alleen een minimale hook in `web/odata.php`; de logica hoort in `web/mimir_fallback.php`.
 - Bestand `web/auth.php` alleen aanpassen na expliciete gebruikersvraag.
 
 ## Data en logica werkorders
@@ -54,7 +54,7 @@
   - geen class-definities tussen page-load code in gecombineerde scriptbestanden
 - Respecteer altijd bestaande uitzonderingen uit deze instructies:
   - `web/logincheck.php` niet aanpassen
-  - `web/odata.php` niet aanpassen
+  - `web/odata.php` niet aanpassen, behalve de goedgekeurde minimale Mímir-fallback-hook (`web/mimir_fallback.php`)
   - `web/auth.php` alleen aanpassen na expliciete gebruikersvraag
 
 ## Leidende Authoriteit Kosten/Opbrengsten

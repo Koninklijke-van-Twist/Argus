@@ -404,7 +404,9 @@ function auth_discover_companies_via_mimir(): array
  */
 function auth_discover_companies_across_active_environments(int $ttlSeconds = 300): array
 {
-    // Mímir: companies + environments uit Mímir API — geen $auth_list/$baseUrl nodig.
+    // Mímir: companies + environments uit Mímir API.
+    // Bij een Mímir-fout valt odata_mimir_companies_as_rows terug op directe BC OData
+    // ($baseUrl / $auth_list / $environment moeten in auth.php blijven staan).
     if (auth_mimir_enabled()) {
         return auth_discover_companies_via_mimir();
     }

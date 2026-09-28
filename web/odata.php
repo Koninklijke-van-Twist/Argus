@@ -23,8 +23,10 @@ function consolelog($text)
  * Mímir-proxy: als $mimirApi in auth.php staat, gaan alle OData-fetches
  * (UI/on-demand via odata_get_all) naar Mímir i.p.v. BC.
  *
- * Met $mimirApi gezet zijn $auth_list / $environment / $baseUrl / $auth ongebruikt voor BC;
- * Mímir beheert environments — Argus heeft alleen de API-key (+ optioneel $mimirBase) nodig.
+ * Met $mimirApi gezet gaat de fetch eerst naar Mímir. Faalt dat, dan valt
+ * web/mimir_fallback.php terug op directe BC OData. Een minimale hook in dit
+ * bestand is daarvoor een goedgekeurde uitzondering; $baseUrl, $auth,
+ * $auth_list en $environment blijven naast $mimirApi nodig.
  *
  * Tim moet in web/auth.php zetten (niet in git):
  *   $mimirApi  = 'mimir_…';              // verplicht om Mímir te activeren
@@ -37,6 +39,8 @@ function consolelog($text)
 
 /** Mímir max_age for nightly-style fetches (4h). Argus has no nightly.php today. */
 const ARGUS_NIGHTLY_MAX_AGE = 14400;
+
+require_once __DIR__ . '/mimir_fallback.php';
 
 function odata_mimir_api_key(): string
 {
@@ -68,6 +72,14 @@ function odata_mimir_request(string $method, string $path, ?array $jsonBody = nu
         throw new Exception('Mímir API-sleutel ontbreekt ($mimirApi).');
     }
 
+    if (odata_mimir_circuit_open()) {
+        $previous = odata_mimir_last_error();
+        if ($previous instanceof Throwable) {
+            throw $previous;
+        }
+        throw new Exception('Mímir overgeslagen na eerdere fout in dit verzoek.');
+    }
+
     $url = odata_mimir_base_url() . '/' . ltrim($path, '/');
     $headers = [
         'Accept: application/json',
@@ -78,8 +90,8 @@ function odata_mimir_request(string $method, string $path, ?array $jsonBody = nu
     $opts = [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_FOLLOWLOCATION => true,
-        CURLOPT_CONNECTTIMEOUT => 30,
-        CURLOPT_TIMEOUT => 600,
+        CURLOPT_CONNECTTIMEOUT => odata_mimir_connect_timeout_seconds(),
+        CURLOPT_TIMEOUT => odata_mimir_timeout_seconds(),
         CURLOPT_CUSTOMREQUEST => strtoupper($method),
         CURLOPT_HTTPHEADER => $headers,
         CURLOPT_USERAGENT => 'Argus-MimirClient/1.0',
@@ -87,6 +99,7 @@ function odata_mimir_request(string $method, string $path, ?array $jsonBody = nu
     if ($jsonBody !== null) {
         $payload = json_encode($jsonBody, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         if ($payload === false) {
+            curl_close($ch);
             throw new Exception('Mímir request JSON encode mislukt.');
         }
         $headers[] = 'Content-Type: application/json';
@@ -98,7 +111,7 @@ function odata_mimir_request(string $method, string $path, ?array $jsonBody = nu
     if ($raw === false) {
         $err = curl_error($ch);
         curl_close($ch);
-        throw new Exception('Mímir cURL error: ' . $err);
+        odata_mimir_fail(new Exception('Mímir cURL error: ' . $err));
     }
     $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
@@ -106,10 +119,15 @@ function odata_mimir_request(string $method, string $path, ?array $jsonBody = nu
     $decoded = json_decode($raw, true);
     if ($code < 200 || $code >= 300) {
         $message = is_array($decoded) ? (string) ($decoded['error'] ?? $raw) : $raw;
-        throw new Exception('Mímir HTTP ' . $code . ': ' . $message);
+        odata_mimir_fail(new Exception('Mímir HTTP ' . $code . ': ' . $message));
     }
     if (!is_array($decoded)) {
-        throw new Exception('Mímir gaf ongeldige JSON terug.');
+        odata_mimir_fail(new Exception('Mímir gaf ongeldige JSON terug.'));
+    }
+    $errorField = $decoded['error'] ?? null;
+    if ($errorField !== null && $errorField !== '' && $errorField !== false) {
+        $message = is_string($errorField) ? $errorField : (string) json_encode($errorField, JSON_UNESCAPED_UNICODE);
+        odata_mimir_fail(new Exception('Mímir error: ' . $message));
     }
     return $decoded;
 }
@@ -170,6 +188,9 @@ function odata_mimir_parse_companies_url(string $url): ?array
  */
 function odata_mimir_companies_as_rows(?string $environment = null): array
 {
+    if (empty($GLOBALS['ARGUS_MIMIR_IN_IMPL']) && function_exists('odata_mimir_companies_guard')) {
+        return odata_mimir_companies_guard($environment);
+    }
     $response = odata_mimir_request('GET', 'companies.php');
     $items = $response['value'] ?? null;
     if (!is_array($items)) {
@@ -249,6 +270,9 @@ function odata_mimir_company_environment_map(?string $environment = null): array
  */
 function odata_mimir_query(string $company, string $table, array $odataQuery, int $ttlSeconds): array
 {
+    if (empty($GLOBALS['ARGUS_MIMIR_IN_IMPL']) && function_exists('odata_mimir_query_guard')) {
+        return odata_mimir_query_guard($company, $table, $odataQuery, $ttlSeconds);
+    }
     consolelog("Mímir query company=$company table=$table\n");
 
     $body = [
@@ -291,6 +315,9 @@ function odata_mimir_query(string $company, string $table, array $odataQuery, in
  */
 function odata_mimir_fetch_all(string $url, int $ttlSeconds): array
 {
+    if (empty($GLOBALS['ARGUS_MIMIR_IN_IMPL']) && function_exists('odata_mimir_fetch_all_guard')) {
+        return odata_mimir_fetch_all_guard($url, $ttlSeconds);
+    }
     consolelog("Mímir fetch $url\n");
 
     $companies = odata_mimir_parse_companies_url($url);
@@ -327,9 +354,16 @@ function odata_get_all(string $url, array $auth, $ttlSeconds = 300): array
     consolelog("Fetching $url\n");
     $ttlSeconds = max(0, (int) $ttlSeconds);
 
-    if (odata_mimir_api_key() !== '') {
+    if (odata_mimir_api_key() !== '' && empty($GLOBALS['ARGUS_ODATA_DIRECT'])) {
+        if (function_exists('odata_get_all_guard')) {
+            return odata_get_all_guard($url, $auth, $ttlSeconds);
+        }
         // Mímir beheert de BC-cache (max_age); Argus-filecache / live-paginering worden overgeslagen.
         return odata_mimir_fetch_all($url, $ttlSeconds === 0 ? 3600 : $ttlSeconds);
+    }
+
+    if (isset($GLOBALS['ARGUS_ODATA_BC_FETCH']) && is_callable($GLOBALS['ARGUS_ODATA_BC_FETCH'])) {
+        return $GLOBALS['ARGUS_ODATA_BC_FETCH']($url, $auth, max(1, (int) $ttlSeconds));
     }
 
     $ttlSeconds = max(1, $ttlSeconds);

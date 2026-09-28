@@ -55,6 +55,8 @@ class ProjectFinanceService
         if ($this->baseUrl === '') {
             if ($mimirOn) {
                 // Placeholder so URL builders still produce parseable OData paths for Mímir.
+                // odata_get_all herschrijft mimir.invalid naar $baseUrl zodra Mímir uitvalt;
+                // laat de echte BC-base in auth.php staan, anders kan die fallback niet.
                 $this->baseUrl = 'https://mimir.invalid/';
             } else {
                 throw new RuntimeException('baseUrl ontbreekt in auth.php.');
