@@ -767,14 +767,17 @@ function build_month_rows(
             'Cost_Center' => (string) ($proj['LVS_Global_Dimension_1_Code'] ?? ''),
             'Project_Actual_Costs' => (float) ($projectTotals['costs'] ?? 0.0),
             'Project_Actual_Costs_To_Date' => 0.0,
-            'Project_Total_Revenue' => (float) ($projectTotals['revenue'] ?? 0.0),
+            // Actueel contracttotaal (ProjectTaken taak 000), niet OHW G/L 899901.
+            'Project_Total_Revenue' => (float) ($planningTotals['contract_total_price'] ?? 0.0),
             'Expected_Revenue' => (float) ($planningTotals['expected_revenue'] ?? 0),
             'Expected_Costs_VC' => (float) ($planningTotals['expected_costs'] ?? 0),
             'Extra_Work' => (float) ($planningTotals['extra_work'] ?? 0),
             'Aanneemsom' => (float) ($planningTotals['aanneemsom'] ?? 0),
             'Breakdown' => [
                 'total_costs_lines' => [],
-                'total_revenue_lines' => [],
+                'total_revenue_lines' => is_array($planningBreakdown['contract_total_price_lines'] ?? null)
+                    ? $planningBreakdown['contract_total_price_lines']
+                    : [],
                 'expected_revenue_lines' => is_array($planningBreakdown['expected_revenue_lines'] ?? null) ? $planningBreakdown['expected_revenue_lines'] : [],
                 'expected_costs_lines' => is_array($planningBreakdown['expected_costs_lines'] ?? null) ? $planningBreakdown['expected_costs_lines'] : [],
                 'extra_work_lines' => is_array($planningBreakdown['extra_work_lines'] ?? null) ? $planningBreakdown['extra_work_lines'] : [],
@@ -1021,8 +1024,11 @@ function build_snapshot_from_column_wip(string $company, string $targetYm, array
         $breakdown['total_costs_lines'] = is_array($ohwCostLinesByProject[$normProjectNo] ?? null)
             ? $ohwCostLinesByProject[$normProjectNo]
             : [];
-        $breakdown['total_revenue_lines'] = is_array($ohwRevenueLinesByProject[$normProjectNo] ?? null)
-            ? $ohwRevenueLinesByProject[$normProjectNo]
+        $planningForProject = is_array($planningBreakdownByJob[$normProjectNo] ?? null)
+            ? $planningBreakdownByJob[$normProjectNo]
+            : [];
+        $breakdown['total_revenue_lines'] = is_array($planningForProject['contract_total_price_lines'] ?? null)
+            ? $planningForProject['contract_total_price_lines']
             : [];
 
         $projectBreakdowns[$normProjectNo] = $breakdown;
@@ -1053,10 +1059,16 @@ function build_snapshot_from_column_wip(string $company, string $targetYm, array
                 continue;
             }
 
-            $breakdown = is_array($projectBreakdowns[$normProjectNo] ?? null)
-                ? $projectBreakdowns[$normProjectNo]
-                : [];
-            $departmentCode = bc_fetch_primary_department_from_breakdown($breakdown);
+            // Afd. blijft uit OHW-regels. total_revenue_lines is nu het contracttotaal
+            // en heeft geen Global_Dimension_1_Code.
+            $departmentCode = bc_fetch_primary_department_from_breakdown([
+                'total_costs_lines' => is_array($ohwCostLinesByProject[$normProjectNo] ?? null)
+                    ? $ohwCostLinesByProject[$normProjectNo]
+                    : [],
+                'total_revenue_lines' => is_array($ohwRevenueLinesByProject[$normProjectNo] ?? null)
+                    ? $ohwRevenueLinesByProject[$normProjectNo]
+                    : [],
+            ]);
             if ($departmentCode !== '') {
                 $data['project_summaries'][$summaryIndex]['Cost_Center'] = $departmentCode;
             }

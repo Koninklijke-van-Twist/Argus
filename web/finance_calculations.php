@@ -23,6 +23,12 @@ const FINANCE_REVENUE_GL_ACCOUNT_TYPE_ALIASES = [
 const FINANCE_OPBRENGST_VC_FIELD = 'LVS_Schedule_Total_Price_2';
 
 /**
+ * Opbrengst t/m periode (maand-detail total_revenue) op de project-totaalregel.
+ * Contracttotaal; niet Contract_Invoiced_Price en niet de OHW-mutatie op G/L 899901.
+ */
+const FINANCE_CONTRACT_TOTAL_PRICE_FIELD = 'Contract_Total_Price';
+
+/**
  * Functies
  */
 
@@ -472,4 +478,27 @@ function finance_opbrengst_vc_amount(array $row, string $projectTotaalTaskNo = '
     }
 
     return finance_to_float($row[FINANCE_OPBRENGST_VC_FIELD]);
+}
+
+/**
+ * Leest het contracttotaal uit Contract_Total_Price (ProjectTaken, taak 000).
+ * Alleen Job_Task_No 000 (Project TOTAAL) telt; andere taken leveren 0.
+ * Ontbreekt het taaknummer, dan telt de regel wel (één projectkaartwaarde).
+ * Contract_Invoiced_Price wordt niet gelezen.
+ * Dit is de actuele BC-stand, niet een periode-snapshot t/m de gekozen maand.
+ */
+function finance_contract_total_price_amount(array $row, string $projectTotaalTaskNo = '000'): float
+{
+    if (array_key_exists('Job_Task_No', $row)) {
+        $taskNo = trim((string) $row['Job_Task_No']);
+        if ($taskNo !== $projectTotaalTaskNo) {
+            return 0.0;
+        }
+    }
+
+    if (!array_key_exists(FINANCE_CONTRACT_TOTAL_PRICE_FIELD, $row)) {
+        return 0.0;
+    }
+
+    return finance_to_float($row[FINANCE_CONTRACT_TOTAL_PRICE_FIELD]);
 }

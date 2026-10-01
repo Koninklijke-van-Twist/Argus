@@ -59,4 +59,5 @@ Geen `auth.php` in deze repository (staat in `.gitignore`). Lokaal/op de server 
 php tests/mimir_fallback_test.php
 php web/tests/test_opbrengst_meerwerk.php
 php web/tests/test_opbrengst_vc.php
+php web/tests/test_contract_total_price.php
 ```
