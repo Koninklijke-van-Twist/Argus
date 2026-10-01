@@ -870,7 +870,7 @@
             case 'costs_to_date':
                 return { type: 'bc-field', name: 'WIP_Entry_Amount', source: 'Grootboekposten_OHW', filters: baseFilter + ',G_L_Account_No=899900,as_of=today' };
             case 'total_revenue':
-                return { type: 'bc-field', name: 'WIP_Entry_Amount', source: 'Grootboekposten_OHW', filters: baseFilter + ',G_L_Account_No=899901' };
+                return { type: 'bc-field', name: 'Contract_Total_Price', source: 'ProjectTaken', filters: baseFilter + ',Job_Task_No=000' };
             case 'customer':
                 return { type: 'bc-field', name: 'Bill_to_Customer_No,Bill_to_Name', source: 'Projecten', filters: baseFilter.replace('Job_No=', 'No=') };
             case 'description':
@@ -1184,19 +1184,23 @@
                     {
                         showProjectSourceModal(
                             proj,
-                            'Totale opbrengst t/m heden – project ' + proj.job_no,
-                            OHW_DETAIL_HEADERS,
-                            function (breakdown)
-                            {
-                                return breakdown.total_revenue_lines.map(function (line)
-                                {
-                                    return mapOhwBreakdownRowToModal(line, false);
-                                });
-                            },
+                            (columnLabels.total_revenue || 'Opbrengst') + ' – project ' + proj.job_no,
+                            ['Taak', 'Regel', 'Type', 'Nr.', 'Omschrijving', 'Line type', 'Bedrag'],
                             function (breakdown)
                             {
                                 const lines = Array.isArray(breakdown.total_revenue_lines) ? breakdown.total_revenue_lines : [];
-                                return aggregateOhwLinesFooter(lines, ['Line_Amount', 'WIP_Entry_Amount']);
+                                return lines.map(function (line)
+                                {
+                                    return [
+                                        line.Job_Task_No || '',
+                                        String(line.Line_No || ''),
+                                        line.Type || '',
+                                        line.No || '',
+                                        line.Description || '',
+                                        line.Line_Type || '',
+                                        fmtCurrency(line.Line_Amount || 0),
+                                    ];
+                                });
                             }
                         );
                     });

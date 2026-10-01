@@ -115,7 +115,9 @@ class ProjectFinanceService
             ],
             // Voorcalculatie (statisch, huidige BC-stand):
             // - kosten: ProjectTaken.LVS_Baseline_Total_Cost voor Job_Task_No '000' (Project TOTAAL / basislijn)
-            // - opbrengst: ProjectTaken.LVS_Schedule_Total_Price_2 voor Job_Task_No '000' (schedule/budget)
+            // - opbrengst VC: ProjectTaken.LVS_Schedule_Total_Price_2 voor Job_Task_No '000' (schedule/budget)
+            // - opbrengst t/m periode: ProjectTaken.Contract_Total_Price voor Job_Task_No '000'
+            //   (zelfde ProjectTaken-fetch als opbrengst VC; niet Contract_Invoiced_Price, niet G/L 899901)
             //   Opbrengst (aanneemsom) en opbrengst meerwerk blijven FactureerbareProjectPlanningsRegels G/L 800000
             //   en horen niet in Opbrengst VC. Opbrengst telt leeg én gevuld subordernr.;
             //   meerwerk is alleen het gevulde deel en wordt niet uit de opbrengst gehaald.
@@ -532,6 +534,7 @@ class ProjectFinanceService
      *
      * Kosten: ProjectTaken.LVS_Baseline_Total_Cost (Job_Task_No 000 / Project TOTAAL).
      * Opbrengst VC: ProjectTaken.LVS_Schedule_Total_Price_2 (Job_Task_No 000 / schedule-prijs).
+     * Opbrengst t/m periode: ProjectTaken.Contract_Total_Price (Job_Task_No 000), zelfde fetch.
      * Opbrengst/aanneemsom en opbrengst meerwerk: FactureerbareProjectPlanningsRegels, G/L 800000, factureerbaar.
      * Opbrengst telt regels met leeg én gevuld LVS_Job_Change_Order_No.
      * Meerwerk is alleen het deel met gevuld subordernr. en blijft in de opbrengst zitten.
@@ -647,6 +650,45 @@ class ProjectFinanceService
                 $breakdownByProject[$normalizedProject]['expected_revenue_lines'],
                 is_array($lines) ? $lines : []
             );
+        }
+
+        $contractTotals = is_array($revenueData['contract_totals'] ?? null)
+            ? $revenueData['contract_totals']
+            : [];
+        foreach ($contractTotals as $normalizedProject => $amount) {
+            if (!isset($totalsByProject[$normalizedProject])) {
+                $totalsByProject[$normalizedProject] = [
+                    'expected_revenue' => 0.0,
+                    'expected_costs' => 0.0,
+                    'extra_work' => 0.0,
+                    'aanneemsom' => 0.0,
+                ];
+                $breakdownByProject[$normalizedProject] = [
+                    'expected_revenue_lines' => [],
+                    'expected_costs_lines' => [],
+                    'extra_work_lines' => [],
+                    'aanneemsom_lines' => [],
+                ];
+            }
+
+            // Eén contracttotaal per project (taak 000), niet optellen over taken.
+            $totalsByProject[$normalizedProject]['contract_total_price'] = finance_to_float($amount);
+        }
+
+        $contractLinesByProject = is_array($revenueData['contract_breakdown'] ?? null)
+            ? $revenueData['contract_breakdown']
+            : [];
+        foreach ($contractLinesByProject as $normalizedProject => $lines) {
+            if (!isset($breakdownByProject[$normalizedProject])) {
+                $breakdownByProject[$normalizedProject] = [
+                    'expected_revenue_lines' => [],
+                    'expected_costs_lines' => [],
+                    'extra_work_lines' => [],
+                    'aanneemsom_lines' => [],
+                ];
+            }
+
+            $breakdownByProject[$normalizedProject]['contract_total_price_lines'] = is_array($lines) ? $lines : [];
         }
 
         foreach (['aanneemsom', 'extra_work'] as $totalKey) {
@@ -772,27 +814,40 @@ class ProjectFinanceService
     }
 
     /**
-     * Voorcalculatie opbrengst uit ProjectTaken (LVS_Schedule_Total_Price_2 van taak 000).
+     * ProjectTaken taak 000: Opbrengst VC én contracttotaal in één fetch.
      *
-     * Eén schedule/budgetprijs per project. Niet LVS_Baseline_Total_Price,
-     * niet de aanneemsom (G/L 800000 / Line_Amount_LCY) en niet de som van
-     * factureerbare planningsregels.
+     * Opbrengst VC: LVS_Schedule_Total_Price_2. Eén schedule/budgetprijs per project.
+     * Niet LVS_Baseline_Total_Price, niet de aanneemsom (G/L 800000 / Line_Amount_LCY)
+     * en niet de som van factureerbare planningsregels.
      *
-     * @return array{totals:array<string,float>,breakdown:array<string,array<int,array<string,mixed>>>,warning:?string}
+     * Opbrengst t/m periode: Contract_Total_Price van dezelfde taak 000.
+     * Niet Contract_Invoiced_Price en niet Grootboekposten_OHW G/L 899901.
+     * Nulbedragen worden overgeslagen; de kolom blijft dan 0 zonder breakdownregel.
+     *
+     * @return array{
+     *   totals:array<string,float>,
+     *   breakdown:array<string,array<int,array<string,mixed>>>,
+     *   contract_totals:array<string,float>,
+     *   contract_breakdown:array<string,array<int,array<string,mixed>>>,
+     *   warning:?string
+     * }
      */
     private function fetchVoorcalculatieRevenueForProjects(array $projectNumbers, int $ttl): array
     {
         $totals = [];
         $breakdown = [];
+        $contractTotals = [];
+        $contractBreakdown = [];
         $projectTotaalTaskNo = '000';
         $schedulePriceField = FINANCE_OPBRENGST_VC_FIELD;
+        $contractPriceField = FINANCE_CONTRACT_TOTAL_PRICE_FIELD;
         $loaded = $this->fetchRowsForJobChunks(
             $projectNumbers,
             $ttl,
             8,
-            function (string $projectFilter) use ($projectTotaalTaskNo, $schedulePriceField): string {
+            function (string $projectFilter) use ($projectTotaalTaskNo, $schedulePriceField, $contractPriceField): string {
                 return $this->companyEntityUrlWithQuery('ProjectTaken', [
-                    '$select' => 'Job_No,Job_Task_No,Description,' . $schedulePriceField,
+                    '$select' => 'Job_No,Job_Task_No,Description,' . $schedulePriceField . ',' . $contractPriceField,
                     '$filter' => $projectFilter . " and Job_Task_No eq '" . self::escapeOdataString($projectTotaalTaskNo) . "'",
                 ]);
             },
@@ -809,29 +864,48 @@ class ProjectFinanceService
                 continue;
             }
 
-            $amount = finance_opbrengst_vc_amount($row, $projectTotaalTaskNo);
-            if ($amount === 0.0) {
-                continue;
+            $normalizedProject = self::normalizeMatchValue($projectNo);
+            $scheduleAmount = finance_opbrengst_vc_amount($row, $projectTotaalTaskNo);
+            $contractAmount = finance_contract_total_price_amount($row, $projectTotaalTaskNo);
+            $taskNo = (string) ($row['Job_Task_No'] ?? $projectTotaalTaskNo);
+            $description = (string) ($row['Description'] ?? '');
+
+            if ($scheduleAmount !== 0.0) {
+                $totals[$normalizedProject] = $scheduleAmount;
+                $breakdown[$normalizedProject] = [
+                    [
+                        'Job_Task_No' => $taskNo,
+                        'Line_No' => 0,
+                        'Type' => '',
+                        'No' => '',
+                        'Description' => $description,
+                        'Line_Amount' => $scheduleAmount,
+                        'Line_Type' => '',
+                    ],
+                ];
             }
 
-            $normalizedProject = self::normalizeMatchValue($projectNo);
-            $totals[$normalizedProject] = $amount;
-            $breakdown[$normalizedProject] = [
-                [
-                    'Job_Task_No' => (string) ($row['Job_Task_No'] ?? $projectTotaalTaskNo),
-                    'Line_No' => 0,
-                    'Type' => '',
-                    'No' => '',
-                    'Description' => (string) ($row['Description'] ?? ''),
-                    'Line_Amount' => $amount,
-                    'Line_Type' => '',
-                ],
-            ];
+            if ($contractAmount !== 0.0) {
+                $contractTotals[$normalizedProject] = $contractAmount;
+                $contractBreakdown[$normalizedProject] = [
+                    [
+                        'Job_Task_No' => $taskNo,
+                        'Line_No' => 0,
+                        'Type' => '',
+                        'No' => '',
+                        'Description' => $description !== '' ? $description : 'Contracttotaal',
+                        'Line_Amount' => $contractAmount,
+                        'Line_Type' => FINANCE_CONTRACT_TOTAL_PRICE_FIELD,
+                    ],
+                ];
+            }
         }
 
         return [
             'totals' => $totals,
             'breakdown' => $breakdown,
+            'contract_totals' => $contractTotals,
+            'contract_breakdown' => $contractBreakdown,
             'warning' => $loaded['warning'],
         ];
     }
