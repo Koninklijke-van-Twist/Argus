@@ -61,4 +61,5 @@ php web/tests/test_opbrengst_meerwerk.php
 php web/tests/test_opbrengst_vc.php
 php web/tests/test_contract_total_price.php
 php web/tests/test_odata_schema_error_once.php
+php web/tests/test_projecttaken_tolerant_select.php
 ```

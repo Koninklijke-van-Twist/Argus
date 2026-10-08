@@ -532,3 +532,15 @@ function finance_strip_odata_correlation_id(string $message): string
 
     return trim((string) preg_replace('/\s+/', ' ', $message));
 }
+
+/**
+ * Naam van het ontbrekende veld uit een OData-schemafout, of null.
+ */
+function finance_odata_missing_property(string $message): ?string
+{
+    if (preg_match("/Could not find a property named '([^']+)'/i", $message, $m) === 1) {
+        return $m[1];
+    }
+
+    return null;
+}
