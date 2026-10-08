@@ -6,12 +6,14 @@ declare(strict_types=1);
  * "Rapporteer aan ICT" — herbruikbare server-kant voor sleutels.kvt.nl-apps.
  *
  * Maakt namens de ingelogde gebruiker een Asclepius-ticket aan in de categorie
- * "sleutels.kvt.nl web-applicatieproblemen". De Asclepius service-key komt uit
- * de gedeelde login/cfg.php (`asclepius_api_key`) en bereikt nooit de browser.
+ * "sleutels.kvt.nl web-applicatieproblemen", met de persoonlijke tijdelijke
+ * API-key die de gedeelde login bij het inloggen uitgeeft
+ * ($_SESSION['user']['api_key'] = sha256(oid|d-m-Y UTC), zie login/session_user.php).
+ * Geen service-key nodig; de key blijft server-side.
  *
  * Gebruik in een andere app: kopieer de map ict_report/ en een endpoint zoals
  * ict_report.php, geef de pagina ict_report_csrf_token() mee en laad
- * ict_report/ict_report.js.
+ * ict_report/ict_report.js. Er is geen extra configuratie nodig.
  */
 
 const ICT_REPORT_CATEGORY = 'sleutels.kvt.nl web-applicatieproblemen';
@@ -24,25 +26,35 @@ function ict_report_login_dir(): string
 }
 
 /**
- * Asclepius service-key uit login/cfg.php (zelfde bron als login/asclepius_access.php).
+ * Gegevens van de ingelogde gebruiker, inclusief zijn persoonlijke tijdelijke API-key.
+ * De key wordt bij voorkeur vers berekend uit het oid met de login-helper (zelfde
+ * regel als login/session_user.php), anders uit de sessie.
+ *
+ * @param array<string, mixed> $sessionUser $_SESSION['user']
+ * @return array{email: string, name: string, oid: string, api_key: string}
  */
-function ict_report_api_key(): string
+function ict_report_user_credentials(array $sessionUser): array
 {
-    $file = ict_report_login_dir() . DIRECTORY_SEPARATOR . 'asclepius_access.php';
-    if (is_file($file)) {
-        require_once $file;
-        if (function_exists('get_asclepius_service_api_key')) {
-            return get_asclepius_service_api_key();
+    $oid = strtolower(trim((string) ($sessionUser['oid'] ?? '')));
+    $apiKey = strtolower(trim((string) ($sessionUser['api_key'] ?? '')));
+
+    $helper = ict_report_login_dir() . DIRECTORY_SEPARATOR . 'session_user.php';
+    if ($oid !== '' && is_file($helper)) {
+        require_once $helper;
+    }
+    if ($oid !== '' && function_exists('build_rotating_api_key')) {
+        $fresh = build_rotating_api_key($oid);
+        if ($fresh !== '') {
+            $apiKey = $fresh;
         }
     }
 
-    $cfgFile = ict_report_login_dir() . DIRECTORY_SEPARATOR . 'cfg.php';
-    if (is_file($cfgFile)) {
-        $cfg = require $cfgFile;
-        return trim((string) (is_array($cfg) ? ($cfg['asclepius_api_key'] ?? '') : ''));
-    }
-
-    return '';
+    return [
+        'email' => strtolower(trim((string) ($sessionUser['email'] ?? ''))),
+        'name' => trim((string) ($sessionUser['name'] ?? '')),
+        'oid' => $oid,
+        'api_key' => preg_match('/^[a-f0-9]{64}$/', $apiKey) === 1 ? $apiKey : '',
+    ];
 }
 
 function ict_report_api_url(): string
@@ -80,24 +92,23 @@ function ict_report_session_binding(): string
 }
 
 /**
- * Stateless CSRF-token (HMAC), zodat we de sessie niet opnieuw hoeven te openen
- * (de gedeelde login sluit de sessie al; geen extra Redis-lock nodig).
+ * Stateless CSRF-token: HMAC met de (HttpOnly) sessie-id als sleutel, gebonden aan de
+ * gebruiker. Geen servergeheim of sessie-heropening nodig (geen extra Redis-lock).
  */
-function ict_report_csrf_token(string $userEmail, ?string $secret = null, ?string $sessionBinding = null): string
+function ict_report_csrf_token(string $userEmail, ?string $sessionBinding = null): string
 {
-    $secret = $secret ?? ict_report_api_key();
     $sessionBinding = $sessionBinding ?? ict_report_session_binding();
     $userEmail = strtolower(trim($userEmail));
-    if ($secret === '' || $userEmail === '') {
+    if ($sessionBinding === '' || $userEmail === '') {
         return '';
     }
 
-    return hash_hmac('sha256', 'ict-report|' . $sessionBinding . '|' . $userEmail, $secret);
+    return hash_hmac('sha256', 'ict-report|' . $userEmail, $sessionBinding);
 }
 
-function ict_report_verify_csrf(string $token, string $userEmail, ?string $secret = null, ?string $sessionBinding = null): bool
+function ict_report_verify_csrf(string $token, string $userEmail, ?string $sessionBinding = null): bool
 {
-    $expected = ict_report_csrf_token($userEmail, $secret, $sessionBinding);
+    $expected = ict_report_csrf_token($userEmail, $sessionBinding);
 
     return $expected !== '' && $token !== '' && hash_equals($expected, $token);
 }
@@ -237,35 +248,49 @@ function ict_report_build_ticket(string $app, array $input, array $user, int $no
     ];
 }
 
+const ICT_REPORT_KEY_ERROR = 'Je persoonlijke inlogsleutel ontbreekt of is verlopen. Log opnieuw in (vernieuw de pagina of log uit en weer in) en probeer het daarna nog eens.';
+
 /**
- * Doet de POST naar Asclepius. $transport is injecteerbaar voor tests.
+ * Doet de POST naar Asclepius met de persoonlijke key van de gebruiker.
+ * $transport is injecteerbaar voor tests.
  *
+ * @param array{email: string, name?: string, oid: string, api_key: string} $user
  * @param callable(string, array<int, string>, string): array{status: int, body: string}|null $transport
- * @return array{ok: bool, ticket_id?: int, ticket_url?: string, error?: string}
+ * @return array{ok: bool, ticket_id?: int, ticket_url?: string, error?: string, status?: int}
  */
-function ict_report_create_ticket(array $ticket, string $userEmail, string $apiUrl, string $apiKey, ?callable $transport = null): array
+function ict_report_create_ticket(array $ticket, array $user, string $apiUrl, ?callable $transport = null): array
 {
-    if ($apiKey === '') {
-        return ['ok' => false, 'error' => 'Melden aan ICT is niet geconfigureerd (Asclepius API-key ontbreekt).'];
+    $email = strtolower(trim((string) ($user['email'] ?? '')));
+    $oid = strtolower(trim((string) ($user['oid'] ?? '')));
+    $apiKey = strtolower(trim((string) ($user['api_key'] ?? '')));
+    if ($email === '' || $oid === '' || $apiKey === '') {
+        return ['ok' => false, 'error' => ICT_REPORT_KEY_ERROR, 'status' => 401];
     }
 
     $body = json_encode([
         'title' => $ticket['title'],
         'category' => ICT_REPORT_CATEGORY,
         'description' => $ticket['description'],
-        'user_email' => $userEmail,
+        'user_email' => $email,
+        'oid' => $oid,
     ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
     $headers = [
         'Content-Type: application/json',
         'Accept: application/json',
         'X-API-Key: ' . $apiKey,
+        'X-User-Oid: ' . $oid,
+        'X-User-Email: ' . $email,
     ];
 
     $transport = $transport ?? 'ict_report_http_post';
     $response = $transport($apiUrl, $headers, (string) $body);
     $status = (int) ($response['status'] ?? 0);
     $decoded = json_decode((string) ($response['body'] ?? ''), true);
+
+    if ($status === 401) {
+        return ['ok' => false, 'error' => ICT_REPORT_KEY_ERROR, 'status' => 401];
+    }
 
     if (!is_array($decoded) || empty($decoded['success'])) {
         $detail = '';
@@ -274,6 +299,7 @@ function ict_report_create_ticket(array $ticket, string $userEmail, string $apiU
         }
         return [
             'ok' => false,
+            'status' => $status,
             'error' => 'Asclepius kon het ticket niet aanmaken'
                 . ($status > 0 ? ' (HTTP ' . $status . ')' : '')
                 . ($detail !== '' ? ': ' . $detail : '.'),

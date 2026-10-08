@@ -25,8 +25,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
     ict_report_respond(405, ['ok' => false, 'error' => 'Alleen POST is toegestaan.']);
 }
 
-$userEmail = strtolower(trim((string) ($_SESSION['user']['email'] ?? '')));
-$userName = trim((string) ($_SESSION['user']['name'] ?? ''));
+$user = ict_report_user_credentials(is_array($_SESSION['user'] ?? null) ? $_SESSION['user'] : []);
+$userEmail = $user['email'];
 if ($userEmail === '' || !filter_var($userEmail, FILTER_VALIDATE_EMAIL)) {
     ict_report_respond(401, ['ok' => false, 'error' => 'Je bent niet (meer) ingelogd. Vernieuw de pagina en probeer opnieuw.']);
 }
@@ -42,12 +42,13 @@ if (!ict_report_same_origin($_SERVER) || !ict_report_verify_csrf($token, $userEm
     ict_report_respond(403, ['ok' => false, 'error' => 'Ongeldige beveiligingstoken. Vernieuw de pagina en probeer opnieuw.']);
 }
 
-$ticket = ict_report_build_ticket('Argus', $input, ['email' => $userEmail, 'name' => $userName], time());
-$result = ict_report_create_ticket($ticket, $userEmail, ict_report_api_url(), ict_report_api_key());
+$ticket = ict_report_build_ticket('Argus', $input, $user, time());
+$result = ict_report_create_ticket($ticket, $user, ict_report_api_url());
 
 if (empty($result['ok'])) {
     error_log('[Argus] Rapporteer aan ICT mislukt: ' . ($result['error'] ?? 'onbekend'));
-    ict_report_respond(502, ['ok' => false, 'error' => (string) ($result['error'] ?? 'Ticket aanmaken mislukt.')]);
+    $status = (int) ($result['status'] ?? 0) === 401 ? 401 : 502;
+    ict_report_respond($status, ['ok' => false, 'error' => (string) ($result['error'] ?? 'Ticket aanmaken mislukt.')]);
 }
 
 ict_report_respond(200, [
