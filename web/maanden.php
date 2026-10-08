@@ -1,7 +1,6 @@
 <?php
-ini_set('display_errors', 1);
-ini_set('display_startup_errors', 1);
-error_reporting(E_ALL);
+require_once __DIR__ . '/json_guard.php';
+argus_configure_error_display();
 
 /**
  * Includes/requires
@@ -1181,6 +1180,11 @@ if ($selectedCompany === '' || !in_array($selectedCompany, $companies, true)) {
 // --- AJAX endpoints ---
 
 // Ophalen projectnummers voor één batch-maand (centrale startstap per maand)
+// Losse output (bijv. sessie-warnings) mag nooit vóór de JSON belanden.
+if (argus_is_json_request()) {
+    argus_json_discard_preamble();
+}
+
 if (($_GET['action'] ?? '') === 'fetch_project_numbers_batch') {
     header('Content-Type: application/json; charset=utf-8');
     @set_time_limit(0);
@@ -1779,6 +1783,9 @@ if (!in_array($currentMonth, $savedMonths, true) && !in_array($currentMonth, $ad
 $savedColumnOrder = is_array($userSettings['maanden_column_order'] ?? null) ? $userSettings['maanden_column_order'] : [];
 $targetScopedColumnKeys = bc_fetch_target_scoped_column_keys();
 
+require_once __DIR__ . '/ict_report/ict_report_lib.php';
+$ictReportCsrfToken = ict_report_csrf_token((string) ($_SESSION['user']['email'] ?? ''));
+
 $initialData = [
     'companies' => $companies,
     'selected_company' => $selectedCompany,
@@ -2270,29 +2277,62 @@ function format_month_nl(string $yearMonth): string
 
         .toast.is-error {
             background: #b42318;
-            cursor: pointer;
             padding: 12px 14px;
+            max-width: min(560px, calc(100vw - 40px));
+        }
+
+        .toast-header {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            margin-bottom: 6px;
         }
 
         .toast-hint {
+            flex: 1;
+            background: none;
+            border: 0;
+            padding: 0;
+            color: inherit;
+            text-align: left;
+            cursor: pointer;
+            font: inherit;
             font-size: 11px;
             font-weight: 700;
             letter-spacing: .02em;
             opacity: .9;
-            margin-bottom: 6px;
+            text-decoration: underline dotted;
+        }
+
+        .toast-close {
+            background: none;
+            border: 0;
+            color: inherit;
+            cursor: pointer;
+            font-size: 18px;
+            line-height: 1;
+            padding: 0 2px;
+            opacity: .85;
+        }
+
+        .toast-close:hover,
+        .toast-hint:hover {
+            opacity: 1;
         }
 
         .toast-preview {
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
+            cursor: pointer;
         }
 
         .toast-details {
             display: none;
-            margin-top: 10px;
-            padding-top: 10px;
-            border-top: 1px solid rgba(255, 255, 255, .28);
+            margin: 10px 0 0;
+            padding: 10px;
+            border-radius: 6px;
+            background: rgba(0, 0, 0, .22);
             font-family: Consolas, Monaco, monospace;
             font-size: 12px;
             font-weight: 500;
@@ -2301,6 +2341,8 @@ function format_month_nl(string $yearMonth): string
             word-break: break-word;
             max-height: min(45vh, 360px);
             overflow: auto;
+            user-select: text;
+            cursor: text;
         }
 
         .toast.is-error.is-expanded .toast-preview {
@@ -2309,6 +2351,60 @@ function format_month_nl(string $yearMonth): string
 
         .toast.is-error.is-expanded .toast-details {
             display: block;
+        }
+
+        .toast-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 10px;
+        }
+
+        .toast-action {
+            background: rgba(255, 255, 255, .16);
+            color: #fff;
+            border: 1px solid rgba(255, 255, 255, .45);
+            border-radius: 6px;
+            padding: 4px 10px;
+            font: inherit;
+            font-size: 12px;
+            cursor: pointer;
+        }
+
+        .toast-action:hover:not(:disabled) {
+            background: rgba(255, 255, 255, .28);
+        }
+
+        .toast-action:disabled {
+            opacity: .65;
+            cursor: default;
+        }
+
+        .toast-action-primary {
+            background: #fff;
+            color: #b42318;
+            border-color: #fff;
+        }
+
+        .toast-action-primary:hover:not(:disabled) {
+            background: #fde8e6;
+        }
+
+        .toast-status {
+            margin-top: 8px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .toast-status a {
+            color: #fff;
+            text-decoration: underline;
+        }
+
+        .toast-status.is-error {
+            background: rgba(0, 0, 0, .25);
+            padding: 6px 8px;
+            border-radius: 6px;
         }
 
         .toast.fade-out {
@@ -2392,6 +2488,13 @@ function format_month_nl(string $yearMonth): string
 
     <script>
         window.maandenData = <?= json_encode($initialData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+    </script>
+    <script src="ict_report/ict_report.js?v=<?= (int) @filemtime(__DIR__ . '/ict_report/ict_report.js') ?>"></script>
+    <script>
+        window.KvtIctReport.configure(<?= json_encode([
+            'endpoint' => 'ict_report.php',
+            'csrfToken' => $ictReportCsrfToken,
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>);
     </script>
     <script src="maanden.js"></script>
 </body>
