@@ -849,20 +849,43 @@ class ProjectFinanceService
         $contractTotals = [];
         $contractBreakdown = [];
         $projectTotaalTaskNo = '000';
-        $schedulePriceField = FINANCE_OPBRENGST_VC_FIELD;
-        $contractPriceField = FINANCE_CONTRACT_TOTAL_PRICE_FIELD;
-        $loaded = $this->fetchRowsForJobChunks(
-            $projectNumbers,
-            $ttl,
-            8,
-            function (string $projectFilter) use ($projectTotaalTaskNo, $schedulePriceField, $contractPriceField): string {
-                return $this->companyEntityUrlWithQuery('ProjectTaken', [
-                    '$select' => 'Job_No,Job_Task_No,Description,' . $schedulePriceField . ',' . $contractPriceField,
-                    '$filter' => $projectFilter . " and Job_Task_No eq '" . self::escapeOdataString($projectTotaalTaskNo) . "'",
-                ]);
-            },
-            'Voorcalculatie opbrengst ophalen mislukt (ProjectTaken)'
-        );
+        // Opbrengst VC en Opbrengst t/m delen één fetch, maar een ontbrekend veld mag de
+        // andere kolom niet meenemen: bij een schemafout op één prijsveld valt alleen dat
+        // veld weg (één melding) en wordt de rest één keer opnieuw opgehaald.
+        $priceFields = [
+            FINANCE_OPBRENGST_VC_FIELD => 'Opbrengst VC',
+            FINANCE_CONTRACT_TOTAL_PRICE_FIELD => 'Opbrengst t/m',
+        ];
+        $fieldWarnings = [];
+        $loaded = ['rows' => [], 'warning' => null];
+        while ($priceFields !== []) {
+            $selectFields = array_keys($priceFields);
+            $loaded = $this->fetchRowsForJobChunks(
+                $projectNumbers,
+                $ttl,
+                8,
+                function (string $projectFilter) use ($projectTotaalTaskNo, $selectFields): string {
+                    return $this->companyEntityUrlWithQuery('ProjectTaken', [
+                        '$select' => 'Job_No,Job_Task_No,Description,' . implode(',', $selectFields),
+                        '$filter' => $projectFilter . " and Job_Task_No eq '" . self::escapeOdataString($projectTotaalTaskNo) . "'",
+                    ]);
+                },
+                'Voorcalculatie opbrengst ophalen mislukt (ProjectTaken)'
+            );
+
+            $missing = !empty($loaded['fatal'])
+                ? finance_odata_missing_property((string) ($loaded['warning'] ?? ''))
+                : null;
+            if ($missing === null || !isset($priceFields[$missing])) {
+                break;
+            }
+
+            $fieldWarnings[] = 'Veld ' . $missing . ' bestaat niet op ProjectTaken in ' . $this->environment
+                . '; kolom ' . $priceFields[$missing] . ' blijft leeg.';
+            unset($priceFields[$missing]);
+            $loaded = ['rows' => [], 'warning' => null];
+        }
+        $loaded['warning'] = self::joinForecastWarnings(array_merge($fieldWarnings, [$loaded['warning'] ?? null]));
 
         foreach ($loaded['rows'] as $row) {
             if (!is_array($row)) {
@@ -1035,6 +1058,7 @@ class ProjectFinanceService
     ): array {
         $rows = [];
         $warnings = [];
+        $fatal = false;
 
         foreach (self::chunkValues($projectNumbers, $chunkSize) as $chunk) {
             $chunkResult = $this->fetchRowsForJobChunk($chunk, $ttl, $urlBuilder, $errorPrefix);
@@ -1046,6 +1070,7 @@ class ProjectFinanceService
             }
             if (!empty($chunkResult['fatal'])) {
                 // Schemafout (veld bestaat niet): geldt voor alle batches. Eén melding, niet per project.
+                $fatal = true;
                 break;
             }
         }
@@ -1053,6 +1078,7 @@ class ProjectFinanceService
         return [
             'rows' => $rows,
             'warning' => self::joinForecastWarnings($warnings),
+            'fatal' => $fatal,
         ];
     }
 
