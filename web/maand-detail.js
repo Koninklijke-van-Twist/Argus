@@ -870,7 +870,7 @@
             case 'costs_to_date':
                 return { type: 'bc-field', name: 'WIP_Entry_Amount', source: 'Grootboekposten_OHW', filters: baseFilter + ',G_L_Account_No=899900,as_of=today' };
             case 'total_revenue':
-                return { type: 'bc-field', name: 'Contract_Total_Price', source: 'ProjectTaken', filters: baseFilter + ',Job_Task_No=000' };
+                return { type: 'bc-field', name: 'LVS_Contract_Total_Price_2', source: 'ProjectTaken', filters: baseFilter + ',Job_Task_No=000' };
             case 'customer':
                 return { type: 'bc-field', name: 'Bill_to_Customer_No,Bill_to_Name', source: 'Projecten', filters: baseFilter.replace('Job_No=', 'No=') };
             case 'description':

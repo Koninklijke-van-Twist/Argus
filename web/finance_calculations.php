@@ -25,8 +25,14 @@ const FINANCE_OPBRENGST_VC_FIELD = 'LVS_Schedule_Total_Price_2';
 /**
  * Opbrengst t/m periode (maand-detail total_revenue) op de project-totaalregel.
  * Contracttotaal; niet Contract_Invoiced_Price en niet de OHW-mutatie op G/L 899901.
+ *
+ * ProjectTaken publiceert géén Contract_Total_Price (alleen JobTaskLines e.d. doen dat);
+ * het contracttotaal staat op ProjectTaken als LVS_Contract_Total_Price_2. Live
+ * kvtmdlive_aad (KVT/HVT): taak 000 LVS_Contract_Total_Price_2 == JobTaskLines.Contract_Total_Price
+ * (bv. PRJ2602239: 24.297 vs basislijn 24.209). Niet LVS_Baseline_Total_Price: dat is
+ * de bevroren basislijn, geen actueel contract (ticket #1170).
  */
-const FINANCE_CONTRACT_TOTAL_PRICE_FIELD = 'Contract_Total_Price';
+const FINANCE_CONTRACT_TOTAL_PRICE_FIELD = 'LVS_Contract_Total_Price_2';
 
 /**
  * Functies
@@ -481,7 +487,7 @@ function finance_opbrengst_vc_amount(array $row, string $projectTotaalTaskNo = '
 }
 
 /**
- * Leest het contracttotaal uit Contract_Total_Price (ProjectTaken, taak 000).
+ * Leest het contracttotaal uit LVS_Contract_Total_Price_2 (ProjectTaken, taak 000).
  * Alleen Job_Task_No 000 (Project TOTAAL) telt; andere taken leveren 0.
  * Ontbreekt het taaknummer, dan telt de regel wel (één projectkaartwaarde).
  * Contract_Invoiced_Price wordt niet gelezen.
@@ -501,4 +507,28 @@ function finance_contract_total_price_amount(array $row, string $projectTotaalTa
     }
 
     return finance_to_float($row[FINANCE_CONTRACT_TOTAL_PRICE_FIELD]);
+}
+
+/**
+ * Herkent een OData-schemafout (veld/entity bestaat niet in de webservice).
+ * Zo'n fout geldt voor elke batch en elk project; opnieuw proberen per project
+ * levert alleen tientallen identieke meldingen op (ticket #1170).
+ */
+function finance_is_odata_schema_error(string $message): bool
+{
+    return preg_match(
+        "/Could not find a property named|Could not find a (?:segment|type|navigation property)|The query specified in the URI is not valid|Resource not found for the segment|Kan geen eigenschap met de naam/i",
+        $message
+    ) === 1;
+}
+
+/**
+ * Haalt de per verzoek verschillende CorrelationId uit een BC-foutmelding,
+ * zodat identieke fouten als één melding getoond worden.
+ */
+function finance_strip_odata_correlation_id(string $message): string
+{
+    $message = (string) preg_replace('/\s*CorrelationId:\s*[0-9a-f-]+\.?/i', '', $message);
+
+    return trim((string) preg_replace('/\s+/', ' ', $message));
 }
