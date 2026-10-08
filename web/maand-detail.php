@@ -1,7 +1,6 @@
 <?php
-ini_set('display_errors', 1);
-ini_set('display_startup_errors', 1);
-error_reporting(E_ALL);
+require_once __DIR__ . '/json_guard.php';
+argus_configure_error_display();
 
 /**
  * Includes/requires
@@ -196,6 +195,11 @@ if (!preg_match('/^\d{4}-\d{2}$/', $yearMonth)) {
 }
 
 // --- AJAX: save user settings (column order)
+// Losse output (bijv. sessie-warnings) mag nooit vóór de JSON belanden.
+if (argus_is_json_request()) {
+    argus_json_discard_preamble();
+}
+
 if (($_GET['action'] ?? '') === 'save_user_settings') {
     header('Content-Type: application/json; charset=utf-8');
     $raw = file_get_contents('php://input');

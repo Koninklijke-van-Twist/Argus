@@ -54,3 +54,10 @@ if (!is_trusted_requester()) {
         }
     }
 }
+
+// Sessie nooit langer openhouden dan nodig: lange (chunk)verzoeken mogen het
+// Redis-sessielock niet vasthouden. login/lib.php sluit hem normaal al; dit is
+// een vangnet voor als de sessie hier toch nog open staat.
+if (session_status() === PHP_SESSION_ACTIVE) {
+    session_write_close();
+}

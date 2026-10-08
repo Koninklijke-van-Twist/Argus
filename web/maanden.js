@@ -356,7 +356,7 @@
         }
     }
 
-    function toast (message, isError)
+    function toast (message, isError, reportContext)
     {
         if (!toastContainer)
         {
@@ -375,39 +375,102 @@
 
         if (isError)
         {
+            const occurredAt = Date.now();
             const previewLine = text.split(/\r?\n/, 1)[0] || 'Onbekende fout';
-            const hint = document.createElement('div');
+
+            const header = document.createElement('div');
+            header.className = 'toast-header';
+
+            const hint = document.createElement('button');
+            hint.type = 'button';
             hint.className = 'toast-hint';
             hint.textContent = 'Klik om volledige foutmelding te tonen';
+            hint.setAttribute('aria-expanded', 'false');
+
+            const closeBtn = document.createElement('button');
+            closeBtn.type = 'button';
+            closeBtn.className = 'toast-close';
+            closeBtn.setAttribute('aria-label', 'Sluiten');
+            closeBtn.title = 'Sluiten';
+            closeBtn.textContent = '×';
+
+            header.appendChild(hint);
+            header.appendChild(closeBtn);
 
             const preview = document.createElement('div');
             preview.className = 'toast-preview';
             preview.textContent = previewLine;
 
-            const details = document.createElement('div');
+            // Details zijn selecteerbaar; klikken erin klapt de melding niet meer dicht.
+            const details = document.createElement('pre');
             details.className = 'toast-details';
             details.textContent = text;
 
-            el.appendChild(hint);
+            const actions = document.createElement('div');
+            actions.className = 'toast-actions';
+
+            const copyBtn = document.createElement('button');
+            copyBtn.type = 'button';
+            copyBtn.className = 'toast-action';
+            copyBtn.textContent = 'Kopiëren';
+
+            const reportBtn = document.createElement('button');
+            reportBtn.type = 'button';
+            reportBtn.className = 'toast-action toast-action-primary';
+            reportBtn.textContent = 'Rapporteer aan ICT';
+
+            actions.appendChild(copyBtn);
+            if (window.KvtIctReport)
+            {
+                actions.appendChild(reportBtn);
+            }
+
+            const status = document.createElement('div');
+            status.className = 'toast-status';
+            status.hidden = true;
+
+            el.appendChild(header);
             el.appendChild(preview);
             el.appendChild(details);
-            el.setAttribute('role', 'button');
-            el.setAttribute('tabindex', '0');
-            el.setAttribute('aria-expanded', 'false');
-            el.addEventListener('click', function ()
+            el.appendChild(actions);
+            el.appendChild(status);
+
+            function toggleExpanded ()
             {
                 const isExpanded = el.classList.toggle('is-expanded');
-                el.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
-            });
-            el.addEventListener('keydown', function (event)
-            {
-                if (event.key !== 'Enter' && event.key !== ' ')
-                {
-                    return;
-                }
+                hint.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
+                hint.textContent = isExpanded ? 'Klik om foutmelding in te klappen' : 'Klik om volledige foutmelding te tonen';
+            }
 
-                event.preventDefault();
-                el.click();
+            hint.addEventListener('click', toggleExpanded);
+            preview.addEventListener('click', toggleExpanded);
+            closeBtn.addEventListener('click', function () { el.remove(); });
+
+            copyBtn.addEventListener('click', function ()
+            {
+                const copy = window.KvtIctReport ? window.KvtIctReport.copyText : function (t) { return navigator.clipboard.writeText(t); };
+                copy(text).then(function ()
+                {
+                    copyBtn.textContent = 'Gekopieerd ✓';
+                    window.setTimeout(function () { copyBtn.textContent = 'Kopiëren'; }, 2000);
+                }).catch(function ()
+                {
+                    if (!el.classList.contains('is-expanded')) { toggleExpanded(); }
+                    const range = document.createRange();
+                    range.selectNodeContents(details);
+                    const selection = window.getSelection();
+                    selection.removeAllRanges();
+                    selection.addRange(range);
+                    copyBtn.textContent = 'Geselecteerd — Ctrl+C';
+                });
+            });
+
+            reportBtn.addEventListener('click', function ()
+            {
+                const ctx = Object.assign({}, reportContext || {});
+                ctx.message = text;
+                ctx.occurred_at = occurredAt;
+                window.KvtIctReport.report(ctx, status, reportBtn);
             });
         }
         else
@@ -427,6 +490,45 @@
             el.classList.add('fade-out');
             window.setTimeout(function () { el.remove(); }, 450);
         }, 3500);
+    }
+
+    /**
+     * Context voor "Rapporteer aan ICT": maand, stap en (indien bekend) HTTP-details.
+     */
+    function errorContext (ym, stepLabel, err)
+    {
+        const ctx = { month: ym ? formatMonth(ym) : '', step: stepLabel || '' };
+        if (err && err.httpStatus !== undefined)
+        {
+            ctx.http_status = String(err.httpStatus) + (err.httpStatusText ? ' ' + err.httpStatusText : '');
+        }
+        if (err && err.responseText)
+        {
+            ctx.response_text = err.responseText;
+        }
+        return ctx;
+    }
+
+    /**
+     * fetch + parse; bij ongeldige JSON (bijv. warnings vóór de JSON) één keer opnieuw.
+     * Alleen gebruiken voor idempotente verzoeken (zoals een kolom-chunk: die wordt
+     * per project overschreven, dus nogmaals uitvoeren is veilig).
+     */
+    function fetchJsonWithRetry (url, options)
+    {
+        return fetch(url, options)
+            .then(parseFetchResponse)
+            .catch(function (err)
+            {
+                if (!err || !err.invalidJson)
+                {
+                    throw err;
+                }
+
+                return new Promise(function (resolve) { window.setTimeout(resolve, 750); })
+                    .then(function () { return fetch(url, options); })
+                    .then(parseFetchResponse);
+            });
     }
 
     function parseFetchResponse (res)
@@ -458,6 +560,7 @@
             error.responseText = bodyText;
             error.httpStatus = res.status;
             error.httpStatusText = res.statusText;
+            error.invalidJson = true;
             throw error;
         });
     }
@@ -868,13 +971,13 @@
                     if (!json.ok)
                     {
                         hideLoader();
-                        toast('Fout bij voorcalculatie voor ' + formatMonth(ym) + ': ' + (json.error || 'Onbekende fout'), true);
+                        toast('Fout bij voorcalculatie voor ' + formatMonth(ym) + ': ' + (json.error || 'Onbekende fout'), true, errorContext(ym, 'Voorcalculatie'));
                         return;
                     }
 
                     if (json.warning)
                     {
-                        toast('Waarschuwing voorcalculatie (' + formatMonth(ym) + '): ' + json.warning, true);
+                        toast('Waarschuwing voorcalculatie (' + formatMonth(ym) + '): ' + json.warning, true, errorContext(ym, 'Voorcalculatie'));
                     }
 
                     markProgressDone(progressState, progressKey);
@@ -884,7 +987,7 @@
                 .catch(function (err)
                 {
                     hideLoader();
-                    toast('Netwerkfout bij voorcalculatie voor ' + formatMonth(ym) + ': ' + err.message, true);
+                    toast('Netwerkfout bij voorcalculatie voor ' + formatMonth(ym) + ': ' + err.message, true, errorContext(ym, 'Voorcalculatie', err));
                 });
         }
 
@@ -927,20 +1030,23 @@
                 body.set('chunk_index', String(chunkIndex));
             }
 
-            fetch(columnBatchUrl, { method: 'POST', body: body })
-                .then(parseFetchResponse)
+            const stepLabel = step.label + (isProjectDetails && projectDetailsTotalChunks > 1
+                ? ' (deel ' + (chunkIndex + 1) + ' van ' + projectDetailsTotalChunks + ')'
+                : '');
+
+            fetchJsonWithRetry(columnBatchUrl, { method: 'POST', body: body })
                 .then(function (json)
                 {
                     if (!json.ok)
                     {
                         hideLoader();
-                        toast('Fout bij ' + step.label.toLowerCase() + ' voor ' + formatMonth(ym) + ': ' + (json.error || 'Onbekende fout'), true);
+                        toast('Fout bij ' + step.label.toLowerCase() + ' voor ' + formatMonth(ym) + ': ' + (json.error || 'Onbekende fout'), true, errorContext(ym, stepLabel));
                         return;
                     }
 
                     if (json.warning)
                     {
-                        toast('Waarschuwing ' + step.label + ' (' + formatMonth(ym) + '): ' + json.warning, true);
+                        toast('Waarschuwing ' + step.label + ' (' + formatMonth(ym) + '): ' + json.warning, true, errorContext(ym, stepLabel));
                     }
 
                     if (isProjectDetails)
@@ -977,7 +1083,7 @@
                 .catch(function (err)
                 {
                     hideLoader();
-                    toast('Netwerkfout bij ' + step.label.toLowerCase() + ' voor ' + formatMonth(ym) + ': ' + err.message, true);
+                    toast('Netwerkfout bij ' + step.label.toLowerCase() + ' voor ' + formatMonth(ym) + ': ' + err.message, true, errorContext(ym, stepLabel, err));
                 });
         }
 
@@ -991,7 +1097,7 @@
                     hideLoader();
                     if (!json.ok)
                     {
-                        toast('Fout: ' + (json.error || 'Onbekende fout'), true);
+                        toast('Fout: ' + (json.error || 'Onbekende fout'), true, errorContext(ym, 'Snapshot opbouwen'));
                         return;
                     }
                     const data = json.data || {};
@@ -1004,7 +1110,7 @@
                 .catch(function (err)
                 {
                     hideLoader();
-                    toast('Netwerkfout: ' + err.message, true);
+                    toast('Netwerkfout: ' + err.message, true, errorContext(ym, 'Snapshot opbouwen', err));
                 });
         }
 
@@ -1024,7 +1130,7 @@
                 if (!json.ok)
                 {
                     hideLoader();
-                    toast('Fout bij verwijderen van ' + formatMonth(ym) + ': ' + (json.error || 'Onbekende fout'), true);
+                    toast('Fout bij verwijderen van ' + formatMonth(ym) + ': ' + (json.error || 'Onbekende fout'), true, errorContext(ym, 'Maand verwijderen'));
                     return;
                 }
 
@@ -1036,7 +1142,7 @@
             .catch(function (err)
             {
                 hideLoader();
-                toast('Netwerkfout bij verwijderen van ' + formatMonth(ym) + ': ' + err.message, true);
+                toast('Netwerkfout bij verwijderen van ' + formatMonth(ym) + ': ' + err.message, true, errorContext(ym, 'Maand verwijderen', err));
             });
     }
 
