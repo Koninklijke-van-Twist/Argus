@@ -65,6 +65,15 @@ class ProjectFinanceService
 
         // Bepaal environment
         $environmentToUse = trim($environment);
+        if ($environmentToUse === '' && $this->company !== '' && function_exists('auth_get_environment_for_company')) {
+            // Environment volgt het bedrijf (KVT/HVT -> kvtmdlive_aad, KVT Germany -> kvtgermanylive_aad),
+            // nooit de volgorde van $auth_list.
+            try {
+                $environmentToUse = trim(auth_get_environment_for_company($this->company, 300));
+            } catch (Throwable $ignored) {
+                $environmentToUse = '';
+            }
+        }
         if ($environmentToUse === '') {
             $environmentToUse = auth_get_primary_environment();
         }
@@ -116,7 +125,8 @@ class ProjectFinanceService
             // Voorcalculatie (statisch, huidige BC-stand):
             // - kosten: ProjectTaken.LVS_Baseline_Total_Cost voor Job_Task_No '000' (Project TOTAAL / basislijn)
             // - opbrengst VC: ProjectTaken.LVS_Schedule_Total_Price_2 voor Job_Task_No '000' (schedule/budget)
-            // - opbrengst t/m periode: ProjectTaken.Contract_Total_Price voor Job_Task_No '000'
+            // - opbrengst t/m periode: ProjectTaken.LVS_Contract_Total_Price_2 voor Job_Task_No '000'
+            //   (ProjectTaken heeft géén Contract_Total_Price; dat veld bestaat alleen op JobTaskLines)
             //   (zelfde ProjectTaken-fetch als opbrengst VC; niet Contract_Invoiced_Price, niet G/L 899901)
             //   Opbrengst (aanneemsom) en opbrengst meerwerk blijven FactureerbareProjectPlanningsRegels G/L 800000
             //   en horen niet in Opbrengst VC. Opbrengst telt leeg én gevuld subordernr.;
@@ -534,7 +544,7 @@ class ProjectFinanceService
      *
      * Kosten: ProjectTaken.LVS_Baseline_Total_Cost (Job_Task_No 000 / Project TOTAAL).
      * Opbrengst VC: ProjectTaken.LVS_Schedule_Total_Price_2 (Job_Task_No 000 / schedule-prijs).
-     * Opbrengst t/m periode: ProjectTaken.Contract_Total_Price (Job_Task_No 000), zelfde fetch.
+     * Opbrengst t/m periode: ProjectTaken.LVS_Contract_Total_Price_2 (Job_Task_No 000), zelfde fetch.
      * Opbrengst/aanneemsom en opbrengst meerwerk: FactureerbareProjectPlanningsRegels, G/L 800000, factureerbaar.
      * Opbrengst telt regels met leeg én gevuld LVS_Job_Change_Order_No.
      * Meerwerk is alleen het deel met gevuld subordernr. en blijft in de opbrengst zitten.
@@ -820,7 +830,7 @@ class ProjectFinanceService
      * Niet LVS_Baseline_Total_Price, niet de aanneemsom (G/L 800000 / Line_Amount_LCY)
      * en niet de som van factureerbare planningsregels.
      *
-     * Opbrengst t/m periode: Contract_Total_Price van dezelfde taak 000.
+     * Opbrengst t/m periode: LVS_Contract_Total_Price_2 (contracttotaal) van dezelfde taak 000.
      * Niet Contract_Invoiced_Price en niet Grootboekposten_OHW G/L 899901.
      * Nulbedragen worden overgeslagen; de kolom blijft dan 0 zonder breakdownregel.
      *
@@ -1034,6 +1044,10 @@ class ProjectFinanceService
             if (is_string($chunkResult['warning']) && $chunkResult['warning'] !== '') {
                 $warnings[] = $chunkResult['warning'];
             }
+            if (!empty($chunkResult['fatal'])) {
+                // Schemafout (veld bestaat niet): geldt voor alle batches. Eén melding, niet per project.
+                break;
+            }
         }
 
         return [
@@ -1064,6 +1078,15 @@ class ProjectFinanceService
                 'warning' => null,
             ];
         } catch (Throwable $loadError) {
+            if (finance_is_odata_schema_error(self::summarizeOdataThrowable($loadError))) {
+                return [
+                    'rows' => [],
+                    'warning' => self::formatForecastLoadError($errorPrefix, $loadError)
+                        . ' (geldt voor alle projecten; niet per project opnieuw geprobeerd)',
+                    'fatal' => true,
+                ];
+            }
+
             if (count($chunk) <= 1) {
                 return [
                     'rows' => [],
@@ -1080,6 +1103,9 @@ class ProjectFinanceService
                 }
                 if (is_string($singleResult['warning']) && $singleResult['warning'] !== '') {
                     $failedCount++;
+                }
+                if (!empty($singleResult['fatal'])) {
+                    return array_merge($singleResult, ['rows' => $rows]);
                 }
             }
 
@@ -1148,7 +1174,7 @@ class ProjectFinanceService
             $depth++;
         }
 
-        $best = trim((string) preg_replace('/\s+/', ' ', $best));
+        $best = finance_strip_odata_correlation_id($best);
         if (strlen($best) > 280) {
             return substr($best, 0, 277) . '...';
         }
@@ -1719,7 +1745,8 @@ class ProjectFinanceService
             return false;
         }
 
-        return str_contains($normalized, 'billable');
+        // Engelse én Nederlandse BC-captions: Billable / Factureerbaar, Both Budget and Billable / Budget en factureerbaar.
+        return str_contains($normalized, 'billable') || str_contains($normalized, 'factureer');
     }
 
     /**
