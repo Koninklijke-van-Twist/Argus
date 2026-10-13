@@ -40,7 +40,7 @@ function maand_cache_path(string $company, string $yearMonth): string
 {
     $safeCompany = preg_replace('/[^a-z0-9_-]/i', '_', strtolower(trim($company)));
     $safeYM = preg_replace('/[^0-9-]/', '', $yearMonth);
-    return maanden_cache_dir() . DIRECTORY_SEPARATOR . $safeCompany . '_' . $safeYM . '.json';
+    return maanden_cache_dir() . DIRECTORY_SEPARATOR . $safeCompany . '_' . $safeYM . argus_month_cache_suffix();
 }
 
 function maand_load(string $company, string $yearMonth): ?array
@@ -54,7 +54,11 @@ function maand_load(string $company, string $yearMonth): ?array
         return null;
     }
     $data = json_decode($raw, true);
-    return is_array($data) ? $data : null;
+    if (!is_array($data) || !argus_month_cache_is_current($data)) {
+        return null;
+    }
+
+    return $data;
 }
 
 function maand_save(string $company, string $yearMonth, array $data): bool
@@ -95,11 +99,15 @@ function list_saved_months(string $company): array
         if (!str_starts_with($entry, $prefix)) {
             continue;
         }
-        if (!str_ends_with($entry, '.json')) {
+        $suffix = argus_month_cache_suffix();
+        if (!str_ends_with($entry, $suffix)) {
             continue;
         }
-        $ym = substr($entry, strlen($prefix), -5); // remove prefix and .json
+        $ym = substr($entry, strlen($prefix), -strlen($suffix));
         if (!preg_match('/^\d{4}-\d{2}$/', $ym)) {
+            continue;
+        }
+        if (!is_array(maand_load($company, $ym))) {
             continue;
         }
         $months[] = $ym;
@@ -535,7 +543,7 @@ function batch_wip_path(string $company, string $targetYearMonth): string
 {
     $safeCompany = preg_replace('/[^a-z0-9_-]/i', '_', strtolower(trim($company)));
     $safeYM = preg_replace('/[^0-9-]/', '', $targetYearMonth);
-    return maanden_cache_dir() . DIRECTORY_SEPARATOR . $safeCompany . '_wip_' . $safeYM . '.json';
+    return maanden_cache_dir() . DIRECTORY_SEPARATOR . $safeCompany . '_wip_' . $safeYM . argus_month_cache_suffix();
 }
 
 function batch_wip_load(string $company, string $targetYearMonth): array
@@ -546,11 +554,16 @@ function batch_wip_load(string $company, string $targetYearMonth): array
     }
     $raw = @file_get_contents($path);
     $data = is_string($raw) ? json_decode($raw, true) : null;
-    return is_array($data) ? $data : [];
+    if (!is_array($data) || !argus_month_cache_is_current($data)) {
+        return [];
+    }
+
+    return $data;
 }
 
 function batch_wip_save(string $company, string $targetYearMonth, array $data): void
 {
+    $data['cache_version'] = ARGUS_MONTH_CACHE_VERSION;
     $path = batch_wip_path($company, $targetYearMonth);
     $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if (is_string($json)) {
@@ -686,15 +699,112 @@ function maanden_wip_project_numbers_from_ohw(array $wip): array
 }
 
 /**
- * Vult project_numbers in WIP vanuit OHW en retourneert de lijst.
+ * Vult project_numbers in WIP vanuit OHW plus open projectkaarten en retourneert de lijst.
+ * Open projecten zonder OHW-post blijven in de lijst; hun OHW-bedragen blijven 0.
  */
 function maanden_wip_sync_project_numbers_from_ohw(array &$wip): array
 {
-    $projectNumbers = maanden_wip_project_numbers_from_ohw($wip);
+    $ohwNumbers = maanden_wip_project_numbers_from_ohw($wip);
+    $openNumbers = is_array($wip['open_project_numbers'] ?? null) ? $wip['open_project_numbers'] : [];
+    $projectNumbers = bc_fetch_union_project_numbers($ohwNumbers, $openNumbers);
     $wip['project_numbers'] = $projectNumbers;
     $wip['planning_project_numbers'] = $projectNumbers;
 
     return $projectNumbers;
+}
+
+/**
+ * Zet de ene Projecten-query voor open projecten in de detailkolom,
+ * zodat die kaarten niet nog eens per project worden opgehaald.
+ */
+function maanden_seed_open_project_details(array &$columnDataTarget, array $wip): void
+{
+    $rows = is_array($wip['open_project_rows'] ?? null) ? $wip['open_project_rows'] : [];
+    if ($rows === []) {
+        return;
+    }
+
+    $existing = is_array($columnDataTarget['project_details'] ?? null)
+        ? $columnDataTarget['project_details']
+        : ['column' => 'project_details', 'by_project' => []];
+    if (!isset($existing['by_project']) || !is_array($existing['by_project'])) {
+        $existing['by_project'] = [];
+    }
+
+    foreach ($rows as $norm => $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+
+        $key = is_string($norm) ? $norm : '';
+        if ($key === '') {
+            continue;
+        }
+
+        $current = $existing['by_project'][$key]['row'] ?? null;
+        if (is_array($current) && $current !== []) {
+            continue;
+        }
+
+        $existing['by_project'][$key] = ['row' => $row];
+    }
+
+    $columnDataTarget['project_details'] = $existing;
+}
+
+/**
+ * Projectnummers die nog geen projectkaart in de detailkolom hebben.
+ *
+ * @param array<int,mixed> $projectNumbers
+ * @return array<int,string>
+ */
+function maanden_project_numbers_missing_details(array $projectNumbers, array $columnDataTarget): array
+{
+    $details = is_array($columnDataTarget['project_details']['by_project'] ?? null)
+        ? $columnDataTarget['project_details']['by_project']
+        : [];
+    $missing = [];
+    foreach ($projectNumbers as $projectNo) {
+        $projectNoText = trim((string) $projectNo);
+        if ($projectNoText === '') {
+            continue;
+        }
+
+        $row = $details[bc_fetch_normalize_project_no($projectNoText)]['row'] ?? null;
+        if (is_array($row) && $row !== []) {
+            continue;
+        }
+
+        $missing[] = $projectNoText;
+    }
+
+    return $missing;
+}
+
+/**
+ * @param array<int,mixed> $warnings
+ */
+function maanden_join_warnings(array $warnings): ?string
+{
+    $clean = [];
+    foreach ($warnings as $warning) {
+        if (!is_string($warning)) {
+            continue;
+        }
+
+        $warning = trim($warning);
+        if ($warning === '' || in_array($warning, $clean, true)) {
+            continue;
+        }
+
+        $clean[] = $warning;
+    }
+
+    if ($clean === []) {
+        return null;
+    }
+
+    return implode(' | ', $clean);
 }
 
 /**
@@ -766,16 +876,16 @@ function build_month_rows(
             'Cost_Center' => (string) ($proj['LVS_Global_Dimension_1_Code'] ?? ''),
             'Project_Actual_Costs' => (float) ($projectTotals['costs'] ?? 0.0),
             'Project_Actual_Costs_To_Date' => 0.0,
-            // Actueel contracttotaal (ProjectTaken taak 000), niet OHW G/L 899901.
-            'Project_Total_Revenue' => (float) ($planningTotals['contract_total_price'] ?? 0.0),
+            // Som van planningsregels met No 800000, niet het contracttotaal en niet OHW.
+            'Project_Total_Revenue' => (float) ($planningTotals['aanneemsom'] ?? 0.0),
             'Expected_Revenue' => (float) ($planningTotals['expected_revenue'] ?? 0),
             'Expected_Costs_VC' => (float) ($planningTotals['expected_costs'] ?? 0),
             'Extra_Work' => (float) ($planningTotals['extra_work'] ?? 0),
             'Aanneemsom' => (float) ($planningTotals['aanneemsom'] ?? 0),
             'Breakdown' => [
                 'total_costs_lines' => [],
-                'total_revenue_lines' => is_array($planningBreakdown['contract_total_price_lines'] ?? null)
-                    ? $planningBreakdown['contract_total_price_lines']
+                'total_revenue_lines' => is_array($planningBreakdown['aanneemsom_lines'] ?? null)
+                    ? $planningBreakdown['aanneemsom_lines']
                     : [],
                 'expected_revenue_lines' => is_array($planningBreakdown['expected_revenue_lines'] ?? null) ? $planningBreakdown['expected_revenue_lines'] : [],
                 'expected_costs_lines' => is_array($planningBreakdown['expected_costs_lines'] ?? null) ? $planningBreakdown['expected_costs_lines'] : [],
@@ -815,6 +925,7 @@ function build_month_rows(
         'year_month' => $yearMonth,
         'data_start_month' => data_start_month_for_target($yearMonth),
         'company' => $company,
+        'cache_version' => ARGUS_MONTH_CACHE_VERSION,
         'fetched_at' => gmdate('c'),
         'total_revenue' => $totalRevenue,
         'total_costs' => $totalCosts,
@@ -858,12 +969,28 @@ function fetch_month_data(string $company, string $yearMonth, array $auth): arra
         }
     }
 
+    $openProjects = bc_fetch_open_projects($company, $auth, odata_ttl_for_month($yearMonth));
+    $projectNumbers = bc_fetch_union_project_numbers($projectNumbers, $openProjects['numbers']);
+
     $environmentForCompany = auth_get_environment_for_company($company, 300);
     $financeService = new ProjectFinanceService($company, $environmentForCompany);
 
-    // Fetch project details in chunks
+    // Open projectkaarten komen uit die ene query. Alleen ontbrekende nummers nog chunk-gewijs.
     $projectDetails = [];
-    $projectChunks = array_chunk(array_unique($projectNumbers), 20);
+    foreach ($openProjects['rows_by_norm'] as $norm => $openRow) {
+        if (is_string($norm) && $norm !== '' && is_array($openRow)) {
+            $projectDetails[$norm] = $openRow;
+        }
+    }
+    $missingProjectNumbers = [];
+    foreach ($projectNumbers as $projectNo) {
+        $norm = strtolower(trim((string) $projectNo));
+        if ($norm === '' || isset($projectDetails[$norm])) {
+            continue;
+        }
+        $missingProjectNumbers[] = $projectNo;
+    }
+    $projectChunks = array_chunk($missingProjectNumbers, 20);
 
     foreach ($projectChunks as $chunk) {
         $filterParts = array_map(fn($no) => "No eq '" . str_replace("'", "''", $no) . "'", $chunk);
@@ -918,8 +1045,13 @@ function fetch_month_data(string $company, string $yearMonth, array $auth): arra
         'loader_mode' => 'grootboekposten_ohw',
         'rows_total' => count($ohwRows),
         'projects_from_ohw' => count($ppProjectNumbers),
+        'open_project_count' => count($openProjects['numbers']),
         'snapshot_bounds' => bc_fetch_snapshot_ohw_bounds($yearMonth),
     ];
+    $openWarning = $openProjects['warning'] ?? null;
+    if (is_string($openWarning) && trim($openWarning) !== '') {
+        $result['warning'] = $openWarning;
+    }
 
     // Clean up WIP cache now that the full snapshot is built
     batch_wip_delete($company, $yearMonth);
@@ -1026,8 +1158,8 @@ function build_snapshot_from_column_wip(string $company, string $targetYm, array
         $planningForProject = is_array($planningBreakdownByJob[$normProjectNo] ?? null)
             ? $planningBreakdownByJob[$normProjectNo]
             : [];
-        $breakdown['total_revenue_lines'] = is_array($planningForProject['contract_total_price_lines'] ?? null)
-            ? $planningForProject['contract_total_price_lines']
+        $breakdown['total_revenue_lines'] = is_array($planningForProject['aanneemsom_lines'] ?? null)
+            ? $planningForProject['aanneemsom_lines']
             : [];
 
         $projectBreakdowns[$normProjectNo] = $breakdown;
@@ -1058,8 +1190,8 @@ function build_snapshot_from_column_wip(string $company, string $targetYm, array
                 continue;
             }
 
-            // Afd. blijft uit OHW-regels. total_revenue_lines is nu het contracttotaal
-            // en heeft geen Global_Dimension_1_Code.
+            // Afd. van OHW-regels wint van de projectkaart. Zonder OHW-post blijft
+            // LVS_Global_Dimension_1_Code van Projecten staan. OHW-bedragen blijven dan 0.
             $departmentCode = bc_fetch_primary_department_from_breakdown([
                 'total_costs_lines' => is_array($ohwCostLinesByProject[$normProjectNo] ?? null)
                     ? $ohwCostLinesByProject[$normProjectNo]
@@ -1291,9 +1423,16 @@ if (($_GET['action'] ?? '') === 'fetch_column_batch') {
             $columnResult = bc_fetch_run_column($columnKey, $company, $targetYm, [], $auth, $ttl);
             $columnDataTarget[$columnKey] = $columnResult;
             $wip['column_data_target'] = $columnDataTarget;
+            $openProjects = bc_fetch_open_projects($company, $auth, $ttl);
+            $wip['open_project_numbers'] = $openProjects['numbers'];
+            $wip['open_project_rows'] = $openProjects['rows_by_norm'];
             maanden_wip_sync_project_numbers_from_ohw($wip);
             $response['project_count'] = count(wip_project_numbers($wip));
-            $response['warning'] = $columnResult['warning'] ?? null;
+            $response['open_project_count'] = count($openProjects['numbers']);
+            $response['warning'] = maanden_join_warnings([
+                $columnResult['warning'] ?? null,
+                $openProjects['warning'] ?? null,
+            ]);
         } elseif ($columnKey === 'project_details') {
             $allProjectNumbers = wip_project_numbers($wip);
             if ($allProjectNumbers === []) {
@@ -1301,15 +1440,19 @@ if (($_GET['action'] ?? '') === 'fetch_column_batch') {
                 $allProjectNumbers = wip_project_numbers($wip);
             }
 
-            $projectChunks = array_chunk($allProjectNumbers, PROJECT_DETAILS_FETCH_CHUNK_SIZE);
+            maanden_seed_open_project_details($columnDataTarget, $wip);
+            $missingProjectNumbers = maanden_project_numbers_missing_details($allProjectNumbers, $columnDataTarget);
+            $projectChunks = array_chunk($missingProjectNumbers, PROJECT_DETAILS_FETCH_CHUNK_SIZE);
             $totalChunks = max(1, count($projectChunks));
             $response['total_chunks'] = $totalChunks;
 
-            if ($allProjectNumbers === []) {
-                $columnDataTarget[$columnKey] = [
-                    'column' => 'project_details',
-                    'by_project' => [],
-                ];
+            if ($missingProjectNumbers === []) {
+                if (!isset($columnDataTarget[$columnKey]) || !is_array($columnDataTarget[$columnKey])) {
+                    $columnDataTarget[$columnKey] = [
+                        'column' => 'project_details',
+                        'by_project' => [],
+                    ];
+                }
                 $response['chunks_complete'] = true;
             } else {
                 if ($chunkIndex >= $totalChunks) {
@@ -1394,6 +1537,8 @@ if (($_GET['action'] ?? '') === 'fetch_sub_collect') {
             }
         }
 
+        $openNumbers = is_array($wip['open_project_numbers'] ?? null) ? $wip['open_project_numbers'] : [];
+        $projectNumbers = bc_fetch_union_project_numbers($projectNumbers, $openNumbers);
         $wip['project_numbers'] = $projectNumbers;
         $wip['project_finance'] = [
             'project_totals_by_job' => is_array($aggregatedFinance['project_totals_by_job'] ?? null)

@@ -168,8 +168,9 @@ function bc_fetch_ohw_job_complete_label($value): string
 /**
  * Grootboekrekeningen voor OHW-kosten en -opbrengst.
  * 899900 voedt Kosten t/m periode. 899901 blijft in de classificatie zodat
- * projecten met alleen opbrengstregels in de snapshot blijven; de kolom
- * Opbrengst t/m leest ProjectTaken.LVS_Contract_Total_Price_2 (taak 000).
+ * projecten met alleen opbrengstregels in de snapshot blijven. De kolom
+ * Opbrengst leest die OHW-regels niet; die somt planningsregels met No 800000.
+ * Projecten zonder OHW-post komen apart uit de open projectkaarten.
  */
 const OHW_GL_ACCOUNT_COSTS = '899900';
 const OHW_GL_ACCOUNT_REVENUE = '899901';

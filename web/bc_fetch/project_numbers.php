@@ -48,3 +48,162 @@ function bc_fetch_project_numbers_for_month(string $company, string $yearMonth, 
 
     return $result;
 }
+
+/**
+ * OData-filter voor open projecten op de projectkaart.
+ * Bedrijf zit in het company-segment van de URL, niet in dit filter.
+ * Afdeling (LVS_Global_Dimension_1_Code) filtert de UI achteraf, net als bij OHW-projecten.
+ */
+function bc_fetch_open_projects_odata_filter(): string
+{
+    return "Status eq 'Open'";
+}
+
+/**
+ * Reserve-filter als Status op Projecten niet filterbaar is.
+ * Zelfde "open"-betekenis als de documentstatus in het maandoverzicht.
+ */
+function bc_fetch_open_projects_document_status_filter(): string
+{
+    return "LVS_Document_Status eq 'Open'";
+}
+
+/**
+ * Bepaalt of een projectkaart open is: BC-status Open, of documentstatus Open.
+ */
+function bc_fetch_project_is_open(array $row): bool
+{
+    $status = strtolower(trim((string) ($row['Status'] ?? '')));
+    if ($status === 'open') {
+        return true;
+    }
+
+    $documentStatus = strtolower(trim((string) ($row['LVS_Document_Status'] ?? '')));
+
+    return $documentStatus === 'open';
+}
+
+/**
+ * Voegt OHW-projectnummers en open projecten samen, zonder dubbelen.
+ *
+ * @param array<int,mixed> $primaryNumbers
+ * @param array<int,mixed> $extraNumbers
+ * @return array<int,string>
+ */
+function bc_fetch_union_project_numbers(array $primaryNumbers, array $extraNumbers): array
+{
+    $result = [];
+    $seen = [];
+    foreach ([$primaryNumbers, $extraNumbers] as $list) {
+        foreach ($list as $projectNo) {
+            $projectNoText = trim((string) $projectNo);
+            if ($projectNoText === '') {
+                continue;
+            }
+
+            $key = bc_fetch_normalize_project_no($projectNoText);
+            if ($key === '' || isset($seen[$key])) {
+                continue;
+            }
+
+            $seen[$key] = true;
+            $result[] = $projectNoText;
+        }
+    }
+
+    return $result;
+}
+
+/**
+ * Haalt alle open projecten van één bedrijf in één Projecten-query op.
+ * Geen query per project. Mislukt Status, dan één keer documentstatus Open.
+ *
+ * @return array{numbers:array<int,string>,rows_by_norm:array<string,array<string,mixed>>,warning:?string}
+ */
+function bc_fetch_open_projects(string $company, array $auth, int $ttl): array
+{
+    $empty = ['numbers' => [], 'rows_by_norm' => [], 'warning' => null];
+    $company = trim($company);
+    if ($company === '') {
+        return $empty;
+    }
+
+    $auth = auth_get_auth_for_environment(auth_get_environment_for_company($company, 300));
+    $environment = auth_get_environment_for_company($company, 300);
+    $select = 'No,Description,Bill_to_Customer_No,Bill_to_Name,Person_Responsible,Project_Manager,LVS_Global_Dimension_1_Code,LVS_Document_Status,Percent_Completed,Status,KVT_Reason_Code';
+    $attempts = [
+        ['select' => $select, 'filter' => bc_fetch_open_projects_odata_filter()],
+        [
+            'select' => str_replace(',Status', '', $select),
+            'filter' => bc_fetch_open_projects_document_status_filter(),
+        ],
+    ];
+
+    $lastError = null;
+    foreach ($attempts as $index => $attempt) {
+        try {
+            $url = company_entity_url_with_query(
+                $GLOBALS['baseUrl'],
+                $environment,
+                $company,
+                'Projecten',
+                [
+                    '$select' => $attempt['select'],
+                    '$filter' => $attempt['filter'],
+                ]
+            );
+            $rows = odata_get_all($url, $auth, $ttl);
+            $parsed = bc_fetch_parse_open_project_rows(is_array($rows) ? $rows : []);
+
+            return [
+                'numbers' => $parsed['numbers'],
+                'rows_by_norm' => $parsed['rows_by_norm'],
+                'warning' => null,
+            ];
+        } catch (Throwable $error) {
+            $lastError = $error;
+            if ($index === 0) {
+                continue;
+            }
+        }
+    }
+
+    return [
+        'numbers' => [],
+        'rows_by_norm' => [],
+        'warning' => 'Open projecten ophalen mislukt (Projecten): ' . ($lastError instanceof Throwable ? $lastError->getMessage() : 'onbekende fout'),
+    ];
+}
+
+/**
+ * @param array<int,mixed> $rows
+ * @return array{numbers:array<int,string>,rows_by_norm:array<string,array<string,mixed>>}
+ */
+function bc_fetch_parse_open_project_rows(array $rows): array
+{
+    $numbers = [];
+    $rowsByNorm = [];
+    foreach ($rows as $row) {
+        if (!is_array($row) || !bc_fetch_project_is_open($row)) {
+            continue;
+        }
+
+        $projectNo = trim((string) ($row['No'] ?? ''));
+        if ($projectNo === '') {
+            continue;
+        }
+
+        $norm = bc_fetch_normalize_project_no($projectNo);
+        if ($norm === '' || isset($rowsByNorm[$norm])) {
+            continue;
+        }
+
+        $numbers[] = $projectNo;
+        $rowsByNorm[$norm] = $row;
+    }
+
+    return [
+        'numbers' => $numbers,
+        'rows_by_norm' => $rowsByNorm,
+    ];
+}

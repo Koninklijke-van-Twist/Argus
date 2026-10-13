@@ -23,8 +23,8 @@ const FINANCE_REVENUE_GL_ACCOUNT_TYPE_ALIASES = [
 const FINANCE_OPBRENGST_VC_FIELD = 'LVS_Schedule_Total_Price_2';
 
 /**
- * Opbrengst t/m periode (maand-detail total_revenue) op de project-totaalregel.
- * Contracttotaal; niet Contract_Invoiced_Price en niet de OHW-mutatie op G/L 899901.
+ * Historisch veld op ProjectTaken. De kolom Opbrengst leest dit niet meer:
+ * die somt planningsregels met No 800000. Niet Contract_Invoiced_Price en niet G/L 899901.
  *
  * ProjectTaken publiceert géén Contract_Total_Price (alleen JobTaskLines e.d. doen dat);
  * het contracttotaal staat op ProjectTaken als LVS_Contract_Total_Price_2. Live
@@ -33,6 +33,22 @@ const FINANCE_OPBRENGST_VC_FIELD = 'LVS_Schedule_Total_Price_2';
  * de bevroren basislijn, geen actueel contract (ticket #1170).
  */
 const FINANCE_CONTRACT_TOTAL_PRICE_FIELD = 'LVS_Contract_Total_Price_2';
+
+/**
+ * Taaknummers voor de voorcalculatie-basislijn (LVS_Baseline_Total_Cost).
+ * Nieuwe projecten hebben taak 000. Oudere SAP-projecten (15xxxx) niet;
+ * die gebruiken 000-000-000 of, als die ook ontbreekt, de som van de detailtaken.
+ */
+const FINANCE_PROJECT_TOTAL_TASK_NO = '000';
+const FINANCE_LEGACY_PROJECT_TOTAL_TASK_NO = '000-000-000';
+const FINANCE_BASELINE_COST_FIELD = 'LVS_Baseline_Total_Cost';
+
+/**
+ * Maandsnapshot-versie. Ongenummerde bestanden (`.json`) zijn versie 1:
+ * Opbrengst uit het contracttotaal, Kosten VC alleen taak 000, alleen OHW-projecten.
+ * Versie 2 bewaart snapshots als `.v2.json` zodat die oude uitkomst niet blijft hangen.
+ */
+const ARGUS_MONTH_CACHE_VERSION = 2;
 
 /**
  * Functies
@@ -375,8 +391,24 @@ function finance_is_cancelled_planning_line(array $row): bool
 }
 
 /**
+ * Bepaalt of Line_Type een prognose/forecast is.
+ * Leeg telt niet als prognose: een regel zonder line type blijft beoordeelbaar op No.
+ */
+function finance_line_type_is_forecast(string $lineType): bool
+{
+    $normalized = strtolower(trim($lineType));
+    if ($normalized === '') {
+        return false;
+    }
+
+    return str_contains($normalized, 'prognose') || str_contains($normalized, 'forecast');
+}
+
+/**
  * Bepaalt of een planningsregel meetelt voor opbrengst of opbrengst meerwerk.
- * Vereist G/L 800000, factureerbaar/billable (geen prognose/forecast) en geen geannuleerde regel.
+ * Zelfde regel als FinRap: G/L-rekening én No 800000, geen prognose en geen geannuleerde regel.
+ * Line_Type factureerbaar is geen eis. Regels staan soms ten onrechte factureerbaar;
+ * een andere rekening die dan meetelt hoort niet in Opbrengst. Budgetregels op 800000 wel.
  * Een gevuld subordernummer maakt de regel meerwerk, maar haalt hem niet uit de opbrengst.
  */
 function finance_is_contract_revenue_planning_line(array $row): bool
@@ -389,12 +421,12 @@ function finance_is_contract_revenue_planning_line(array $row): bool
         return false;
     }
 
-    return finance_is_billable_planning_line_type((string) ($row['Line_Type'] ?? ''));
+    return !finance_line_type_is_forecast((string) ($row['Line_Type'] ?? ''));
 }
 
 /**
  * Berekent kolomwaarde Opbrengst voor één planningsregel.
- * Factureerbare G/L 800000, met leeg én gevuld LVS_Job_Change_Order_No.
+ * G/L 800000, geen prognose, met leeg én gevuld LVS_Job_Change_Order_No.
  * Meerwerk blijft in dit totaal; finance_opbrengst_meerwerk_amount is alleen extra informatie.
  * Q002 in Description zonder subordernummer telt gewoon mee.
  */
@@ -418,7 +450,7 @@ function finance_aanneemsom_amount(array $row): float
 
 /**
  * Berekent kolomwaarde Opbrengst meerwerk voor één planningsregel.
- * Factureerbare G/L 800000-regel waarvan LVS_Job_Change_Order_No gevuld is; som van Line_Amount_LCY.
+ * G/L 800000-regel (geen prognose) waarvan LVS_Job_Change_Order_No gevuld is; som van Line_Amount_LCY.
  * Q002 alleen in Description telt niet als meerwerk.
  */
 function finance_opbrengst_meerwerk_amount(array $row): float
@@ -507,6 +539,140 @@ function finance_contract_total_price_amount(array $row, string $projectTotaalTa
     }
 
     return finance_to_float($row[FINANCE_CONTRACT_TOTAL_PRICE_FIELD]);
+}
+
+/**
+ * Bestandssuffix van een maandsnapshot. Oude `.json`-bestanden (versie 1) worden niet gelezen.
+ */
+function argus_month_cache_suffix(): string
+{
+    return '.v' . ARGUS_MONTH_CACHE_VERSION . '.json';
+}
+
+/**
+ * Bepaalt of een geladen maandsnapshot bij de huidige berekening hoort.
+ */
+function argus_month_cache_is_current(array $data): bool
+{
+    return (int) ($data['cache_version'] ?? 0) === ARGUS_MONTH_CACHE_VERSION;
+}
+
+/**
+ * Bepaalt of een projecttaaktype een totaal- of kopregel is.
+ * Die regels herhalen de detailtaken en mogen in een som niet nog eens meetellen.
+ * Leeg type is geen totaal: dan is het type niet beschikbaar en telt de regel wel mee.
+ * Herkent NL (totaal, kop) en EN (total, heading, Begin-Total, End-Total).
+ */
+function finance_task_type_is_total_or_heading(string $taskType): bool
+{
+    $compact = str_replace([' ', '-', '_'], '', strtolower(trim($taskType)));
+    if ($compact === '') {
+        return false;
+    }
+
+    if (str_contains($compact, 'totaal') || str_contains($compact, 'total')) {
+        return true;
+    }
+
+    if (str_contains($compact, 'heading') || str_contains($compact, 'kop')) {
+        return true;
+    }
+
+    return $compact === 'head';
+}
+
+/**
+ * Kiest de ProjectTaken-regels die de voorcalculatie-kosten (basislijn) vormen.
+ * 1. Taak 000 als die bestaat, ook bij bedrag 0 (dan geen fallback).
+ * 2. Anders taak 000-000-000 (oudere SAP-projecten, bijvoorbeeld 159927).
+ * 3. Anders alle taken behalve totaal- en kopregels (bijvoorbeeld 150933 en 153390).
+ *
+ * @param array<int,mixed> $rows
+ * @return array<int,array<string,mixed>>
+ */
+function finance_baseline_cost_pick_rows(array $rows): array
+{
+    $tasks = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+
+        $taskNo = trim((string) ($row['Job_Task_No'] ?? ''));
+        if ($taskNo === '') {
+            continue;
+        }
+
+        $tasks[] = $row;
+    }
+
+    $pickExact = static function (string $taskNo) use ($tasks): array {
+        $found = [];
+        foreach ($tasks as $row) {
+            if (trim((string) ($row['Job_Task_No'] ?? '')) === $taskNo) {
+                $found[] = $row;
+            }
+        }
+
+        return $found;
+    };
+
+    $projectTotal = $pickExact(FINANCE_PROJECT_TOTAL_TASK_NO);
+    if ($projectTotal !== []) {
+        return $projectTotal;
+    }
+
+    $legacyTotal = $pickExact(FINANCE_LEGACY_PROJECT_TOTAL_TASK_NO);
+    if ($legacyTotal !== []) {
+        return $legacyTotal;
+    }
+
+    $detail = [];
+    foreach ($tasks as $row) {
+        if (finance_task_type_is_total_or_heading((string) ($row['Job_Task_Type'] ?? ''))) {
+            continue;
+        }
+
+        $detail[] = $row;
+    }
+
+    return $detail;
+}
+
+/**
+ * Berekent Kosten VC uit ProjectTaken-rijen van één project.
+ * Bedrag is LVS_Baseline_Total_Cost van de gekozen taken (zie finance_baseline_cost_pick_rows).
+ *
+ * @param array<int,mixed> $rows
+ * @return array{amount:float,lines:array<int,array<string,mixed>>}
+ */
+function finance_baseline_cost_from_task_rows(array $rows): array
+{
+    $amount = 0.0;
+    $lines = [];
+
+    foreach (finance_baseline_cost_pick_rows($rows) as $row) {
+        $lineAmount = finance_to_float($row[FINANCE_BASELINE_COST_FIELD] ?? 0.0);
+        $amount = finance_add_amount($amount, $lineAmount);
+        if ($lineAmount === 0.0) {
+            continue;
+        }
+
+        $lines[] = [
+            'Job_Task_No' => trim((string) ($row['Job_Task_No'] ?? '')),
+            'Line_No' => 0,
+            'Type' => (string) ($row['Job_Task_Type'] ?? ''),
+            'No' => '',
+            'Description' => (string) ($row['Description'] ?? ''),
+            'Line_Amount' => $lineAmount,
+            'Line_Type' => '',
+        ];
+    }
+
+    return [
+        'amount' => $amount,
+        'lines' => $lines,
+    ];
 }
 
 /**

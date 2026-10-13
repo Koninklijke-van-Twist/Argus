@@ -123,14 +123,12 @@ class ProjectFinanceService
                 ],
             ],
             // Voorcalculatie (statisch, huidige BC-stand):
-            // - kosten: ProjectTaken.LVS_Baseline_Total_Cost voor Job_Task_No '000' (Project TOTAAL / basislijn)
+            // - kosten: ProjectTaken.LVS_Baseline_Total_Cost. Taak 000, anders 000-000-000,
+            //   anders de som van de detailtaken (geen totaal-/kopregels).
             // - opbrengst VC: ProjectTaken.LVS_Schedule_Total_Price_2 voor Job_Task_No '000' (schedule/budget)
-            // - opbrengst t/m periode: ProjectTaken.LVS_Contract_Total_Price_2 voor Job_Task_No '000'
-            //   (ProjectTaken heeft géén Contract_Total_Price; dat veld bestaat alleen op JobTaskLines)
-            //   (zelfde ProjectTaken-fetch als opbrengst VC; niet Contract_Invoiced_Price, niet G/L 899901)
-            //   Opbrengst (aanneemsom) en opbrengst meerwerk blijven FactureerbareProjectPlanningsRegels G/L 800000
-            //   en horen niet in Opbrengst VC. Opbrengst telt leeg én gevuld subordernr.;
-            //   meerwerk is alleen het gevulde deel en wordt niet uit de opbrengst gehaald.
+            // - opbrengst: FactureerbareProjectPlanningsRegels, G/L-type en No 800000, geen prognose.
+            //   Niet LVS_Contract_Total_Price_2 en niet het factureerbaar-vlaggetje.
+            //   Leeg én gevuld subordernr. tellen mee; meerwerk is alleen het gevulde deel.
             'project_forecast' => [
                 'cost_entity_set' => 'ProjectTaken',
                 'revenue_entity_set' => 'ProjectTaken',
@@ -542,10 +540,9 @@ class ProjectFinanceService
     /**
      * Haalt voorcalculatie op per project (huidige BC-stand, geen historie).
      *
-     * Kosten: ProjectTaken.LVS_Baseline_Total_Cost (Job_Task_No 000 / Project TOTAAL).
+     * Kosten: ProjectTaken.LVS_Baseline_Total_Cost (taak 000, anders 000-000-000, anders detailsom).
      * Opbrengst VC: ProjectTaken.LVS_Schedule_Total_Price_2 (Job_Task_No 000 / schedule-prijs).
-     * Opbrengst t/m periode: ProjectTaken.LVS_Contract_Total_Price_2 (Job_Task_No 000), zelfde fetch.
-     * Opbrengst/aanneemsom en opbrengst meerwerk: FactureerbareProjectPlanningsRegels, G/L 800000, factureerbaar.
+     * Opbrengst/aanneemsom en opbrengst meerwerk: FactureerbareProjectPlanningsRegels, G/L 800000, geen prognose.
      * Opbrengst telt regels met leeg én gevuld LVS_Job_Change_Order_No.
      * Meerwerk is alleen het deel met gevuld subordernr. en blijft in de opbrengst zitten.
      */
@@ -756,9 +753,12 @@ class ProjectFinanceService
     }
 
     /**
-     * Voorcalculatie kosten uit ProjectTaken (LVS_Baseline_Total_Cost van taak 000 / Project TOTAAL).
+     * Voorcalculatie kosten uit ProjectTaken (LVS_Baseline_Total_Cost).
      *
-     * Eén basislijnwaarde per project; niet sommeren over taakregels of LVS_Baseline_*.
+     * Per project: taak 000 als die er is, anders 000-000-000, anders de som van de
+     * detailtaken. Totaal- en kopregels tellen in die som niet mee wanneer Job_Task_Type
+     * beschikbaar is. Ontbreekt dat veld op de pagina, dan gaat de som door zonder dat
+     * filter en blijft er één melding staan.
      *
      * @return array{totals:array<string,float>,breakdown:array<string,array<int,array<string,mixed>>>,warning:?string}
      */
@@ -766,54 +766,69 @@ class ProjectFinanceService
     {
         $totals = [];
         $breakdown = [];
-        $projectTotaalTaskNo = '000';
-        $loaded = $this->fetchRowsForJobChunks(
-            $projectNumbers,
-            $ttl,
-            8,
-            function (string $projectFilter) use ($projectTotaalTaskNo): string {
-                return $this->companyEntityUrlWithQuery('ProjectTaken', [
-                    '$select' => 'Job_No,Job_Task_No,Description,LVS_Baseline_Total_Cost',
-                    '$filter' => $projectFilter . " and Job_Task_No eq '" . self::escapeOdataString($projectTotaalTaskNo) . "'",
-                ]);
-            },
-            'Voorcalculatie kosten ophalen mislukt (ProjectTaken)'
-        );
+        $selectFields = ['Job_No', 'Job_Task_No', 'Description', 'Job_Task_Type', FINANCE_BASELINE_COST_FIELD];
+        $loaded = ['rows' => [], 'warning' => null, 'fatal' => false];
+        $schemaWarnings = [];
+        $attempt = 0;
 
+        while ($attempt < 2) {
+            $attempt++;
+            $selectList = $selectFields;
+            $loaded = $this->fetchRowsForJobChunks(
+                $projectNumbers,
+                $ttl,
+                8,
+                function (string $projectFilter) use ($selectList): string {
+                    return $this->companyEntityUrlWithQuery('ProjectTaken', [
+                        '$select' => implode(',', $selectList),
+                        '$filter' => $projectFilter,
+                    ]);
+                },
+                'Voorcalculatie kosten ophalen mislukt (ProjectTaken)'
+            );
+
+            $missing = !empty($loaded['fatal'])
+                ? finance_odata_missing_property((string) ($loaded['warning'] ?? ''))
+                : null;
+            if ($missing === 'Job_Task_Type' && in_array('Job_Task_Type', $selectFields, true)) {
+                $schemaWarnings[] = 'Veld Job_Task_Type bestaat niet op ProjectTaken in ' . $this->environment
+                    . '; totaal- en kopregels kunnen niet worden overgeslagen.';
+                $selectFields = array_values(array_filter(
+                    $selectFields,
+                    static function (string $field): bool {
+                        return $field !== 'Job_Task_Type';
+                    }
+                ));
+                continue;
+            }
+
+            break;
+        }
+
+        $loaded['warning'] = self::joinForecastWarnings(array_merge($schemaWarnings, [$loaded['warning'] ?? null]));
+
+        $rowsByProject = [];
         foreach ($loaded['rows'] as $row) {
             if (!is_array($row)) {
                 continue;
             }
 
             $projectNo = trim((string) ($row['Job_No'] ?? ''));
-            $taskNo = trim((string) ($row['Job_Task_No'] ?? ''));
-            if ($projectNo === '' || $taskNo === '') {
+            if ($projectNo === '') {
                 continue;
             }
 
-            if ($taskNo !== $projectTotaalTaskNo) {
+            $rowsByProject[self::normalizeMatchValue($projectNo)][] = $row;
+        }
+
+        foreach ($rowsByProject as $normalizedProject => $projectRows) {
+            $resolved = finance_baseline_cost_from_task_rows($projectRows);
+            if ($resolved['amount'] === 0.0) {
                 continue;
             }
 
-            $amount = finance_to_float($row['LVS_Baseline_Total_Cost'] ?? 0.0);
-            if ($amount === 0.0) {
-                continue;
-            }
-
-            $normalizedProject = self::normalizeMatchValue($projectNo);
-            $totals[$normalizedProject] = $amount;
-
-            $breakdown[$normalizedProject] = [
-                [
-                    'Job_Task_No' => $taskNo,
-                    'Line_No' => 0,
-                    'Type' => (string) ($row['Job_Task_Type'] ?? ''),
-                    'No' => '',
-                    'Description' => (string) ($row['Description'] ?? ''),
-                    'Line_Amount' => $amount,
-                    'Line_Type' => '',
-                ],
-            ];
+            $totals[$normalizedProject] = $resolved['amount'];
+            $breakdown[$normalizedProject] = $resolved['lines'];
         }
 
         return [
@@ -830,7 +845,8 @@ class ProjectFinanceService
      * Niet LVS_Baseline_Total_Price, niet de aanneemsom (G/L 800000 / Line_Amount_LCY)
      * en niet de som van factureerbare planningsregels.
      *
-     * Opbrengst t/m periode: LVS_Contract_Total_Price_2 (contracttotaal) van dezelfde taak 000.
+     * LVS_Contract_Total_Price_2 van taak 000 wordt nog meegelezen, maar de kolom Opbrengst
+     * gebruikt dat veld niet. Die kolom is de som van planningsregels met No 800000.
      * Niet Contract_Invoiced_Price en niet Grootboekposten_OHW G/L 899901.
      * Nulbedragen worden overgeslagen; de kolom blijft dan 0 zonder breakdownregel.
      *
@@ -947,7 +963,7 @@ class ProjectFinanceService
      * Opbrengst/aanneemsom en opbrengst meerwerk uit FactureerbareProjectPlanningsRegels.
      *
      * Beide gebruiken Type G/L (GB-rekening / Grootboekrekening / GLAccount / G/L Account), No 800000,
-     * Line_Type factureerbaar/billable (niet prognose/forecast) en Line_Amount_LCY.
+     * geen prognose/forecast, en Line_Amount_LCY. Factureerbaar is geen extra eis.
      * Opbrengst/aanneemsom telt leeg én gevuld LVS_Job_Change_Order_No.
      * extra_work is alleen het gevulde deel (opbrengst meerwerk) en is geen aftrek van de opbrengst.
      * Q002 alleen in Description wordt niet als meerwerk herkend.
