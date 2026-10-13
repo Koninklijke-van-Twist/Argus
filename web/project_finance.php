@@ -757,7 +757,8 @@ class ProjectFinanceService
      *
      * Per project: taak 000 als die er is, anders 000-000-000, anders de som van de
      * detailtaken. Totaal- en kopregels tellen in die som niet mee wanneer Job_Task_Type
-     * beschikbaar is. Ontbreekt dat veld op de pagina, dan gaat de som door zonder dat filter.
+     * beschikbaar is. Ontbreekt dat veld op de pagina, dan gaat de som door zonder dat
+     * filter en blijft er één melding staan.
      *
      * @return array{totals:array<string,float>,breakdown:array<string,array<int,array<string,mixed>>>,warning:?string}
      */
@@ -767,6 +768,7 @@ class ProjectFinanceService
         $breakdown = [];
         $selectFields = ['Job_No', 'Job_Task_No', 'Description', 'Job_Task_Type', FINANCE_BASELINE_COST_FIELD];
         $loaded = ['rows' => [], 'warning' => null, 'fatal' => false];
+        $schemaWarnings = [];
         $attempt = 0;
 
         while ($attempt < 2) {
@@ -788,7 +790,9 @@ class ProjectFinanceService
             $missing = !empty($loaded['fatal'])
                 ? finance_odata_missing_property((string) ($loaded['warning'] ?? ''))
                 : null;
-            if ($missing === 'Job_Task_Type') {
+            if ($missing === 'Job_Task_Type' && in_array('Job_Task_Type', $selectFields, true)) {
+                $schemaWarnings[] = 'Veld Job_Task_Type bestaat niet op ProjectTaken in ' . $this->environment
+                    . '; totaal- en kopregels kunnen niet worden overgeslagen.';
                 $selectFields = array_values(array_filter(
                     $selectFields,
                     static function (string $field): bool {
@@ -800,6 +804,8 @@ class ProjectFinanceService
 
             break;
         }
+
+        $loaded['warning'] = self::joinForecastWarnings(array_merge($schemaWarnings, [$loaded['warning'] ?? null]));
 
         $rowsByProject = [];
         foreach ($loaded['rows'] as $row) {

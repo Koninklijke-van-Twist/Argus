@@ -63,6 +63,7 @@ php web/tests/test_opbrengst_vc.php
 php web/tests/test_contract_total_price.php
 php web/tests/test_odata_schema_error_once.php
 php web/tests/test_projecttaken_tolerant_select.php
+php web/tests/test_baseline_cost_schema.php
 php web/tests/test_baseline_cost.php
 php web/tests/test_open_projects.php
 ```
