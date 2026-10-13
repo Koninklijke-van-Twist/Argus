@@ -95,6 +95,45 @@ $project153390 = finance_baseline_cost_from_task_rows([
 ]);
 assert_same(1448000.0, $project153390['amount'], '153390 somt detailtaken en slaat End-Total over');
 
+$controlAmounts = array_fill(0, 18, 88774.66);
+$controlAmounts[] = 88774.70;
+$controlRows = [];
+foreach ($controlAmounts as $index => $controlAmount) {
+    $controlRows[] = [
+        'Job_No' => '153390',
+        'Job_Task_No' => sprintf('%03d', $index + 1),
+        'Job_Task_Type' => 'Boeking',
+        'LVS_Baseline_Total_Cost' => $controlAmount,
+    ];
+}
+$controlRows[] = [
+    'Job_No' => '153390',
+    'Job_Task_No' => 'KOP',
+    'Job_Task_Type' => 'Kop',
+    'LVS_Baseline_Total_Cost' => 1000,
+];
+$controlRows[] = [
+    'Job_No' => '153390',
+    'Job_Task_No' => 'TOT',
+    'Job_Task_Type' => 'Totaal',
+    'LVS_Baseline_Total_Cost' => 2000,
+];
+$project153390Live = finance_baseline_cost_from_task_rows($controlRows);
+assert_same('1686718.58', number_format($project153390Live['amount'], 2, '.', ''), '153390: 19 Boeking-taken blijven € 1.686.718,58');
+assert_same(19, count($project153390Live['lines']), '153390 levert 19 breakdownregels');
+assert_same(true, finance_task_type_is_booking('Boeking'), 'Boeking is een boekingsregel');
+assert_same(false, finance_task_type_is_booking('Kop'), 'Kop is geen boekingsregel');
+assert_same(false, finance_task_type_is_booking('Totaal'), 'Totaal is geen boekingsregel');
+assert_same(false, finance_task_type_is_booking('Posting'), 'Engelse Posting telt hier niet als Boeking');
+assert_same(true, finance_baseline_cost_uses_detail_sum($controlRows), '153390 heeft geen taak 000 of 000-000-000');
+assert_same(false, finance_baseline_cost_uses_detail_sum([
+    ['Job_Task_No' => '000', 'LVS_Baseline_Total_Cost' => 1],
+    ['Job_Task_No' => '010', 'LVS_Baseline_Total_Cost' => 2],
+]), 'taak 000 maakt JobTaskLines overbodig');
+assert_same(false, finance_baseline_cost_uses_detail_sum([
+    ['Job_Task_No' => '000-000-000', 'LVS_Baseline_Total_Cost' => 1],
+]), 'taak 000-000-000 maakt JobTaskLines overbodig');
+
 $task000Wins = finance_baseline_cost_from_task_rows([
     [
         'Job_Task_No' => '000',

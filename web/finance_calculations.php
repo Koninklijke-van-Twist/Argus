@@ -37,11 +37,18 @@ const FINANCE_CONTRACT_TOTAL_PRICE_FIELD = 'LVS_Contract_Total_Price_2';
 /**
  * Taaknummers voor de voorcalculatie-basislijn (LVS_Baseline_Total_Cost).
  * Nieuwe projecten hebben taak 000. Oudere SAP-projecten (15xxxx) niet;
- * die gebruiken 000-000-000 of, als die ook ontbreekt, de som van de detailtaken.
+ * die gebruiken 000-000-000 of, als die ook ontbreekt, de som van de Boeking-taken.
+ * Het taaktype staat niet op ProjectTaken; dat komt uit JobTaskLines.
  */
 const FINANCE_PROJECT_TOTAL_TASK_NO = '000';
 const FINANCE_LEGACY_PROJECT_TOTAL_TASK_NO = '000-000-000';
 const FINANCE_BASELINE_COST_FIELD = 'LVS_Baseline_Total_Cost';
+
+/**
+ * Boekingsregel op JobTaskLines. KvT/HvT publiceren Nederlandse waarden
+ * (Boeking, Kop, Totaal). ProjectTaken heeft dit veld niet.
+ */
+const FINANCE_BOOKING_TASK_TYPE = 'Boeking';
 
 /**
  * Maandsnapshot-versie. Ongenummerde bestanden (`.json`) zijn versie 1:
@@ -582,10 +589,51 @@ function finance_task_type_is_total_or_heading(string $taskType): bool
 }
 
 /**
+ * Bepaalt of een taaktype een boekingsregel is.
+ * JobTaskLines levert 'Boeking' (KvT/HvT). Alleen die regels tellen mee in de detailsom.
+ */
+function finance_task_type_is_booking(string $taskType): bool
+{
+    $compact = str_replace([' ', '-', '_'], '', strtolower(trim($taskType)));
+
+    return $compact === strtolower(FINANCE_BOOKING_TASK_TYPE);
+}
+
+/**
+ * Bepaalt of Kosten VC voor deze ProjectTaken-rijen de detailsom is.
+ * Taak 000 of 000-000-000 wint; dan is het taaktype uit JobTaskLines niet nodig.
+ * Zonder taaknummer is er niets te sommen.
+ */
+function finance_baseline_cost_uses_detail_sum(array $rows): bool
+{
+    $hasDetail = false;
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+
+        $taskNo = trim((string) ($row['Job_Task_No'] ?? ''));
+        if ($taskNo === '') {
+            continue;
+        }
+
+        if ($taskNo === FINANCE_PROJECT_TOTAL_TASK_NO || $taskNo === FINANCE_LEGACY_PROJECT_TOTAL_TASK_NO) {
+            return false;
+        }
+
+        $hasDetail = true;
+    }
+
+    return $hasDetail;
+}
+
+/**
  * Kiest de ProjectTaken-regels die de voorcalculatie-kosten (basislijn) vormen.
  * 1. Taak 000 als die bestaat, ook bij bedrag 0 (dan geen fallback).
  * 2. Anders taak 000-000-000 (oudere SAP-projecten, bijvoorbeeld 159927).
- * 3. Anders alle taken behalve totaal- en kopregels (bijvoorbeeld 150933 en 153390).
+ * 3. Anders de detailtaken zonder kop- en totaalregels (bijvoorbeeld 150933 en 153390).
+ *    Job_Task_Type komt dan uit JobTaskLines; de aanroeper houdt alleen Boeking over.
+ *    Een leeg type telt mee, want dan is het type niet bekend.
  *
  * @param array<int,mixed> $rows
  * @return array<int,array<string,mixed>>
