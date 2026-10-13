@@ -1,7 +1,8 @@
 <?php
 
 /**
- * Opbrengst t/m periode leest LVS_Contract_Total_Price_2 van ProjectTaken taak 000.
+ * De helper leest LVS_Contract_Total_Price_2 van ProjectTaken taak 000.
+ * De kolom Opbrengst gebruikt dit veld niet meer; die somt G/L 800000.
  * ProjectTaken publiceert geen Contract_Total_Price (ticket #1170).
  * Contract_Invoiced_Price en de schedule-prijs tellen niet mee.
  */
@@ -32,7 +33,7 @@ $prj2602236 = [
     'LVS_Schedule_Total_Price_2' => 219000,
 ];
 assert_same('LVS_Contract_Total_Price_2', FINANCE_CONTRACT_TOTAL_PRICE_FIELD, 'contract field is LVS_Contract_Total_Price_2 (bestaat op ProjectTaken)');
-assert_same(280000.0, finance_contract_total_price_amount($prj2602236), 'task 000 contract total is the column amount');
+assert_same(280000.0, finance_contract_total_price_amount($prj2602236), 'task 000 contract total is the helper amount, not the Opbrengst column');
 
 assert_same(280000.0, finance_contract_total_price_amount([
     'Job_No' => 'PRJ2602236',

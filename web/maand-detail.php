@@ -27,7 +27,7 @@ function maand_cache_path_d(string $company, string $yearMonth): string
 {
     $safeCompany = preg_replace('/[^a-z0-9_-]/i', '_', strtolower(trim($company)));
     $safeYM = preg_replace('/[^0-9-]/', '', $yearMonth);
-    return maanden_cache_dir_d() . DIRECTORY_SEPARATOR . $safeCompany . '_' . $safeYM . '.json';
+    return maanden_cache_dir_d() . DIRECTORY_SEPARATOR . $safeCompany . '_' . $safeYM . argus_month_cache_suffix();
 }
 
 function maand_load_d(string $company, string $yearMonth): ?array
@@ -41,7 +41,11 @@ function maand_load_d(string $company, string $yearMonth): ?array
         return null;
     }
     $data = json_decode($raw, true);
-    return is_array($data) ? $data : null;
+    if (!is_array($data) || !argus_month_cache_is_current($data)) {
+        return null;
+    }
+
+    return $data;
 }
 
 function list_saved_months_d(string $company): array
@@ -58,13 +62,21 @@ function list_saved_months_d(string $company): array
     }
     $months = [];
     foreach ($entries as $entry) {
-        if (!str_starts_with($entry, $prefix) || !str_ends_with($entry, '.json')) {
+        if (!str_starts_with($entry, $prefix)) {
             continue;
         }
-        $ym = substr($entry, strlen($prefix), -5);
-        if (preg_match('/^\d{4}-\d{2}$/', $ym)) {
-            $months[] = $ym;
+        $suffix = argus_month_cache_suffix();
+        if (!str_ends_with($entry, $suffix)) {
+            continue;
         }
+        $ym = substr($entry, strlen($prefix), -strlen($suffix));
+        if (!preg_match('/^\d{4}-\d{2}$/', $ym)) {
+            continue;
+        }
+        if (!is_array(maand_load_d($company, $ym))) {
+            continue;
+        }
+        $months[] = $ym;
     }
     rsort($months);
     return $months;

@@ -1,7 +1,8 @@
 <?php
 
 /**
- * Opbrengst = factureerbare G/L 800000, leeg én gevuld LVS_Job_Change_Order_No.
+ * Opbrengst = G/L 800000 zonder prognose, leeg én gevuld LVS_Job_Change_Order_No.
+ * Factureerbaar is geen eis: budgetregels op 800000 tellen mee.
  * Opbrengst meerwerk = alleen het deel met gevuld subordernummer (extra informatie).
  * Q002 in Description alleen is geen meerwerk.
  */
@@ -107,8 +108,15 @@ assert_same(0.0, finance_opbrengst_meerwerk_amount($englishForecast), 'forecast 
 $budget = $base;
 $budget['Line_Type'] = 'Budget';
 $budget['LVS_Job_Change_Order_No'] = '';
-assert_same(0.0, finance_opbrengst_amount($budget), 'budget zonder factureerbaar telt niet als opbrengst');
-assert_same(0.0, finance_aanneemsom_amount($budget), 'budget zonder factureerbaar telt niet');
+assert_same(2825.0, finance_opbrengst_amount($budget), 'budget op G/L 800000 telt als opbrengst');
+assert_same(2825.0, finance_aanneemsom_amount($budget), 'budget op G/L 800000 telt als aanneemsom');
+assert_same(0.0, finance_opbrengst_meerwerk_amount($budget), 'budget zonder suborder is geen meerwerk');
+
+$emptyLineType = $base;
+$emptyLineType['Line_Type'] = '';
+$emptyLineType['LVS_Job_Change_Order_No'] = '';
+$emptyLineType['Line_Amount_LCY'] = 10;
+assert_same(10.0, finance_opbrengst_amount($emptyLineType), 'lege Line_Type op G/L 800000 telt mee');
 
 $both = $base;
 $both['Line_Type'] = 'Both Budget and Billable';
@@ -203,6 +211,52 @@ assert_same(12825.0, $projectStyle['opbrengst'], 'projectstijl: opbrengst is leg
 assert_same(12825.0, $projectStyle['aanneemsom'], 'projectstijl: aanneemsom/opbrengst is de som van beide');
 
 assert_same(0.0, finance_opbrengst_vc_amount($base), 'meerwerkregel is geen Opbrengst VC');
+
+$prj2602236 = finance_split_contract_revenue([
+    [
+        'Job_No' => 'PRJ2602236',
+        'Type' => 'Grootboekrekening',
+        'No' => '800000',
+        'Line_Type' => 'Factureerbaar',
+        'Line_Amount_LCY' => 200000,
+        'LVS_Job_Change_Order_No' => '',
+    ],
+    [
+        'Job_No' => 'PRJ2602236',
+        'Type' => 'Grootboekrekening',
+        'No' => '800000',
+        'Line_Type' => 'Budget',
+        'Line_Amount_LCY' => 80000,
+        'LVS_Job_Change_Order_No' => '',
+    ],
+    [
+        'Job_No' => 'PRJ2602236',
+        'Type' => 'Grootboekrekening',
+        'No' => '800100',
+        'Line_Type' => 'Factureerbaar',
+        'Line_Amount_LCY' => 3253.63,
+        'LVS_Job_Change_Order_No' => '',
+    ],
+    [
+        'Job_No' => 'PRJ2602236',
+        'Type' => 'Resource',
+        'No' => '800000',
+        'Line_Type' => 'Factureerbaar',
+        'Line_Amount_LCY' => 5000,
+        'LVS_Job_Change_Order_No' => '',
+    ],
+    [
+        'Job_No' => 'PRJ2602236',
+        'Type' => 'Grootboekrekening',
+        'No' => '800000',
+        'Line_Type' => 'Prognose',
+        'Line_Amount_LCY' => 9000,
+        'LVS_Job_Change_Order_No' => '',
+    ],
+]);
+assert_same(280000.0, $prj2602236['opbrengst'], 'PRJ2602236 opbrengst is alleen G/L 800000 zonder prognose');
+assert_same(280000.0, $prj2602236['aanneemsom'], 'PRJ2602236 aanneemsom volgt dezelfde 800000-som');
+assert_same(0.0, $prj2602236['opbrengst_meerwerk'], 'PRJ2602236 zonder suborder heeft geen meerwerk');
 
 if ($failures > 0) {
     fwrite(STDERR, "{$failures} assertion(s) failed\n");

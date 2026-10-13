@@ -870,7 +870,7 @@
             case 'costs_to_date':
                 return { type: 'bc-field', name: 'WIP_Entry_Amount', source: 'Grootboekposten_OHW', filters: baseFilter + ',G_L_Account_No=899900,as_of=today' };
             case 'total_revenue':
-                return { type: 'bc-field', name: 'LVS_Contract_Total_Price_2', source: 'ProjectTaken', filters: baseFilter + ',Job_Task_No=000' };
+                return { type: 'bc-field', name: 'Line_Amount_LCY', source: 'FactureerbareProjectPlanningsRegels', filters: baseFilter + ',Type=GB-rekening|Grootboekrekening|GLAccount,No=800000,Line_Type!=Prognose' };
             case 'customer':
                 return { type: 'bc-field', name: 'Bill_to_Customer_No,Bill_to_Name', source: 'Projecten', filters: baseFilter.replace('Job_No=', 'No=') };
             case 'description':
@@ -880,11 +880,11 @@
             case 'expected_revenue':
                 return { type: 'bc-field', name: 'LVS_Schedule_Total_Price_2', source: 'ProjectTaken', filters: baseFilter + ',Job_Task_No=000' };
             case 'costs_vc':
-                return { type: 'bc-field', name: 'LVS_Baseline_Total_Cost', source: 'ProjectTaken', filters: baseFilter + ',Job_Task_No=000' };
+                return { type: 'bc-field', name: 'LVS_Baseline_Total_Cost', source: 'ProjectTaken', filters: baseFilter + ',Job_Task_No=000, anders 000-000-000, anders som detailtaken' };
             case 'extra_work':
-                return { type: 'bc-field', name: 'Line_Amount_LCY', source: 'FactureerbareProjectPlanningsRegels', filters: baseFilter + ',Type=GB-rekening|Grootboekrekening|GLAccount,No=800000,Line_Type=Factureerbaar,LVS_Job_Change_Order_No=gevuld' };
+                return { type: 'bc-field', name: 'Line_Amount_LCY', source: 'FactureerbareProjectPlanningsRegels', filters: baseFilter + ',Type=GB-rekening|Grootboekrekening|GLAccount,No=800000,Line_Type!=Prognose,LVS_Job_Change_Order_No=gevuld' };
             case 'margin_total':
-                return { type: 'computed-field', formula: 'ProjectTaken.LVS_Schedule_Total_Price_2 (Job_Task_No=000) - ProjectTaken.LVS_Baseline_Total_Cost (Job_Task_No=000)' };
+                return { type: 'computed-field', formula: 'ProjectTaken.LVS_Schedule_Total_Price_2 (Job_Task_No=000) - Kosten VC (taak 000, anders 000-000-000, anders som detailtaken)' };
             case 'pct_ready':
                 return { type: 'computed-field', formula: 'Kosten t/m periode / Kosten VC' };
             case 'winst_ohw':
