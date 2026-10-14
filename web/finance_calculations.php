@@ -51,6 +51,23 @@ const FINANCE_BASELINE_COST_FIELD = 'LVS_Baseline_Total_Cost';
 const FINANCE_BOOKING_TASK_TYPE = 'Boeking';
 
 /**
+ * JobTaskLines-batches voor de Kosten VC-detailsom.
+ * Eén OR-filter over alle fallback-projecten wordt bij KvT zo lang dat BC/Mímir
+ * de query niet afrondt (cache blijft op 0/1 groeien, geen HTTP-fout).
+ * 25 projecten of 1200 tekens filter, wat het eerst bereikt, blijft onder de
+ * praktische querystring-grens en levert een af te ronden pagina.
+ */
+const FINANCE_JOB_TASK_LINES_MAX_PROJECTS = 25;
+const FINANCE_JOB_TASK_LINES_MAX_FILTER_CHARS = 1200;
+
+/**
+ * Bovengrens voor de reeks JobTaskLines-batches in één voorcalculatie.
+ * Een hangende pagina sterft eerder op de OData-timeout; dit stopt een lange
+ * reeks trage maar "succesvolle" calls voordat de UI minutenlang stilvalt.
+ */
+const FINANCE_JOB_TASK_LINES_DEADLINE_SECONDS = 300;
+
+/**
  * Maandsnapshot-versie. Ongenummerde bestanden (`.json`) zijn versie 1:
  * Opbrengst uit het contracttotaal, Kosten VC alleen taak 000, alleen OHW-projecten.
  * Versie 2 bewaart snapshots als `.v2.json` zodat die oude uitkomst niet blijft hangen.
@@ -562,6 +579,184 @@ function argus_month_cache_suffix(): string
 function argus_month_cache_is_current(array $data): bool
 {
     return (int) ($data['cache_version'] ?? 0) === ARGUS_MONTH_CACHE_VERSION;
+}
+
+/**
+ * Schrijft een bestand via een tijdelijk bestand en rename.
+ * De bestaande inhoud blijft leesbaar tot de nieuwe versie compleet is.
+ */
+function argus_write_file_atomically(string $path, string $contents): bool
+{
+    $dir = dirname($path);
+    if (!is_dir($dir) && !@mkdir($dir, 0777, true) && !is_dir($dir)) {
+        return false;
+    }
+
+    $tmp = $path . '.tmp.' . bin2hex(random_bytes(4));
+    $written = @file_put_contents($tmp, $contents, LOCK_EX);
+    if ($written === false) {
+        @unlink($tmp);
+        return false;
+    }
+
+    if (!@rename($tmp, $path)) {
+        @unlink($tmp);
+        return false;
+    }
+
+    return true;
+}
+
+/**
+ * Publiceert een maandsnapshot pas als de JSON compleet is.
+ * Een mislukte encode laat het vorige bestand staan.
+ */
+function argus_publish_snapshot_file(string $path, array $data, int $jsonFlags = 0): bool
+{
+    if (!isset($data['cache_version'])) {
+        $data['cache_version'] = ARGUS_MONTH_CACHE_VERSION;
+    }
+
+    $json = json_encode($data, $jsonFlags);
+    if (!is_string($json)) {
+        return false;
+    }
+
+    return argus_write_file_atomically($path, $json);
+}
+
+/**
+ * Normaliseert het refresh-id waarmee een lopende opbouw zijn eigen WIP-bestand schrijft.
+ * Ongeldige waarden (padtekens) vallen terug op leeg, nooit op een ander bestand.
+ */
+function argus_month_refresh_id(string $refreshId): string
+{
+    $refreshId = strtolower(trim($refreshId));
+    if (preg_match('/^[a-f0-9]{16}$/', $refreshId) !== 1) {
+        return '';
+    }
+
+    return $refreshId;
+}
+
+/**
+ * Fout die de vorige maandsnapshot moet laten staan.
+ * Een JobTaskLines-timeout of filterfout mag de maand niet vervangen door een halve voorcalculatie.
+ * Een ontbrekend taaktype (schema) blijft een waarschuwing: die som wordt nog gepubliceerd.
+ */
+function finance_forecast_blocks_snapshot(array $forecast): ?string
+{
+    if (empty($forecast['task_type_error'])) {
+        return null;
+    }
+
+    $message = trim((string) ($forecast['warning'] ?? ''));
+    if ($message === '') {
+        return 'JobTaskLines ophalen mislukt.';
+    }
+
+    return $message;
+}
+
+/**
+ * OData-clause Job_No eq '…' met geëscapete quotes.
+ */
+function finance_odata_job_no_clause(string $projectNo): string
+{
+    return "Job_No eq '" . str_replace("'", "''", $projectNo) . "'";
+}
+
+/**
+ * OR-filter over projectnummers: (Job_No eq 'A' or Job_No eq 'B').
+ *
+ * @param array<int,mixed> $projectNumbers
+ */
+function finance_job_no_or_filter(array $projectNumbers): string
+{
+    $parts = [];
+    foreach ($projectNumbers as $projectNo) {
+        $text = trim((string) $projectNo);
+        if ($text === '') {
+            continue;
+        }
+
+        $parts[] = finance_odata_job_no_clause($text);
+    }
+
+    if ($parts === []) {
+        return '';
+    }
+
+    return '(' . implode(' or ', $parts) . ')';
+}
+
+/**
+ * JobTaskLines-filter: projecten én alleen Boeking-taken.
+ *
+ * @param array<int,mixed> $projectNumbers
+ */
+function finance_job_task_lines_filter(array $projectNumbers): string
+{
+    $projects = finance_job_no_or_filter($projectNumbers);
+    if ($projects === '') {
+        return '';
+    }
+
+    return $projects . " and Job_Task_Type eq '" . str_replace("'", "''", FINANCE_BOOKING_TASK_TYPE) . "'";
+}
+
+/**
+ * Splitst fallback-projecten in JobTaskLines-batches.
+ * Elke batch blijft binnen het maximum aantal projecten en de maximale filterlengte.
+ * Eén project dat zelf al te lang is, blijft één batch: verder splitsen kan niet.
+ *
+ * @param array<int,mixed> $projectNumbers
+ * @return list<list<string>>
+ */
+function finance_job_task_lines_chunks(
+    array $projectNumbers,
+    int $maxProjects = FINANCE_JOB_TASK_LINES_MAX_PROJECTS,
+    int $maxFilterChars = FINANCE_JOB_TASK_LINES_MAX_FILTER_CHARS
+): array {
+    $unique = [];
+    $seen = [];
+    foreach ($projectNumbers as $projectNo) {
+        $text = trim((string) $projectNo);
+        if ($text === '') {
+            continue;
+        }
+
+        $key = strtolower($text);
+        if (isset($seen[$key])) {
+            continue;
+        }
+
+        $seen[$key] = true;
+        $unique[] = $text;
+    }
+
+    $maxProjects = max(1, $maxProjects);
+    $maxFilterChars = max(1, $maxFilterChars);
+    $chunks = [];
+    $current = [];
+    foreach ($unique as $projectNo) {
+        $candidate = $current;
+        $candidate[] = $projectNo;
+        $filter = finance_job_task_lines_filter($candidate);
+        if ($current !== [] && (count($candidate) > $maxProjects || strlen($filter) > $maxFilterChars)) {
+            $chunks[] = $current;
+            $current = [$projectNo];
+            continue;
+        }
+
+        $current = $candidate;
+    }
+
+    if ($current !== []) {
+        $chunks[] = $current;
+    }
+
+    return $chunks;
 }
 
 /**

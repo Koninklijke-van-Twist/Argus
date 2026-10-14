@@ -52,7 +52,7 @@ Geen `auth.php` in deze repository (staat in `.gitignore`). Lokaal/op de server 
 
 - `web/odata.php`: goedgekeurde uitzondering op de regel dat dit bestand niet wijzigt. Alleen een minimale hook (timeouts, foutpad en doorgifte naar de fallback). De fallback-logica staat in `web/mimir_fallback.php`.
 - `web/project_finance.php`: alleen commentaar bij de `mimir.invalid`-placeholder. Dat legt uit dat `odata_get_all` die URL naar `$baseUrl` herschrijft als Mímir uitvalt. Geen logicawijziging. Dezelfde opmerking kan nodig zijn in andere projecten die dit patroon kopiëren.
-- `web/project_finance.php` en `web/finance_calculations.php`: Opbrengst is de som van planningsregels met Type G/L en No `800000`, zonder prognose (niet meer `LVS_Contract_Total_Price_2`, en factureerbaar is geen eis). Kosten VC leest `LVS_Baseline_Total_Cost` van taak `000`, anders `000-000-000`, anders de som van Boeking-taken. Dat taaktype staat niet op ProjectTaken; het komt uit één `JobTaskLines`-query per bedrijf (`Job_Task_Type eq 'Boeking'`). Lukt die query niet, dan blijft de som zonder typefilter en de melding `Veld Job_Task_Type bestaat niet op ProjectTaken`. Open projecten zonder posten in `Grootboekposten_OHW` komen mee via één `Projecten`-query (`Status eq 'Open'`) en tonen 0 bij de OHW-bedragen. Maandsnapshots blijven cacheversie 2 (`.v2.json`): dit is een fallback, geen herberekening die alle maanden ongeldig maakt. Dezelfde wijziging kan nodig zijn in andere projecten die dit patroon kopiëren.
+- `web/project_finance.php` en `web/finance_calculations.php`: Opbrengst is de som van planningsregels met Type G/L en No `800000`, zonder prognose (niet meer `LVS_Contract_Total_Price_2`, en factureerbaar is geen eis). Kosten VC leest `LVS_Baseline_Total_Cost` van taak `000`, anders `000-000-000`, anders de som van Boeking-taken. Dat taaktype staat niet op ProjectTaken; het komt uit `JobTaskLines` (`Job_Task_Type eq 'Boeking'`), in batches van hoogstens 25 projecten of 1200 tekens filter. Eén query voor alle fallback-projecten hing bij KvT: Mímir cachete die als één onaffe pagina en de directe BC-fallback had geen timeout. Een timeout of HTTP-fout op JobTaskLines stopt de voorcalculatie met een melding en publiceert de maand niet. Een onleesbaar antwoord houdt de som zonder typefilter en de melding `Veld Job_Task_Type bestaat niet op ProjectTaken`. Open projecten zonder posten in `Grootboekposten_OHW` komen mee via één `Projecten`-query (`Status eq 'Open'`) en tonen 0 bij de OHW-bedragen. Maandsnapshots blijven cacheversie 2 (`.v2.json`). Verversen verwijdert de oude snapshot niet meer vooraf; die blijft leesbaar tot de nieuwe via een atomische rename klaar is. Dezelfde wijziging kan nodig zijn in andere projecten die dit patroon kopiëren.
 
 ## Tests
 
@@ -65,5 +65,8 @@ php web/tests/test_odata_schema_error_once.php
 php web/tests/test_projecttaken_tolerant_select.php
 php web/tests/test_baseline_cost_schema.php
 php web/tests/test_baseline_cost.php
+php web/tests/test_job_task_lines_batches.php
+php web/tests/test_project_detail_chunks.php
+php web/tests/test_odata_page_guard.php
 php web/tests/test_open_projects.php
 ```

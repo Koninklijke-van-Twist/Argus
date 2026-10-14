@@ -1,9 +1,9 @@
 <?php
 
 /**
- * ProjectTaken heeft geen Job_Task_Type. De detailsom haalt Boeking uit één
- * JobTaskLines-query per bedrijf. Lukt die query niet, dan blijft de som
- * ongefilterd en blijft de melding staan.
+ * ProjectTaken heeft geen Job_Task_Type. De detailsom haalt Boeking uit
+ * gebatchte JobTaskLines-queries. Een onleesbaar antwoord houdt de ongefilterde
+ * som. Een timeout of HTTP-fout wordt een duidelijke fout en blokkeert de snapshot.
  */
 if (PHP_SAPI !== 'cli') {
     http_response_code(404);
@@ -68,6 +68,21 @@ function odata_get_all(string $url, array $auth, int $ttl): array
             );
         }
 
+        if (in_array($GLOBALS['jobtask_mode'], ['many', 'fail-many', 'timeout-many'], true)) {
+            preg_match_all("/Job_No eq '([^']+)'/", $filter, $matches);
+            $rows = [];
+            foreach ($matches[1] as $job) {
+                $rows[] = [
+                    'Job_No' => $job,
+                    'Job_Task_No' => '010',
+                    'Description' => 'Boeking',
+                    'LVS_Baseline_Total_Cost' => 10,
+                ];
+            }
+
+            return $rows;
+        }
+
         $rows = [];
         if (str_contains($filter, '153390')) {
             $rows = array_merge($rows, baseline_schema_project_153390_rows());
@@ -101,15 +116,31 @@ function odata_get_all(string $url, array $auth, int $ttl): array
     if ($entity === 'JobTaskLines') {
         $GLOBALS['jobtask_calls']++;
         $GLOBALS['jobtask_filters'][] = $filter;
-        if ($GLOBALS['jobtask_mode'] === 'fail') {
+        if ($GLOBALS['jobtask_mode'] === 'fail' || $GLOBALS['jobtask_mode'] === 'fail-many') {
             throw new RuntimeException(
                 'HTTP 400 from OData: {"error":{"code":"BadRequest","message":"JobTaskLines query failed.  CorrelationId:  deadbeef."}}'
             );
+        }
+        if ($GLOBALS['jobtask_mode'] === 'timeout' || $GLOBALS['jobtask_mode'] === 'timeout-many') {
+            throw new RuntimeException('cURL error: Operation timed out after 90000 milliseconds with 0 bytes received');
         }
         if ($GLOBALS['jobtask_mode'] === 'unreadable') {
             return [
                 ['Description' => 'zonder sleutel', 'Job_Task_Type' => 'Boeking'],
             ];
+        }
+        if ($GLOBALS['jobtask_mode'] === 'many') {
+            preg_match_all("/Job_No eq '([^']+)'/", $filter, $matches);
+            $rows = [];
+            foreach ($matches[1] as $job) {
+                $rows[] = [
+                    'Job_No' => $job,
+                    'Job_Task_No' => '010',
+                    'Job_Task_Type' => 'Boeking',
+                ];
+            }
+
+            return $rows;
         }
 
         $rows = [];
@@ -167,7 +198,8 @@ check(count($r['breakdown']['153390'] ?? []) === 19, '19 Boeking-regels, kreeg '
 check(($r['totals']['prj0'] ?? null) === 10.0, 'taak 000 blijft 10');
 check(($r['totals']['159927'] ?? null) === 266254.0, '159927 blijft taak 000-000-000');
 check($r['warning'] === null, 'geen melding als JobTaskLines het type levert: ' . var_export($r['warning'], true));
-check($GLOBALS['jobtask_calls'] === 1, 'één JobTaskLines-query per bedrijf, kreeg ' . $GLOBALS['jobtask_calls']);
+check(empty($r['task_type_error']), 'geslaagde query blokkeert de snapshot niet');
+check($GLOBALS['jobtask_calls'] === 1, 'één fallback-project blijft één JobTaskLines-query, kreeg ' . $GLOBALS['jobtask_calls']);
 check($GLOBALS['odata_calls'] === 3, 'twee ProjectTaken-chunks plus één JobTaskLines, niet per project, kreeg ' . $GLOBALS['odata_calls']);
 $jobFilter = (string) ($GLOBALS['jobtask_filters'][0] ?? '');
 check(str_contains($jobFilter, "Job_Task_Type eq 'Boeking'"), 'filter op Boeking: ' . $jobFilter);
@@ -190,16 +222,60 @@ $GLOBALS['jobtask_calls'] = 0;
 $failed = $method->invoke($service, $projects, 60);
 $expectedFailed = finance_baseline_cost_from_task_rows(baseline_schema_project_153390_rows());
 check(($failed['totals']['153390'] ?? null) === $expectedFailed['amount'], 'mislukte query houdt de ongefilterde som');
-check(is_string($failed['warning']) && str_contains($failed['warning'], 'Veld Job_Task_Type bestaat niet op ProjectTaken'), 'melding blijft staan: ' . var_export($failed['warning'], true));
-check(is_string($failed['warning']) && str_contains($failed['warning'], 'totaal- en kopregels kunnen niet worden overgeslagen'), 'melding noemt het ontbrekende filter');
-check(substr_count((string) $failed['warning'], 'Job_Task_Type') === 1, 'één melding, niet de ruwe schemafout erbij');
+check(!empty($failed['task_type_error']), 'HTTP-fout op JobTaskLines blokkeert de snapshot');
+check(is_string($failed['warning']) && str_contains($failed['warning'], 'JobTaskLines ophalen mislukt'), 'melding noemt de mislukte query: ' . var_export($failed['warning'], true));
+check(is_string($failed['warning']) && str_contains($failed['warning'], 'HTTP 400'), 'melding houdt de HTTP-status: ' . var_export($failed['warning'], true));
 check(!str_contains((string) $failed['warning'], 'CorrelationId'), 'geen CorrelationId');
+check(!str_contains((string) $failed['warning'], 'Veld Job_Task_Type bestaat niet'), 'een queryfout is geen ontbrekend veld');
+check(finance_forecast_blocks_snapshot(['task_type_error' => true, 'warning' => $failed['warning']]) === $failed['warning'], 'endpoint houdt de vorige snapshot bij deze fout');
 check($GLOBALS['jobtask_calls'] === 1, 'mislukte query wordt niet per project herhaald, kreeg ' . $GLOBALS['jobtask_calls']);
+
+$GLOBALS['jobtask_mode'] = 'timeout';
+$timedOut = $method->invoke($service, ['153390'], 60);
+check(!empty($timedOut['task_type_error']), 'timeout blokkeert de snapshot');
+check(is_string($timedOut['warning']) && str_contains($timedOut['warning'], 'JobTaskLines ophalen mislukt'), 'timeout krijgt een melding: ' . var_export($timedOut['warning'], true));
+check(is_string($timedOut['warning']) && str_contains($timedOut['warning'], 'timed out'), 'timeout noemt de oorzaak: ' . var_export($timedOut['warning'], true));
 
 $GLOBALS['jobtask_mode'] = 'unreadable';
 $unreadable = $method->invoke($service, ['153390'], 60);
 check(($unreadable['totals']['153390'] ?? null) === $expectedFailed['amount'], 'onleesbare JobTaskLines valt terug op de ongefilterde som');
+check(empty($unreadable['task_type_error']), 'onleesbaar antwoord blijft een waarschuwing');
 check(is_string($unreadable['warning']) && str_contains($unreadable['warning'], 'Veld Job_Task_Type bestaat niet op ProjectTaken'), 'onleesbare query houdt de melding');
+check(finance_forecast_blocks_snapshot(['task_type_error' => false, 'warning' => $unreadable['warning']]) === null, 'schema-waarschuwing vervangt de snapshot nog wel');
+
+$many = [];
+for ($i = 0; $i < 40; $i++) {
+    $many[] = '15' . str_pad((string) $i, 4, '0', STR_PAD_LEFT);
+}
+$GLOBALS['jobtask_mode'] = 'many';
+$GLOBALS['jobtask_calls'] = 0;
+$GLOBALS['jobtask_filters'] = [];
+$batched = $method->invoke($service, $many, 60);
+check($GLOBALS['jobtask_calls'] === 2, '40 fallback-projecten worden twee JobTaskLines-batches, kreeg ' . $GLOBALS['jobtask_calls']);
+check(empty($batched['task_type_error']), 'gebatchte query slaagt');
+$covered = [];
+foreach ($GLOBALS['jobtask_filters'] as $batchedFilter) {
+    check(strlen($batchedFilter) <= FINANCE_JOB_TASK_LINES_MAX_FILTER_CHARS, 'filter blijft binnen ' . FINANCE_JOB_TASK_LINES_MAX_FILTER_CHARS . ' tekens: ' . strlen($batchedFilter));
+    check(str_contains($batchedFilter, "Job_Task_Type eq 'Boeking'"), 'elke batch filtert op Boeking');
+    preg_match_all("/Job_No eq '([^']+)'/", $batchedFilter, $coveredMatches);
+    check(count($coveredMatches[1]) <= FINANCE_JOB_TASK_LINES_MAX_PROJECTS, 'batch heeft hoogstens ' . FINANCE_JOB_TASK_LINES_MAX_PROJECTS . ' projecten');
+    foreach ($coveredMatches[1] as $jobNo) {
+        $covered[$jobNo] = true;
+    }
+}
+check(count($covered) === 40, 'elke fallback zit in precies de batches, kreeg ' . count($covered));
+check(($batched['totals']['150000'] ?? null) === 10.0, 'eerste batch-project houdt het Boeking-bedrag');
+check(($batched['totals']['150039'] ?? null) === 10.0, 'laatste batch-project houdt het Boeking-bedrag');
+
+$GLOBALS['jobtask_mode'] = 'fail-many';
+$GLOBALS['jobtask_calls'] = 0;
+$method->invoke($service, $many, 60);
+check($GLOBALS['jobtask_calls'] === 1, 'een mislukte batch stopt de rest, kreeg ' . $GLOBALS['jobtask_calls']);
+
+$GLOBALS['jobtask_mode'] = 'timeout-many';
+$GLOBALS['jobtask_calls'] = 0;
+$method->invoke($service, $many, 60);
+check($GLOBALS['jobtask_calls'] === 1, 'een timeout stopt de rest, kreeg ' . $GLOBALS['jobtask_calls']);
 
 if ($failures > 0) {
     fwrite(STDERR, "{$failures} assertion(s) failed\n");

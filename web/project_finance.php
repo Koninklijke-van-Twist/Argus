@@ -749,6 +749,7 @@ class ProjectFinanceService
             'forecast_totals_by_job' => $totalsByProject,
             'forecast_breakdown_by_job' => $breakdownByProject,
             'warning' => $forecastWarning,
+            'task_type_error' => !empty($costData['task_type_error']),
         ];
     }
 
@@ -756,11 +757,13 @@ class ProjectFinanceService
      * Voorcalculatie kosten uit ProjectTaken (LVS_Baseline_Total_Cost).
      *
      * Per project: taak 000 als die er is, anders 000-000-000, anders de som van de
-     * Boeking-taken. ProjectTaken heeft geen Job_Task_Type; dat type komt uit één
-     * JobTaskLines-query per bedrijf, alleen voor projecten die de detailsom nodig hebben.
-     * Lukt die query niet, dan gaat de som door zonder typefilter en blijft de melding staan.
+     * Boeking-taken. ProjectTaken heeft geen Job_Task_Type; dat type komt uit
+     * JobTaskLines, in batches, alleen voor projecten die de detailsom nodig hebben.
+     * Een schemafout of onleesbaar antwoord houdt de ongefilterde som en de melding.
+     * Een timeout of andere queryfout zet task_type_error, zodat de maand de vorige
+     * snapshot niet vervangt door een stille hang of een halve voorcalculatie.
      *
-     * @return array{totals:array<string,float>,breakdown:array<string,array<int,array<string,mixed>>>,warning:?string}
+     * @return array{totals:array<string,float>,breakdown:array<string,array<int,array<string,mixed>>>,warning:?string,task_type_error:bool}
      */
     private function fetchVoorcalculatieCostsForProjects(array $projectNumbers, int $ttl): array
     {
@@ -795,16 +798,25 @@ class ProjectFinanceService
 
         $bookingKeys = null;
         $typeWarning = null;
+        $taskTypeError = false;
         $fallbackProjects = $this->baselineFallbackProjectNumbers($rowsByProject);
         if ($fallbackProjects !== []) {
             try {
                 $bookingKeys = $this->fetchBookingTaskKeys($fallbackProjects, $ttl);
-            } catch (Throwable $ignoredTaskTypeError) {
-                // Zelfde melding als toen Job_Task_Type op ProjectTaken ontbrak: de som
-                // telt dan kop- en totaalregels mee, en de gebruiker ziet dat.
+            } catch (Throwable $taskTypeLoadError) {
                 $bookingKeys = null;
-                $typeWarning = 'Veld Job_Task_Type bestaat niet op ProjectTaken in ' . $this->environment
-                    . '; totaal- en kopregels kunnen niet worden overgeslagen.';
+                $summary = self::summarizeOdataThrowable($taskTypeLoadError);
+                if (self::jobTaskLinesFailureKeepsUnfilteredSum($summary)) {
+                    // Zelfde melding als toen Job_Task_Type op ProjectTaken ontbrak: de som
+                    // telt dan kop- en totaalregels mee, en de gebruiker ziet dat.
+                    $typeWarning = 'Veld Job_Task_Type bestaat niet op ProjectTaken in ' . $this->environment
+                        . '; totaal- en kopregels kunnen niet worden overgeslagen.';
+                } else {
+                    $taskTypeError = true;
+                    $typeWarning = 'JobTaskLines ophalen mislukt: ' . ($summary !== ''
+                        ? $summary
+                        : 'geen antwoord van Business Central');
+                }
             }
         }
 
@@ -826,7 +838,21 @@ class ProjectFinanceService
             'totals' => $totals,
             'breakdown' => $breakdown,
             'warning' => self::joinForecastWarnings([$typeWarning, $loaded['warning'] ?? null]),
+            'task_type_error' => $taskTypeError,
         ];
+    }
+
+    /**
+     * Schemafout of een antwoord zonder sleutelvelden: de ongefilterde som blijft bruikbaar.
+     * Timeouts, te lange filters en HTTP-fouten zijn dat niet; die moeten zichtbaar falen.
+     */
+    private static function jobTaskLinesFailureKeepsUnfilteredSum(string $summary): bool
+    {
+        if (finance_is_odata_schema_error($summary)) {
+            return true;
+        }
+
+        return str_contains($summary, 'gaf geen Job_No en Job_Task_No');
     }
 
     /**
@@ -873,24 +899,52 @@ class ProjectFinanceService
     }
 
     /**
-     * Taaknummers met Job_Task_Type Boeking, één JobTaskLines-query voor dit bedrijf.
-     * Mímir negeert $select; het filter houdt de set klein. Geen query per project.
+     * Taaknummers met Job_Task_Type Boeking.
+     * Mímir negeert $select; elke batch blijft klein genoeg om af te ronden.
+     * Eén mislukte batch stopt de reeks. Geen herhaling per project: dat zou
+     * een timeout vermenigvuldigen tot een nieuwe hang.
      *
      * @param list<string> $projectNumbers
      * @return array<string,true> sleutel "project\ntaak", beide genormaliseerd
      */
     private function fetchBookingTaskKeys(array $projectNumbers, int $ttl): array
     {
-        $projectFilter = self::buildJobNoOrFilter($projectNumbers);
-        if ($projectFilter === '') {
+        $chunks = finance_job_task_lines_chunks($projectNumbers);
+        if ($chunks === []) {
             return [];
         }
 
-        $url = $this->companyEntityUrlWithQuery('JobTaskLines', [
-            '$select' => 'Job_No,Job_Task_No,Job_Task_Type',
-            '$filter' => $projectFilter . " and Job_Task_Type eq '" . self::escapeOdataString(FINANCE_BOOKING_TASK_TYPE) . "'",
-        ]);
-        $rows = odata_get_all($url, $this->auth, $ttl);
+        $deadline = microtime(true) + FINANCE_JOB_TASK_LINES_DEADLINE_SECONDS;
+        $keys = [];
+        foreach ($chunks as $chunk) {
+            if (microtime(true) > $deadline) {
+                throw new RuntimeException(
+                    'JobTaskLines ophalen duurde langer dan ' . FINANCE_JOB_TASK_LINES_DEADLINE_SECONDS
+                    . ' seconden en is afgebroken, zodat de maandverversing niet blijft hangen.'
+                );
+            }
+
+            $filter = finance_job_task_lines_filter($chunk);
+            if ($filter === '') {
+                continue;
+            }
+
+            $url = $this->companyEntityUrlWithQuery('JobTaskLines', [
+                '$select' => 'Job_No,Job_Task_No,Job_Task_Type',
+                '$filter' => $filter,
+            ]);
+            $keys += $this->bookingKeysFromJobTaskRows(odata_get_all($url, $this->auth, $ttl));
+        }
+
+        return $keys;
+    }
+
+    /**
+     * @param array<int,mixed> $rows
+     * @return array<string,true>
+     */
+    private function bookingKeysFromJobTaskRows(array $rows): array
+    {
         $keys = [];
         $sawRow = false;
         $readable = false;
