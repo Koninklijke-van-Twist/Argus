@@ -124,7 +124,7 @@ class ProjectFinanceService
             ],
             // Voorcalculatie (statisch, huidige BC-stand):
             // - kosten: ProjectTaken.LVS_Baseline_Total_Cost. Taak 000, anders 000-000-000,
-            //   anders de som van de detailtaken (geen totaal-/kopregels).
+            //   anders de som van Boeking-taken (type uit JobTaskLines, niet ProjectTaken).
             // - opbrengst VC: ProjectTaken.LVS_Schedule_Total_Price_2 voor Job_Task_No '000' (schedule/budget)
             // - opbrengst: FactureerbareProjectPlanningsRegels, G/L-type en No 800000, geen prognose.
             //   Niet LVS_Contract_Total_Price_2 en niet het factureerbaar-vlaggetje.
@@ -540,7 +540,7 @@ class ProjectFinanceService
     /**
      * Haalt voorcalculatie op per project (huidige BC-stand, geen historie).
      *
-     * Kosten: ProjectTaken.LVS_Baseline_Total_Cost (taak 000, anders 000-000-000, anders detailsom).
+     * Kosten: ProjectTaken.LVS_Baseline_Total_Cost (taak 000, anders 000-000-000, anders som Boeking-taken).
      * Opbrengst VC: ProjectTaken.LVS_Schedule_Total_Price_2 (Job_Task_No 000 / schedule-prijs).
      * Opbrengst/aanneemsom en opbrengst meerwerk: FactureerbareProjectPlanningsRegels, G/L 800000, geen prognose.
      * Opbrengst telt regels met leeg én gevuld LVS_Job_Change_Order_No.
@@ -756,9 +756,9 @@ class ProjectFinanceService
      * Voorcalculatie kosten uit ProjectTaken (LVS_Baseline_Total_Cost).
      *
      * Per project: taak 000 als die er is, anders 000-000-000, anders de som van de
-     * detailtaken. Totaal- en kopregels tellen in die som niet mee wanneer Job_Task_Type
-     * beschikbaar is. Ontbreekt dat veld op de pagina, dan gaat de som door zonder dat
-     * filter en blijft er één melding staan.
+     * Boeking-taken. ProjectTaken heeft geen Job_Task_Type; dat type komt uit één
+     * JobTaskLines-query per bedrijf, alleen voor projecten die de detailsom nodig hebben.
+     * Lukt die query niet, dan gaat de som door zonder typefilter en blijft de melding staan.
      *
      * @return array{totals:array<string,float>,breakdown:array<string,array<int,array<string,mixed>>>,warning:?string}
      */
@@ -766,46 +766,18 @@ class ProjectFinanceService
     {
         $totals = [];
         $breakdown = [];
-        $selectFields = ['Job_No', 'Job_Task_No', 'Description', 'Job_Task_Type', FINANCE_BASELINE_COST_FIELD];
-        $loaded = ['rows' => [], 'warning' => null, 'fatal' => false];
-        $schemaWarnings = [];
-        $attempt = 0;
-
-        while ($attempt < 2) {
-            $attempt++;
-            $selectList = $selectFields;
-            $loaded = $this->fetchRowsForJobChunks(
-                $projectNumbers,
-                $ttl,
-                8,
-                function (string $projectFilter) use ($selectList): string {
-                    return $this->companyEntityUrlWithQuery('ProjectTaken', [
-                        '$select' => implode(',', $selectList),
-                        '$filter' => $projectFilter,
-                    ]);
-                },
-                'Voorcalculatie kosten ophalen mislukt (ProjectTaken)'
-            );
-
-            $missing = !empty($loaded['fatal'])
-                ? finance_odata_missing_property((string) ($loaded['warning'] ?? ''))
-                : null;
-            if ($missing === 'Job_Task_Type' && in_array('Job_Task_Type', $selectFields, true)) {
-                $schemaWarnings[] = 'Veld Job_Task_Type bestaat niet op ProjectTaken in ' . $this->environment
-                    . '; totaal- en kopregels kunnen niet worden overgeslagen.';
-                $selectFields = array_values(array_filter(
-                    $selectFields,
-                    static function (string $field): bool {
-                        return $field !== 'Job_Task_Type';
-                    }
-                ));
-                continue;
-            }
-
-            break;
-        }
-
-        $loaded['warning'] = self::joinForecastWarnings(array_merge($schemaWarnings, [$loaded['warning'] ?? null]));
+        $loaded = $this->fetchRowsForJobChunks(
+            $projectNumbers,
+            $ttl,
+            8,
+            function (string $projectFilter): string {
+                return $this->companyEntityUrlWithQuery('ProjectTaken', [
+                    '$select' => 'Job_No,Job_Task_No,Description,' . FINANCE_BASELINE_COST_FIELD,
+                    '$filter' => $projectFilter,
+                ]);
+            },
+            'Voorcalculatie kosten ophalen mislukt (ProjectTaken)'
+        );
 
         $rowsByProject = [];
         foreach ($loaded['rows'] as $row) {
@@ -821,7 +793,26 @@ class ProjectFinanceService
             $rowsByProject[self::normalizeMatchValue($projectNo)][] = $row;
         }
 
+        $bookingKeys = null;
+        $typeWarning = null;
+        $fallbackProjects = $this->baselineFallbackProjectNumbers($rowsByProject);
+        if ($fallbackProjects !== []) {
+            try {
+                $bookingKeys = $this->fetchBookingTaskKeys($fallbackProjects, $ttl);
+            } catch (Throwable $ignoredTaskTypeError) {
+                // Zelfde melding als toen Job_Task_Type op ProjectTaken ontbrak: de som
+                // telt dan kop- en totaalregels mee, en de gebruiker ziet dat.
+                $bookingKeys = null;
+                $typeWarning = 'Veld Job_Task_Type bestaat niet op ProjectTaken in ' . $this->environment
+                    . '; totaal- en kopregels kunnen niet worden overgeslagen.';
+            }
+        }
+
         foreach ($rowsByProject as $normalizedProject => $projectRows) {
+            if ($bookingKeys !== null && finance_baseline_cost_uses_detail_sum($projectRows)) {
+                $projectRows = $this->keepBookingBaselineRows($projectRows, $bookingKeys, $normalizedProject);
+            }
+
             $resolved = finance_baseline_cost_from_task_rows($projectRows);
             if ($resolved['amount'] === 0.0) {
                 continue;
@@ -834,8 +825,132 @@ class ProjectFinanceService
         return [
             'totals' => $totals,
             'breakdown' => $breakdown,
-            'warning' => $loaded['warning'],
+            'warning' => self::joinForecastWarnings([$typeWarning, $loaded['warning'] ?? null]),
         ];
+    }
+
+    /**
+     * Projectnummers waarvan Kosten VC de detailsom is (geen taak 000 of 000-000-000).
+     *
+     * @param array<string,array<int,mixed>> $rowsByProject
+     * @return list<string>
+     */
+    private function baselineFallbackProjectNumbers(array $rowsByProject): array
+    {
+        $numbers = [];
+        $seen = [];
+        foreach ($rowsByProject as $projectRows) {
+            if (!is_array($projectRows) || !finance_baseline_cost_uses_detail_sum($projectRows)) {
+                continue;
+            }
+
+            $original = '';
+            foreach ($projectRows as $row) {
+                if (!is_array($row)) {
+                    continue;
+                }
+
+                $original = trim((string) ($row['Job_No'] ?? ''));
+                if ($original !== '') {
+                    break;
+                }
+            }
+
+            if ($original === '') {
+                continue;
+            }
+
+            $key = self::normalizeMatchValue($original);
+            if (isset($seen[$key])) {
+                continue;
+            }
+
+            $seen[$key] = true;
+            $numbers[] = $original;
+        }
+
+        return $numbers;
+    }
+
+    /**
+     * Taaknummers met Job_Task_Type Boeking, één JobTaskLines-query voor dit bedrijf.
+     * Mímir negeert $select; het filter houdt de set klein. Geen query per project.
+     *
+     * @param list<string> $projectNumbers
+     * @return array<string,true> sleutel "project\ntaak", beide genormaliseerd
+     */
+    private function fetchBookingTaskKeys(array $projectNumbers, int $ttl): array
+    {
+        $projectFilter = self::buildJobNoOrFilter($projectNumbers);
+        if ($projectFilter === '') {
+            return [];
+        }
+
+        $url = $this->companyEntityUrlWithQuery('JobTaskLines', [
+            '$select' => 'Job_No,Job_Task_No,Job_Task_Type',
+            '$filter' => $projectFilter . " and Job_Task_Type eq '" . self::escapeOdataString(FINANCE_BOOKING_TASK_TYPE) . "'",
+        ]);
+        $rows = odata_get_all($url, $this->auth, $ttl);
+        $keys = [];
+        $sawRow = false;
+        $readable = false;
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $sawRow = true;
+            $projectNo = self::normalizeMatchValue((string) ($row['Job_No'] ?? ''));
+            $taskNo = self::normalizeMatchValue((string) ($row['Job_Task_No'] ?? ''));
+            if ($projectNo === '' || $taskNo === '') {
+                continue;
+            }
+
+            $readable = true;
+            if (array_key_exists('Job_Task_Type', $row) && !finance_task_type_is_booking((string) $row['Job_Task_Type'])) {
+                continue;
+            }
+
+            $keys[$projectNo . "\n" . $taskNo] = true;
+        }
+
+        if ($sawRow && !$readable) {
+            throw new RuntimeException('JobTaskLines gaf geen Job_No en Job_Task_No.');
+        }
+
+        return $keys;
+    }
+
+    /**
+     * Houdt ProjectTaken-regels over waarvan JobTaskLines het type Boeking gaf.
+     *
+     * @param array<int,mixed> $projectRows
+     * @param array<string,true> $bookingKeys
+     * @return list<array<string,mixed>>
+     */
+    private function keepBookingBaselineRows(array $projectRows, array $bookingKeys, string $normalizedProject): array
+    {
+        $kept = [];
+        foreach ($projectRows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $taskNo = trim((string) ($row['Job_Task_No'] ?? ''));
+            if ($taskNo === '') {
+                continue;
+            }
+
+            $key = $normalizedProject . "\n" . self::normalizeMatchValue($taskNo);
+            if (!isset($bookingKeys[$key])) {
+                continue;
+            }
+
+            $row['Job_Task_Type'] = FINANCE_BOOKING_TASK_TYPE;
+            $kept[] = $row;
+        }
+
+        return $kept;
     }
 
     /**
