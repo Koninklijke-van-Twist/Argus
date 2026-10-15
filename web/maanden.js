@@ -16,7 +16,7 @@
         : 'maanden.php?action=fetch_sub_planning';
     const columnSteps = Array.isArray(payload.column_steps) ? payload.column_steps : [];
     const targetColumnSteps = Array.isArray(payload.target_column_steps) ? payload.target_column_steps : [];
-    const deleteUrl = typeof payload.delete_url === 'string' ? payload.delete_url : 'maanden.php?action=delete_month';
+    const beginRefreshUrl = typeof payload.begin_refresh_url === 'string' ? payload.begin_refresh_url : 'maanden.php?action=begin_month_refresh';
     const detailUrl = typeof payload.detail_url === 'string' ? payload.detail_url : 'maand-detail.php';
     const saveSettingsUrl = typeof payload.save_settings_url === 'string' ? payload.save_settings_url : 'maanden.php?action=save_user_settings';
     const currentMonth = typeof payload.current_month === 'string' ? payload.current_month : '';
@@ -765,7 +765,7 @@
         {
             confirm(
                 'Maand verversen',
-                'Weet u zeker dat u ' + formatMonth(ym) + ' wilt verversen? De bestaande data wordt overschreven.',
+                'Weet u zeker dat u ' + formatMonth(ym) + ' wilt verversen? De huidige gegevens blijven beschikbaar tot de nieuwe snapshot compleet is.',
                 function ()
                 {
                     refreshMonth(ym);
@@ -881,7 +881,7 @@
         }).catch(function () {});
     }
 
-    function runMonthBuildFlow (ym, successMessage)
+    function runMonthBuildFlow (ym, successMessage, refreshId)
     {
         const effectiveTargetColumnSteps = targetColumnSteps.length > 0
             ? targetColumnSteps
@@ -963,7 +963,7 @@
                 pageLoaderText.textContent = 'Voorcalculatie ' + formatMonth(ym) + ' (' + (completedSteps + 1) + '/' + totalSteps + ')';
             }
 
-            const body = new URLSearchParams({ target_month: ym, company: selectedCompany });
+            const body = new URLSearchParams({ target_month: ym, company: selectedCompany, refresh_id: refreshId });
             fetch(subPlanningUrl, { method: 'POST', body: body })
                 .then(parseFetchResponse)
                 .then(function (json)
@@ -1024,6 +1024,7 @@
                 batch_month: ym,
                 company: selectedCompany,
                 column_key: step.key,
+                refresh_id: refreshId,
             });
             if (isProjectDetails)
             {
@@ -1089,7 +1090,7 @@
 
         function buildSnapshot ()
         {
-            const body = new URLSearchParams({ target_month: ym, company: selectedCompany });
+            const body = new URLSearchParams({ target_month: ym, company: selectedCompany, refresh_id: refreshId });
             fetch('maanden.php?action=build_month_snapshot', { method: 'POST', body: body })
                 .then(parseFetchResponse)
                 .then(function (json)
@@ -1118,37 +1119,39 @@
         runTargetColumnStep();
     }
 
-    function refreshMonth (ym)
+    function beginMonthBuild (ym, successMessage)
     {
-        showLoader('Bestaande maand verwijderen...');
+        showLoader('Bezig met ophalen...');
 
         const body = new URLSearchParams({ year_month: ym, company: selectedCompany });
-        fetch(deleteUrl, { method: 'POST', body: body })
+        fetch(beginRefreshUrl, { method: 'POST', body: body })
             .then(parseFetchResponse)
             .then(function (json)
             {
-                if (!json.ok)
+                if (!json.ok || !json.refresh_id)
                 {
                     hideLoader();
-                    toast('Fout bij verwijderen van ' + formatMonth(ym) + ': ' + (json.error || 'Onbekende fout'), true, errorContext(ym, 'Maand verwijderen'));
+                    toast('Fout bij starten van ' + formatMonth(ym) + ': ' + (json.error || 'Onbekende fout'), true, errorContext(ym, 'Maand verversen'));
                     return;
                 }
 
-                removeMonthSummary(ym);
-                ensureAddableMonth(ym);
-                renderGrid();
-                runMonthBuildFlow(ym, 'is ververst.');
+                runMonthBuildFlow(ym, successMessage, String(json.refresh_id));
             })
             .catch(function (err)
             {
                 hideLoader();
-                toast('Netwerkfout bij verwijderen van ' + formatMonth(ym) + ': ' + err.message, true, errorContext(ym, 'Maand verwijderen', err));
+                toast('Netwerkfout bij starten van ' + formatMonth(ym) + ': ' + err.message, true, errorContext(ym, 'Maand verversen', err));
             });
+    }
+
+    function refreshMonth (ym)
+    {
+        beginMonthBuild(ym, 'is ververst.');
     }
 
     function addMonth (ym)
     {
-        runMonthBuildFlow(ym, 'is toegevoegd.');
+        beginMonthBuild(ym, 'is toegevoegd.');
     }
 
     function buildBatchMonths (targetYm)

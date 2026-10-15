@@ -388,8 +388,13 @@ function odata_get_all(string $url, array $auth, $ttlSeconds = 300): array
 
     $all = [];
     $next = $url;
+    $seenPages = [];
+    $startedAt = microtime(true);
+    $pageNumber = 0;
 
-    while ($next) {
+    while (is_string($next) && $next !== '') {
+        $pageNumber++;
+        odata_guard_next_page($next, $seenPages, $pageNumber, $startedAt);
         $resp = odata_get_json($next, $auth);
 
         if (!isset($resp['value']) || !is_array($resp['value'])) {
@@ -397,7 +402,8 @@ function odata_get_all(string $url, array $auth, $ttlSeconds = 300): array
         }
 
         $all = array_merge($all, $resp['value']);
-        $next = $resp['@odata.nextLink'] ?? null;
+        $nextLink = $resp['@odata.nextLink'] ?? null;
+        $next = is_string($nextLink) && $nextLink !== '' ? $nextLink : '';
         consolelog("Reading next chunk...\n");
     }
 
@@ -407,6 +413,41 @@ function odata_get_all(string $url, array $auth, $ttlSeconds = 300): array
     return $all;
 }
 
+/**
+ * Stopt een OData-pagina die zich herhaalt, nooit eindigt, of de tijdsgrens voorbij is.
+ * Zonder deze grens blijft een nextLink-lus of een stil BC-antwoord de PHP-request
+ * vasthouden (set_time_limit 0) en ziet de gebruiker geen fout.
+ *
+ * @param array<string,true> $seenUrls
+ */
+function odata_guard_next_page(string $nextUrl, array &$seenUrls, int $pageNumber, float $startedAt, ?float $now = null): void
+{
+    if (isset($seenUrls[$nextUrl])) {
+        throw new Exception('OData-paginering herhaalt dezelfde pagina en is afgebroken.');
+    }
+
+    $seenUrls[$nextUrl] = true;
+    $maxPages = 500;
+    if ($pageNumber > $maxPages) {
+        throw new Exception('OData-paginering stopte na ' . $maxPages . " pagina's zonder einde.");
+    }
+
+    $deadline = odata_direct_fetch_deadline_seconds();
+    $now = $now ?? microtime(true);
+    if (($now - $startedAt) > $deadline) {
+        throw new Exception('OData-oproep duurde langer dan ' . $deadline . ' seconden en is afgebroken.');
+    }
+}
+
+/**
+ * Hele directe BC-fetch, niet per pagina. Drie keer de web/CLI-timeout van Mímir:
+ * een paar trage pagina's mogen slagen, een stille hang niet.
+ */
+function odata_direct_fetch_deadline_seconds(): int
+{
+    return odata_mimir_timeout_seconds() * 3;
+}
+
 function odata_get_json(string $url, array $auth): array
 {
     $ch = curl_init($url);
@@ -414,6 +455,8 @@ function odata_get_json(string $url, array $auth): array
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_CONNECTTIMEOUT => odata_mimir_connect_timeout_seconds(),
+        CURLOPT_TIMEOUT => odata_mimir_timeout_seconds(),
         CURLOPT_USERAGENT => $userAgent,
         CURLOPT_HTTPHEADER => [
             "Accept: application/json",

@@ -65,17 +65,18 @@ function maand_save(string $company, string $yearMonth, array $data): bool
 {
     maanden_cache_dir();
     $path = maand_cache_path($company, $yearMonth);
-    $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
-    if (!is_string($json)) {
-        return false;
-    }
-    return file_put_contents($path, $json, LOCK_EX) !== false;
+
+    return argus_publish_snapshot_file(
+        $path,
+        $data,
+        JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT
+    );
 }
 
 function maand_delete(string $company, string $yearMonth): bool
 {
     $path = maand_cache_path($company, $yearMonth);
-    batch_wip_delete($company, $yearMonth);
+    batch_wip_delete_all($company, $yearMonth);
     if (is_file($path)) {
         return @unlink($path);
     }
@@ -539,16 +540,19 @@ function project_modal_collect_for_projects(string $company, string $yearMonth, 
     return $byProject;
 }
 
-function batch_wip_path(string $company, string $targetYearMonth): string
+function batch_wip_path(string $company, string $targetYearMonth, string $refreshId = ''): string
 {
     $safeCompany = preg_replace('/[^a-z0-9_-]/i', '_', strtolower(trim($company)));
     $safeYM = preg_replace('/[^0-9-]/', '', $targetYearMonth);
-    return maanden_cache_dir() . DIRECTORY_SEPARATOR . $safeCompany . '_wip_' . $safeYM . argus_month_cache_suffix();
+    $refreshId = argus_month_refresh_id($refreshId);
+    $token = $refreshId !== '' ? ('_' . $refreshId) : '';
+
+    return maanden_cache_dir() . DIRECTORY_SEPARATOR . $safeCompany . '_wip_' . $safeYM . $token . argus_month_cache_suffix();
 }
 
-function batch_wip_load(string $company, string $targetYearMonth): array
+function batch_wip_load(string $company, string $targetYearMonth, string $refreshId = ''): array
 {
-    $path = batch_wip_path($company, $targetYearMonth);
+    $path = batch_wip_path($company, $targetYearMonth, $refreshId);
     if (!is_file($path)) {
         return [];
     }
@@ -561,22 +565,59 @@ function batch_wip_load(string $company, string $targetYearMonth): array
     return $data;
 }
 
-function batch_wip_save(string $company, string $targetYearMonth, array $data): void
+function batch_wip_save(string $company, string $targetYearMonth, array $data, string $refreshId = ''): void
 {
     $data['cache_version'] = ARGUS_MONTH_CACHE_VERSION;
-    $path = batch_wip_path($company, $targetYearMonth);
+    $path = batch_wip_path($company, $targetYearMonth, $refreshId);
     $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if (is_string($json)) {
-        file_put_contents($path, $json, LOCK_EX);
+        argus_write_file_atomically($path, $json);
     }
 }
 
-function batch_wip_delete(string $company, string $targetYearMonth): void
+function batch_wip_delete(string $company, string $targetYearMonth, string $refreshId = ''): void
 {
-    $path = batch_wip_path($company, $targetYearMonth);
+    $path = batch_wip_path($company, $targetYearMonth, $refreshId);
     if (is_file($path)) {
         @unlink($path);
     }
+}
+
+/**
+ * Verwijdert elke WIP van deze maand (legacy én refresh-ids), niet de gepubliceerde snapshot.
+ */
+function batch_wip_delete_all(string $company, string $targetYearMonth): void
+{
+    $dir = maanden_cache_dir();
+    $safeCompany = preg_replace('/[^a-z0-9_-]/i', '_', strtolower(trim($company)));
+    $safeYM = preg_replace('/[^0-9-]/', '', $targetYearMonth);
+    $prefix = $safeCompany . '_wip_' . $safeYM;
+    $suffix = argus_month_cache_suffix();
+    $entries = @scandir($dir);
+    if (!is_array($entries)) {
+        return;
+    }
+
+    foreach ($entries as $entry) {
+        if (!str_starts_with($entry, $prefix) || !str_ends_with($entry, $suffix)) {
+            continue;
+        }
+
+        $middle = substr($entry, strlen($prefix), -strlen($suffix));
+        if ($middle !== '' && preg_match('/^_[a-f0-9]{16}$/', $middle) !== 1) {
+            continue;
+        }
+
+        $path = $dir . DIRECTORY_SEPARATOR . $entry;
+        if (is_file($path)) {
+            @unlink($path);
+        }
+    }
+}
+
+function batch_wip_refresh_id_from_request(): string
+{
+    return argus_month_refresh_id((string) ($_POST['refresh_id'] ?? ''));
 }
 
 /**
@@ -1054,7 +1095,7 @@ function fetch_month_data(string $company, string $yearMonth, array $auth): arra
     }
 
     // Clean up WIP cache now that the full snapshot is built
-    batch_wip_delete($company, $yearMonth);
+    batch_wip_delete_all($company, $yearMonth);
 
     return $result;
 }
@@ -1403,7 +1444,8 @@ if (($_GET['action'] ?? '') === 'fetch_column_batch') {
             throw new RuntimeException('Kolom ' . $columnKey . ' wordt alleen nog per snapshot opgehaald.');
         }
 
-        $wip = batch_wip_load($company, $targetYm);
+        $refreshId = batch_wip_refresh_id_from_request();
+        $wip = batch_wip_load($company, $targetYm, $refreshId);
         $ttl = odata_ttl_for_month($targetYm);
         $columnDataTarget = is_array($wip['column_data_target'] ?? null) ? $wip['column_data_target'] : [];
         $chunkIndex = max(0, (int) ($_POST['chunk_index'] ?? 0));
@@ -1441,30 +1483,24 @@ if (($_GET['action'] ?? '') === 'fetch_column_batch') {
             }
 
             maanden_seed_open_project_details($columnDataTarget, $wip);
-            $missingProjectNumbers = maanden_project_numbers_missing_details($allProjectNumbers, $columnDataTarget);
-            $projectChunks = array_chunk($missingProjectNumbers, PROJECT_DETAILS_FETCH_CHUNK_SIZE);
-            $totalChunks = max(1, count($projectChunks));
-            $response['total_chunks'] = $totalChunks;
-
-            if ($missingProjectNumbers === []) {
-                if (!isset($columnDataTarget[$columnKey]) || !is_array($columnDataTarget[$columnKey])) {
-                    $columnDataTarget[$columnKey] = [
-                        'column' => 'project_details',
-                        'by_project' => [],
-                    ];
-                }
-                $response['chunks_complete'] = true;
-            } else {
-                if ($chunkIndex >= $totalChunks) {
-                    $response['chunks_complete'] = true;
-                } else {
-                    $chunkProjects = $projectChunks[$chunkIndex] ?? [];
-                    $columnResult = bc_fetch_run_column($columnKey, $company, $targetYm, $chunkProjects, $auth, $ttl);
-                    $existing = is_array($columnDataTarget[$columnKey] ?? null) ? $columnDataTarget[$columnKey] : [];
-                    $columnDataTarget[$columnKey] = maanden_merge_project_details_column($existing, $columnResult);
-                    $response['chunks_complete'] = ($chunkIndex + 1) >= $totalChunks;
-                    $response['warning'] = $columnResult['warning'] ?? null;
-                }
+            if (!isset($columnDataTarget[$columnKey]) || !is_array($columnDataTarget[$columnKey])) {
+                $columnDataTarget[$columnKey] = [
+                    'column' => 'project_details',
+                    'by_project' => [],
+                ];
+            }
+            // Chunks op de volledige projectlijst, niet op wat er nog mist.
+            // Een krimpende lijst liet chunk-index 5 voorbij de nieuwe total vallen,
+            // waardoor delen 6-8 nooit werden opgehaald.
+            $plan = bc_fetch_project_detail_chunk_at($allProjectNumbers, $chunkIndex, PROJECT_DETAILS_FETCH_CHUNK_SIZE);
+            $response['total_chunks'] = $plan['total_chunks'];
+            $response['chunks_complete'] = $plan['chunks_complete'];
+            $toFetch = maanden_project_numbers_missing_details($plan['chunk_projects'], $columnDataTarget);
+            if ($toFetch !== []) {
+                $columnResult = bc_fetch_run_column($columnKey, $company, $targetYm, $toFetch, $auth, $ttl);
+                $existing = is_array($columnDataTarget[$columnKey] ?? null) ? $columnDataTarget[$columnKey] : [];
+                $columnDataTarget[$columnKey] = maanden_merge_project_details_column($existing, $columnResult);
+                $response['warning'] = $columnResult['warning'] ?? null;
             }
 
             $wip['column_data_target'] = $columnDataTarget;
@@ -1476,7 +1512,7 @@ if (($_GET['action'] ?? '') === 'fetch_column_batch') {
             $response['warning'] = $columnResult['warning'] ?? null;
         }
 
-        batch_wip_save($company, $targetYm, $wip);
+        batch_wip_save($company, $targetYm, $wip, $refreshId);
 
         echo json_encode($response, JSON_UNESCAPED_UNICODE);
     } catch (Throwable $e) {
@@ -1693,12 +1729,14 @@ if (($_GET['action'] ?? '') === 'fetch_sub_planning') {
 
     try {
         $ttl = odata_ttl_for_month($targetYm);
-        $wip = batch_wip_load($company, $targetYm);
+        $refreshId = batch_wip_refresh_id_from_request();
+        $wip = batch_wip_load($company, $targetYm, $refreshId);
         maanden_wip_sync_project_numbers_from_ohw($wip);
         $projectNumbers = wip_project_numbers($wip);
         $planningTotalsByJob = [];
         $planningBreakdownByJob = [];
         $planningWarning = null;
+        $blockingError = null;
 
         if ($projectNumbers !== []) {
             try {
@@ -1715,18 +1753,24 @@ if (($_GET['action'] ?? '') === 'fetch_sub_planning') {
                 $planningWarning = is_string($forecastWarning) && trim($forecastWarning) !== ''
                     ? trim($forecastWarning)
                     : null;
+                $blockingError = finance_forecast_blocks_snapshot($projectForecast);
             } catch (Throwable $forecastLoadError) {
-                // Forecast mag ProjectPosten-snapshot niet blokkeren.
-                $planningTotalsByJob = [];
-                $planningBreakdownByJob = [];
-                $planningWarning = $forecastLoadError->getMessage();
+                // Een echte fout (timeout, te lange filter) blokkeert de publicatie.
+                // De vorige snapshot blijft staan. Alleen een lege waarschuwing deed dat niet.
+                $blockingError = $forecastLoadError->getMessage();
             }
+        }
+
+        if (is_string($blockingError) && $blockingError !== '') {
+            http_response_code(500);
+            echo json_encode(['ok' => false, 'error' => $blockingError], JSON_UNESCAPED_UNICODE);
+            exit;
         }
 
         $wip['planning_totals_by_job'] = $planningTotalsByJob;
         $wip['planning_breakdown_by_job'] = $planningBreakdownByJob;
         $wip['planning_warning'] = $planningWarning;
-        batch_wip_save($company, $targetYm, $wip);
+        batch_wip_save($company, $targetYm, $wip, $refreshId);
 
         echo json_encode([
             'ok' => true,
@@ -1759,13 +1803,22 @@ if (($_GET['action'] ?? '') === 'build_month_snapshot') {
     }
 
     try {
-        $wip = batch_wip_load($company, $targetYm);
+        $refreshId = batch_wip_refresh_id_from_request();
+        $wip = batch_wip_load($company, $targetYm, $refreshId);
 
         $columnDataTarget = is_array($wip['column_data_target'] ?? null) ? $wip['column_data_target'] : [];
+        $hasOhwColumn = is_array($columnDataTarget['grootboekposten_ohw'] ?? null);
+        $hasLegacyFinance = is_array($wip['project_finance'] ?? null) && $wip['project_finance'] !== [];
+        if (!$hasOhwColumn && !$hasLegacyFinance) {
+            throw new RuntimeException('Geen opgebouwde gegevens om te publiceren. De vorige snapshot blijft beschikbaar.');
+        }
+
         if (is_array($columnDataTarget['grootboekposten_ohw'] ?? null)) {
             $data = build_snapshot_from_column_wip($company, $targetYm, $wip);
-            maand_save($company, $targetYm, $data);
-            batch_wip_delete($company, $targetYm);
+            if (!maand_save($company, $targetYm, $data)) {
+                throw new RuntimeException('De nieuwe snapshot kon niet worden opgeslagen. De vorige snapshot blijft beschikbaar.');
+            }
+            batch_wip_delete($company, $targetYm, $refreshId);
 
             echo json_encode(['ok' => true, 'data' => $data], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
             exit;
@@ -1787,8 +1840,10 @@ if (($_GET['action'] ?? '') === 'build_month_snapshot') {
             $planningBreakdownByJob
         );
 
-        maand_save($company, $targetYm, $data);
-        batch_wip_delete($company, $targetYm);
+        if (!maand_save($company, $targetYm, $data)) {
+            throw new RuntimeException('De nieuwe snapshot kon niet worden opgeslagen. De vorige snapshot blijft beschikbaar.');
+        }
+        batch_wip_delete($company, $targetYm, $refreshId);
 
         echo json_encode(['ok' => true, 'data' => $data], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     } catch (Throwable $e) {
@@ -1824,6 +1879,31 @@ if (($_GET['action'] ?? '') === 'refresh_month') {
         http_response_code(500);
         echo json_encode(['ok' => false, 'error' => $e->getMessage()], JSON_UNESCAPED_UNICODE);
     }
+    exit;
+}
+
+// Start een verversing zonder de gepubliceerde snapshot te verwijderen.
+// De opbouw schrijft naar een eigen WIP-bestand; pas een complete snapshot vervangt de oude.
+if (($_GET['action'] ?? '') === 'begin_month_refresh') {
+    header('Content-Type: application/json; charset=utf-8');
+
+    $ym = trim((string) ($_POST['year_month'] ?? $_POST['target_month'] ?? ''));
+    if (!preg_match('/^\d{4}-\d{2}$/', $ym)) {
+        http_response_code(400);
+        echo json_encode(['ok' => false, 'error' => 'Ongeldige maand'], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+
+    $company = trim((string) ($_POST['company'] ?? $companies[0]));
+    if (!in_array($company, $companies, true)) {
+        $company = $companies[0];
+    }
+
+    batch_wip_delete_all($company, $ym);
+    echo json_encode([
+        'ok' => true,
+        'refresh_id' => bin2hex(random_bytes(8)),
+    ], JSON_UNESCAPED_UNICODE);
     exit;
 }
 
@@ -1964,6 +2044,7 @@ $initialData = [
         return (string) $key !== 'planning' && !empty($cfg['target_scoped']);
     }, ARRAY_FILTER_USE_BOTH))),
     'delete_url' => 'maanden.php?action=delete_month',
+    'begin_refresh_url' => 'maanden.php?action=begin_month_refresh',
     'detail_url' => 'maand-detail.php',
     'save_settings_url' => 'maanden.php?action=save_user_settings',
 ];
