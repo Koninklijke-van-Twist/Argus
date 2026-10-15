@@ -174,10 +174,13 @@ function find_prev_month(string $yearMonth, array $savedMonths): ?string
  * Page load
  */
 $currentUserEmail = current_user_email_d();
+argus_release_request_session();
 
-// Laden van alle bedrijven uit alle actieve environments
+// Laden van alle bedrijven uit alle actieve environments.
+// Zelfde bestandscache als maanden.php, zodat deze pagina niet op Mímir wacht
+// terwijl een voorcalculatie-chunk bezig is.
 try {
-    $discoveryResult = auth_discover_companies_across_active_environments(300);
+    $discoveryResult = auth_discover_companies_across_active_environments(AUTH_COMPANY_DISCOVERY_TTL_SECONDS);
     $companies = is_array($discoveryResult['companies'] ?? null) ? $discoveryResult['companies'] : [];
 } catch (Throwable $e) {
     $companies = [];

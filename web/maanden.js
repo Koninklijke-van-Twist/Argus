@@ -913,7 +913,7 @@
 
         const progressState = initProgressList(monthProgressItems);
         appendPlanningProgressItems(progressState, [{
-            key: 'planning::voorcalculatie',
+            key: 'planning::voorcalculatie::0',
             label: formatMonth(ym) + ' · Voorcalculatie',
         }]);
         let totalSteps = monthProgressItems.length + 1;
@@ -923,6 +923,10 @@
         let projectDetailsChunkIndex = 0;
         let projectDetailsTotalChunks = 1;
         let projectDetailsChunksExpanded = false;
+        let voorcalculatieChunkIndex = 0;
+        let voorcalculatieTotalChunks = 1;
+        let voorcalculatieChunksExpanded = false;
+        const shownVoorcalculatieWarnings = {};
 
         function expandProjectDetailsProgressItems (totalChunks)
         {
@@ -953,41 +957,112 @@
             totalSteps += appendMonthProgressItems(progressState, newItems);
         }
 
+        function voorcalculatieProgressLabel (chunkIndex, totalChunks)
+        {
+            const base = formatMonth(ym) + ' · Voorcalculatie';
+            const total = Math.max(1, Number(totalChunks) || 1);
+            if (total <= 1)
+            {
+                return base;
+            }
+
+            return base + ' (' + (Number(chunkIndex) + 1) + '/' + total + ')';
+        }
+
+        function expandVoorcalculatieProgressItems (totalChunks)
+        {
+            const safeTotal = Math.max(1, Number(totalChunks) || 1);
+            voorcalculatieTotalChunks = safeTotal;
+
+            const firstItem = progressState.items['planning::voorcalculatie::0'];
+            if (firstItem && firstItem.labelEl)
+            {
+                firstItem.labelEl.textContent = voorcalculatieProgressLabel(0, safeTotal);
+            }
+
+            if (safeTotal <= 1 || voorcalculatieChunksExpanded)
+            {
+                return;
+            }
+
+            voorcalculatieChunksExpanded = true;
+            const newItems = [];
+            for (let i = 1; i < safeTotal; i++)
+            {
+                newItems.push({
+                    key: 'planning::voorcalculatie::' + i,
+                    label: voorcalculatieProgressLabel(i, safeTotal),
+                });
+            }
+
+            appendPlanningProgressItems(progressState, newItems);
+            totalSteps += newItems.length;
+        }
+
         function runVoorcalculatieStep ()
         {
-            const progressKey = 'planning::voorcalculatie';
+            const chunkIndex = voorcalculatieChunkIndex;
+            const progressKey = 'planning::voorcalculatie::' + chunkIndex;
             markProgressLoading(progressState, progressKey, totalSteps, completedSteps);
             alignProgressWindow(progressState.orderedKeys, progressState, completedSteps);
             if (pageLoaderText)
             {
-                pageLoaderText.textContent = 'Voorcalculatie ' + formatMonth(ym) + ' (' + (completedSteps + 1) + '/' + totalSteps + ')';
+                let loaderLabel = 'Voorcalculatie ' + formatMonth(ym);
+                if (voorcalculatieTotalChunks > 1)
+                {
+                    loaderLabel += ' (' + (chunkIndex + 1) + '/' + voorcalculatieTotalChunks + ')';
+                }
+                pageLoaderText.textContent = loaderLabel + ' (' + (completedSteps + 1) + '/' + totalSteps + ')';
             }
 
-            const body = new URLSearchParams({ target_month: ym, company: selectedCompany, refresh_id: refreshId });
-            fetch(subPlanningUrl, { method: 'POST', body: body })
-                .then(parseFetchResponse)
+            const body = new URLSearchParams({
+                target_month: ym,
+                company: selectedCompany,
+                refresh_id: refreshId,
+                chunk_index: String(chunkIndex),
+            });
+            const stepLabel = voorcalculatieTotalChunks > 1
+                ? 'Voorcalculatie (deel ' + (chunkIndex + 1) + ' van ' + voorcalculatieTotalChunks + ')'
+                : 'Voorcalculatie';
+
+            fetchJsonWithRetry(subPlanningUrl, { method: 'POST', body: body })
                 .then(function (json)
                 {
                     if (!json.ok)
                     {
                         hideLoader();
-                        toast('Fout bij voorcalculatie voor ' + formatMonth(ym) + ': ' + (json.error || 'Onbekende fout'), true, errorContext(ym, 'Voorcalculatie'));
+                        toast('Fout bij voorcalculatie voor ' + formatMonth(ym) + ': ' + (json.error || 'Onbekende fout'), true, errorContext(ym, stepLabel));
                         return;
                     }
 
-                    if (json.warning)
+                    if (json.warning && !shownVoorcalculatieWarnings[json.warning])
                     {
-                        toast('Waarschuwing voorcalculatie (' + formatMonth(ym) + '): ' + json.warning, true, errorContext(ym, 'Voorcalculatie'));
+                        shownVoorcalculatieWarnings[json.warning] = true;
+                        toast('Waarschuwing voorcalculatie (' + formatMonth(ym) + '): ' + json.warning, true, errorContext(ym, stepLabel));
+                    }
+
+                    const totalChunks = Math.max(1, Number(json.total_chunks || 1));
+                    if (chunkIndex === 0)
+                    {
+                        expandVoorcalculatieProgressItems(totalChunks);
                     }
 
                     markProgressDone(progressState, progressKey);
                     completedSteps++;
+
+                    if (!json.chunks_complete && (chunkIndex + 1) < totalChunks)
+                    {
+                        voorcalculatieChunkIndex = chunkIndex + 1;
+                        runVoorcalculatieStep();
+                        return;
+                    }
+
                     buildSnapshot();
                 })
                 .catch(function (err)
                 {
                     hideLoader();
-                    toast('Netwerkfout bij voorcalculatie voor ' + formatMonth(ym) + ': ' + err.message, true, errorContext(ym, 'Voorcalculatie', err));
+                    toast('Netwerkfout bij voorcalculatie voor ' + formatMonth(ym) + ': ' + err.message, true, errorContext(ym, stepLabel, err));
                 });
         }
 
