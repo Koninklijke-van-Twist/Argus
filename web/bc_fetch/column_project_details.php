@@ -10,6 +10,37 @@ require_once __DIR__ . '/../auth_helper.php';
  * Functies
  */
 /**
+ * Bewaart alleen kaarten waarvan het nummer in de gevraagde maandlijst zit.
+ * Een Projecten-antwoord zonder filter mag de lijst niet verbreden.
+ *
+ * @param array<int,mixed> $rows
+ * @param array<int,mixed> $projectNumbers
+ * @return array<string,array{row:array<string,mixed>}>
+ */
+function bc_fetch_project_detail_rows_for_numbers(array $rows, array $projectNumbers): array
+{
+    $allowed = bc_fetch_project_key_set($projectNumbers);
+    $dictionary = bc_fetch_seed_project_dictionary($projectNumbers);
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+
+        $projectNo = trim((string) ($row['No'] ?? ''));
+        $norm = bc_fetch_normalize_project_no($projectNo);
+        if ($norm === '' || !isset($allowed[$norm])) {
+            continue;
+        }
+
+        $dictionary[$norm] = [
+            'row' => $row,
+        ];
+    }
+
+    return $dictionary;
+}
+
+/**
  * Haalt projectdetails op voor de projectnummers van de maand.
  */
 function bc_fetch_column_project_details(string $company, string $yearMonth, array $projectNumbers, array $auth, int $ttl): array
@@ -35,19 +66,9 @@ function bc_fetch_column_project_details(string $company, string $yearMonth, arr
         ]);
 
         $rows = odata_get_all($url, $auth, $ttl);
-        foreach ($rows as $row) {
-            if (!is_array($row)) {
-                continue;
-            }
-
-            $projectNo = trim((string) ($row['No'] ?? ''));
-            if ($projectNo === '') {
-                continue;
-            }
-
-            $dictionary[bc_fetch_normalize_project_no($projectNo)] = [
-                'row' => $row,
-            ];
+        $accepted = bc_fetch_project_detail_rows_for_numbers(is_array($rows) ? $rows : [], $chunk);
+        foreach ($accepted as $norm => $projectValue) {
+            $dictionary[$norm] = $projectValue;
         }
     }
 
