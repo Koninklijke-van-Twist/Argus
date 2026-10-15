@@ -39,6 +39,15 @@ check(str_contains($stray, 'Failed to acquire session lock'), 'losse output opge
 check($output === '{"ok":true}', 'alleen JSON over: ' . var_export($output, true));
 check(json_decode($output, true) === ['ok' => true], 'geldige JSON');
 
+session_start();
+$_SESSION['user'] = ['email' => 'test@kvt.nl'];
+check(session_status() === PHP_SESSION_ACTIVE, 'sessie is actief voor het vrijgeven');
+argus_release_request_session();
+check(session_status() !== PHP_SESSION_ACTIVE, 'sessie-lock is los');
+check(($_SESSION['user']['email'] ?? '') === 'test@kvt.nl', 'sessie blijft leesbaar na vrijgeven');
+argus_release_request_session();
+check(session_status() !== PHP_SESSION_ACTIVE, 'tweede vrijgave is een no-op');
+
 if ($failures > 0) {
     fwrite(STDERR, "{$failures} test(s) gefaald\n");
     exit(1);

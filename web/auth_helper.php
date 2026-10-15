@@ -400,9 +400,139 @@ function auth_discover_companies_via_mimir(): array
 }
 
 /**
+ * Maandpagina's lezen bedrijven uit dit bestand in plaats van bij elk verzoek
+ * companies.php aan te roepen. Tijdens een voorcalculatie-chunk is Mímir bezet;
+ * maand-detail mag daar niet op blijven wachten.
+ */
+const AUTH_COMPANY_DISCOVERY_TTL_SECONDS = 3600;
+
+/**
+ * Pad van de bedrijfslijst-cache. Tests mogen dit overschrijven.
+ */
+function auth_company_discovery_cache_path(): string
+{
+    $override = $GLOBALS['argus_company_discovery_cache_path'] ?? null;
+    if (is_string($override) && $override !== '') {
+        return $override;
+    }
+
+    return __DIR__ . '/cache/companies/discovery.json';
+}
+
+/**
+ * Zet de discovery-globals, zodat een cache-hit dezelfde map oplevert als een live fetch.
+ *
+ * @param array<string,mixed> $result
+ * @return array<string,mixed>
+ */
+function auth_company_discovery_remember(array $result): array
+{
+    $map = is_array($result['map'] ?? null) ? $result['map'] : [];
+    $byEnvironment = is_array($result['by_environment'] ?? null) ? $result['by_environment'] : [];
+    $active = is_array($result['active_environments'] ?? null) ? $result['active_environments'] : [];
+    $GLOBALS['demeter_company_environment_map'] = $map;
+    $GLOBALS['demeter_companies_by_environment'] = $byEnvironment;
+    $GLOBALS['demeter_active_environments'] = $active;
+
+    return $result;
+}
+
+/**
+ * Leest een verse bedrijfslijst. Een lege of te oude cache telt niet.
+ *
+ * @return array<string,mixed>|null
+ */
+function auth_company_discovery_cache_load(int $ttlSeconds): ?array
+{
+    if ($ttlSeconds <= 0) {
+        return null;
+    }
+
+    $path = auth_company_discovery_cache_path();
+    clearstatcache(true, $path);
+    if (!is_file($path)) {
+        return null;
+    }
+
+    $mtime = @filemtime($path);
+    if ($mtime === false || (time() - $mtime) > $ttlSeconds) {
+        return null;
+    }
+
+    $raw = @file_get_contents($path);
+    $decoded = is_string($raw) ? json_decode($raw, true) : null;
+    if (!is_array($decoded)) {
+        return null;
+    }
+
+    $companies = $decoded['companies'] ?? null;
+    if (!is_array($companies) || $companies === []) {
+        return null;
+    }
+
+    return auth_company_discovery_remember($decoded);
+}
+
+/**
+ * Bewaart een geslaagde discovery. Een lege lijst wordt niet gecachet.
+ *
+ * @param array<string,mixed> $result
+ */
+function auth_company_discovery_cache_store(array $result): bool
+{
+    $companies = $result['companies'] ?? null;
+    if (!is_array($companies) || $companies === []) {
+        return false;
+    }
+
+    $json = json_encode($result, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if (!is_string($json)) {
+        return false;
+    }
+
+    $path = auth_company_discovery_cache_path();
+    $dir = dirname($path);
+    if (!is_dir($dir) && !@mkdir($dir, 0777, true) && !is_dir($dir)) {
+        return false;
+    }
+
+    $tmp = $path . '.tmp.' . bin2hex(random_bytes(4));
+    if (@file_put_contents($tmp, $json, LOCK_EX) === false) {
+        @unlink($tmp);
+
+        return false;
+    }
+
+    if (!@rename($tmp, $path)) {
+        @unlink($tmp);
+
+        return false;
+    }
+
+    return true;
+}
+
+/**
  * Ontdekt bedrijven over alle actieve environments en bouwt de map.
+ * Een verse bestandscache gaat voor op een live Mímir- of BC-call.
  */
 function auth_discover_companies_across_active_environments(int $ttlSeconds = 300): array
+{
+    $cached = auth_company_discovery_cache_load($ttlSeconds);
+    if ($cached !== null) {
+        return $cached;
+    }
+
+    $result = auth_discover_companies_across_active_environments_live($ttlSeconds);
+    auth_company_discovery_cache_store($result);
+
+    return $result;
+}
+
+/**
+ * Live company-discovery, zonder de bestandscache.
+ */
+function auth_discover_companies_across_active_environments_live(int $ttlSeconds = 300): array
 {
     // Mímir: companies + environments uit Mímir API.
     // Bij een Mímir-fout valt odata_mimir_companies_as_rows terug op directe BC OData

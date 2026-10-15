@@ -1321,11 +1321,13 @@ function save_user_settings_m(string $email, array $patch): bool
  * Page load
  */
 $currentUserEmail = current_user_email_or_fallback_m();
+argus_release_request_session();
 
-// Laden van alle bedrijven uit alle actieve environments
+// Laden van alle bedrijven uit alle actieve environments.
+// Bestandscache: maand-detail en de volgende chunk raken Mímir niet voor deze lijst.
 try {
     require_once __DIR__ . '/auth_helper.php';
-    $discoveryResult = auth_discover_companies_across_active_environments(300);
+    $discoveryResult = auth_discover_companies_across_active_environments(AUTH_COMPANY_DISCOVERY_TTL_SECONDS);
     $companies = is_array($discoveryResult['companies'] ?? null) ? $discoveryResult['companies'] : [];
 } catch (Throwable $e) {
     // Fallback op lege lijst als discovery mislukt
@@ -1709,9 +1711,11 @@ if (($_GET['action'] ?? '') === 'fetch_sub_projects') {
     exit;
 }
 
-// Voorcalculatie ophalen voor projecten uit OHW-snapshot (één server-call)
+// Voorcalculatie in stabiele projectchunks. Eén request voor alle projecten
+// duurde bij KvT 17–23 minuten en werd door de proxy afgekapt (Netwerkfout).
 if (($_GET['action'] ?? '') === 'fetch_sub_planning') {
     header('Content-Type: application/json; charset=utf-8');
+    argus_release_request_session();
     @set_time_limit(0);
     @ini_set('max_execution_time', '0');
 
@@ -1733,27 +1737,60 @@ if (($_GET['action'] ?? '') === 'fetch_sub_planning') {
         $wip = batch_wip_load($company, $targetYm, $refreshId);
         maanden_wip_sync_project_numbers_from_ohw($wip);
         $projectNumbers = wip_project_numbers($wip);
-        $planningTotalsByJob = [];
-        $planningBreakdownByJob = [];
-        $planningWarning = null;
+        $hasChunkIndex = array_key_exists('chunk_index', $_POST);
+        $chunkIndex = $hasChunkIndex ? max(0, (int) $_POST['chunk_index']) : 0;
+        if (!$hasChunkIndex) {
+            // Oude client zonder chunk_index: nog steeds de hele lijst, in één request.
+            $plan = [
+                'total_chunks' => 1,
+                'chunk_projects' => $projectNumbers,
+                'chunks_complete' => true,
+            ];
+        } else {
+            $plan = bc_fetch_voorcalculatie_chunk_at($projectNumbers, $chunkIndex);
+        }
+
+        $planningTotalsByJob = is_array($wip['planning_totals_by_job'] ?? null)
+            ? $wip['planning_totals_by_job']
+            : [];
+        $planningBreakdownByJob = is_array($wip['planning_breakdown_by_job'] ?? null)
+            ? $wip['planning_breakdown_by_job']
+            : [];
+        $storedWarning = $wip['planning_warning'] ?? null;
+        $planningWarning = is_string($storedWarning) && trim($storedWarning) !== ''
+            ? trim($storedWarning)
+            : null;
+        $chunkWarning = null;
         $blockingError = null;
 
-        if ($projectNumbers !== []) {
+        if ($plan['chunk_projects'] !== []) {
             try {
-                $environmentForCompany = auth_get_environment_for_company($company, 300);
+                $environmentForCompany = auth_get_environment_for_company($company, AUTH_COMPANY_DISCOVERY_TTL_SECONDS);
                 $financeService = new ProjectFinanceService($company, $environmentForCompany);
-                $projectForecast = $financeService->collectProjectForecastForProjects($projectNumbers, $ttl);
-                $planningTotalsByJob = is_array($projectForecast['forecast_totals_by_job'] ?? null)
-                    ? $projectForecast['forecast_totals_by_job']
-                    : [];
-                $planningBreakdownByJob = is_array($projectForecast['forecast_breakdown_by_job'] ?? null)
-                    ? $projectForecast['forecast_breakdown_by_job']
-                    : [];
-                $forecastWarning = $projectForecast['warning'] ?? null;
-                $planningWarning = is_string($forecastWarning) && trim($forecastWarning) !== ''
-                    ? trim($forecastWarning)
-                    : null;
+                $projectForecast = $financeService->collectProjectForecastForProjects($plan['chunk_projects'], $ttl);
                 $blockingError = finance_forecast_blocks_snapshot($projectForecast);
+                if (!is_string($blockingError) || $blockingError === '') {
+                    $chunkTotals = is_array($projectForecast['forecast_totals_by_job'] ?? null)
+                        ? $projectForecast['forecast_totals_by_job']
+                        : [];
+                    $chunkBreakdown = is_array($projectForecast['forecast_breakdown_by_job'] ?? null)
+                        ? $projectForecast['forecast_breakdown_by_job']
+                        : [];
+                    $merged = bc_fetch_merge_forecast_chunk(
+                        $planningTotalsByJob,
+                        $planningBreakdownByJob,
+                        $chunkTotals,
+                        $chunkBreakdown,
+                        $plan['chunk_projects']
+                    );
+                    $planningTotalsByJob = $merged['totals'];
+                    $planningBreakdownByJob = $merged['breakdown'];
+                    $forecastWarning = $projectForecast['warning'] ?? null;
+                    $chunkWarning = is_string($forecastWarning) && trim($forecastWarning) !== ''
+                        ? trim($forecastWarning)
+                        : null;
+                    $planningWarning = maanden_join_warnings([$planningWarning, $chunkWarning]);
+                }
             } catch (Throwable $forecastLoadError) {
                 // Een echte fout (timeout, te lange filter) blokkeert de publicatie.
                 // De vorige snapshot blijft staan. Alleen een lege waarschuwing deed dat niet.
@@ -1774,8 +1811,11 @@ if (($_GET['action'] ?? '') === 'fetch_sub_planning') {
 
         echo json_encode([
             'ok' => true,
-            'warning' => $planningWarning,
-            'project_count' => count($projectNumbers),
+            'warning' => $chunkWarning,
+            'project_count' => count($plan['chunk_projects']),
+            'chunk_index' => $chunkIndex,
+            'total_chunks' => $plan['total_chunks'],
+            'chunks_complete' => $plan['chunks_complete'],
         ], JSON_UNESCAPED_UNICODE);
     } catch (Throwable $e) {
         http_response_code(500);
@@ -1811,6 +1851,12 @@ if (($_GET['action'] ?? '') === 'build_month_snapshot') {
         $hasLegacyFinance = is_array($wip['project_finance'] ?? null) && $wip['project_finance'] !== [];
         if (!$hasOhwColumn && !$hasLegacyFinance) {
             throw new RuntimeException('Geen opgebouwde gegevens om te publiceren. De vorige snapshot blijft beschikbaar.');
+        }
+
+        $planningTotalsForPublish = is_array($wip['planning_totals_by_job'] ?? null) ? $wip['planning_totals_by_job'] : [];
+        $planningProjects = maanden_wip_sync_project_numbers_from_ohw($wip);
+        if (!bc_fetch_forecast_covers_projects($planningProjects, $planningTotalsForPublish)) {
+            throw new RuntimeException('Voorcalculatie is nog niet compleet. De vorige snapshot blijft beschikbaar.');
         }
 
         if (is_array($columnDataTarget['grootboekposten_ohw'] ?? null)) {

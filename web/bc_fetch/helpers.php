@@ -109,3 +109,86 @@ function bc_fetch_project_detail_chunk_at(array $projectNumbers, int $chunkIndex
         'chunks_complete' => ($index + 1) >= $total,
     ];
 }
+
+/**
+ * Projecten per HTTP-stap voor de voorcalculatie.
+ * Eén request voor alle projecten (KvT: ~3700, 17–23 min) wordt door de
+ * proxy of de browser afgekapt. Een stap van dit formaat blijft daar onder.
+ */
+const VOORCALCULATIE_PROJECT_CHUNK_SIZE = 40;
+
+/**
+ * Eén stabiele voorcalculatie-chunk op de volledige projectlijst.
+ *
+ * @param array<int,mixed> $projectNumbers
+ * @return array{total_chunks:int,chunk_projects:list<string>,chunks_complete:bool}
+ */
+function bc_fetch_voorcalculatie_chunk_at(array $projectNumbers, int $chunkIndex): array
+{
+    return bc_fetch_project_detail_chunk_at($projectNumbers, $chunkIndex, VOORCALCULATIE_PROJECT_CHUNK_SIZE);
+}
+
+/**
+ * Vervangt de voorcalculatie van de projecten in deze chunk.
+ * De totalen zijn absoluut per project: dezelfde chunk nogmaals uitvoeren telt niet dubbel.
+ *
+ * @param array<string,mixed> $existingTotals
+ * @param array<string,mixed> $existingBreakdown
+ * @param array<string,mixed> $chunkTotals
+ * @param array<string,mixed> $chunkBreakdown
+ * @param array<int,mixed> $chunkProjects
+ * @return array{totals:array<string,mixed>,breakdown:array<string,mixed>}
+ */
+function bc_fetch_merge_forecast_chunk(
+    array $existingTotals,
+    array $existingBreakdown,
+    array $chunkTotals,
+    array $chunkBreakdown,
+    array $chunkProjects
+): array {
+    $totals = $existingTotals;
+    $breakdown = $existingBreakdown;
+
+    foreach ($chunkProjects as $projectNo) {
+        $key = bc_fetch_normalize_project_no((string) $projectNo);
+        if ($key === '') {
+            continue;
+        }
+
+        unset($totals[$key], $breakdown[$key]);
+        if (isset($chunkTotals[$key]) && is_array($chunkTotals[$key])) {
+            $totals[$key] = $chunkTotals[$key];
+        }
+        if (isset($chunkBreakdown[$key]) && is_array($chunkBreakdown[$key])) {
+            $breakdown[$key] = $chunkBreakdown[$key];
+        }
+    }
+
+    return [
+        'totals' => $totals,
+        'breakdown' => $breakdown,
+    ];
+}
+
+/**
+ * Elke project in de maandlijst moet een voorcalculatie-totaal hebben
+ * (ook 0) voordat de snapshot de vorige mag vervangen.
+ *
+ * @param array<int,mixed> $projectNumbers
+ * @param array<string,mixed> $forecastTotals
+ */
+function bc_fetch_forecast_covers_projects(array $projectNumbers, array $forecastTotals): bool
+{
+    foreach ($projectNumbers as $projectNo) {
+        $key = bc_fetch_normalize_project_no((string) $projectNo);
+        if ($key === '') {
+            continue;
+        }
+
+        if (!isset($forecastTotals[$key]) || !is_array($forecastTotals[$key])) {
+            return false;
+        }
+    }
+
+    return true;
+}

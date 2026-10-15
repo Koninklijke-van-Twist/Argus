@@ -19,6 +19,17 @@ function argus_is_json_request(): bool
     return is_string($action) && $action !== '';
 }
 
+/**
+ * Laat het sessie-lock los. Een lange voorcalculatie-chunk mag maand-detail
+ * niet laten wachten op dezelfde PHP-sessie. $_SESSION blijft daarna leesbaar.
+ */
+function argus_release_request_session(): void
+{
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        session_write_close();
+    }
+}
+
 function argus_configure_error_display(?bool $isJson = null): void
 {
     static $bufferLevel = null;
