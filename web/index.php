@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/kvt_protect_dirs.php';
 require_once __DIR__ . '/json_guard.php';
 argus_configure_error_display();
 
