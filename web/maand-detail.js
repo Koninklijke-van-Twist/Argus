@@ -203,7 +203,7 @@
                 customer_id: toTrimmedString(projDetail.Bill_to_Customer_No || projSummary.Customer_Id || row.Customer_Id || ''),
                 customer_name: toTrimmedString(projDetail.Bill_to_Name || projSummary.Customer_Name || row.Customer_Name || ''),
                 project_manager: formatProjectManagerName(projDetail.Project_Manager || projSummary.Project_Manager || projDetail.Person_Responsible || ''),
-                current_status: toTrimmedString(projDetail.Status || ''),
+                current_status: projectCardCurrentStatus(projDetail),
                 document_status: toTrimmedString(projDetail.LVS_Document_Status || ''),
                 reason_code: toTrimmedString(projDetail.KVT_Reason_Code || ''),
                 cost_center: primaryDepartmentFromBreakdown(breakdown)
@@ -259,6 +259,23 @@
     function toTrimmedString (value)
     {
         return String(value === null || value === undefined ? '' : value).trim();
+    }
+
+    /**
+     * Huidige kaartstatus uit Projecten.Status.
+     * Geen kaart: leeg. Kaart zonder het veld (schema-fallback): '—'.
+     */
+    function projectCardCurrentStatus (projDetail)
+    {
+        if (!projDetail || typeof projDetail !== 'object' || Object.keys(projDetail).length === 0)
+        {
+            return '';
+        }
+        if (!Object.prototype.hasOwnProperty.call(projDetail, 'Status'))
+        {
+            return '—';
+        }
+        return toTrimmedString(projDetail.Status || '');
     }
 
     function formatProjectManagerName (value)

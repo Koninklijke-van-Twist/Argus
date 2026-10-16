@@ -1040,16 +1040,13 @@ function fetch_month_data(string $company, string $yearMonth, array $auth): arra
         $missingProjectNumbers[] = $projectNo;
     }
     $projectChunks = array_chunk($missingProjectNumbers, 20);
+    $omitProjectStatus = false;
 
     foreach ($projectChunks as $chunk) {
         $filterParts = array_map(fn($no) => "No eq '" . str_replace("'", "''", $no) . "'", $chunk);
         $filter = implode(' or ', $filterParts);
         try {
-            $projectUrl = company_entity_url_with_query($baseUrl, $environmentForCompany, $company, 'Projecten', [
-                '$select' => bc_fetch_project_detail_odata_select(),
-                '$filter' => $filter,
-            ]);
-            $batchProjects = odata_get_all($projectUrl, $auth, odata_ttl_for_month($yearMonth));
+            $batchProjects = bc_fetch_projecten_rows($company, $filter, $auth, odata_ttl_for_month($yearMonth), $omitProjectStatus);
         } catch (Throwable $e) {
             continue;
         }
@@ -1700,16 +1697,13 @@ if (($_GET['action'] ?? '') === 'fetch_sub_projects') {
         $projectNumbers = is_array($wip['project_numbers'] ?? null) ? $wip['project_numbers'] : [];
         $projectDetails = [];
         $projectChunks = array_chunk(array_unique($projectNumbers), 20);
+        $omitProjectStatus = false;
 
         foreach ($projectChunks as $chunk) {
             $filterParts = array_map(fn($no) => "No eq '" . str_replace("'", "''", $no) . "'", $chunk);
             $filter = implode(' or ', $filterParts);
             try {
-                $projectUrl = company_entity_url_with_query($baseUrl, $environmentForCompany, $company, 'Projecten', [
-                    '$select' => bc_fetch_project_detail_odata_select(),
-                    '$filter' => $filter,
-                ]);
-                $batchProjects = odata_get_all($projectUrl, $auth, $ttl);
+                $batchProjects = bc_fetch_projecten_rows($company, $filter, $auth, $ttl, $omitProjectStatus);
             } catch (Throwable $e) {
                 continue;
             }

@@ -72,13 +72,83 @@ $otherRevenue = bc_fetch_ohw_amount_delta([
 ]);
 assert_same(null, $otherRevenue, '399901 telt niet mee in de OHW-classificatie');
 
+$withoutStatus = bc_fetch_project_detail_odata_select_without_status();
+assert_true(!str_contains(',' . $withoutStatus . ',', ',Status,'), 'fallback-selectie laat Status weg');
+assert_true(str_contains($withoutStatus, 'LVS_Document_Status'), 'fallback houdt documentstatus');
+
 $detailJs = file_get_contents(__DIR__ . '/../maand-detail.js');
 assert_true(is_string($detailJs) && str_contains($detailJs, "project_status: 'Status (nu)'"), 'kolomkop is Status (nu)');
 assert_true(is_string($detailJs) && str_contains($detailJs, 'projDetail.Status'), 'kolom leest Projecten.Status');
+assert_true(is_string($detailJs) && str_contains($detailJs, "return '—';"), 'ontbrekend Status-veld toont —');
 assert_true(is_string($detailJs) && !str_contains($detailJs, '399900'), 'maanddetail noemt 399900 niet');
 
 $detailPhp = file_get_contents(__DIR__ . '/../maand-detail.php');
 assert_true(is_string($detailPhp) && str_contains($detailPhp, "'project_status'"), 'maanddetail neemt de kolom op');
+
+$GLOBALS['demeter_company_environment_map'] = ['Koninklijke van Twist' => 'Production'];
+$auth_list = ['Production' => ['tenant_id' => 't', 'client_id' => 'c', 'client_secret' => 's']];
+$GLOBALS['baseUrl'] = 'https://bc.example/v2.0/tenant/';
+$GLOBALS['detail_odata_calls'] = [];
+$GLOBALS['detail_odata_mode'] = 'schema_status';
+
+function company_entity_url_with_query(string $baseUrl, string $environment, string $company, string $entitySet, array $query): string
+{
+    return 'https://bc.example/' . rawurlencode($entitySet) . '?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986);
+}
+
+function odata_get_all(string $url, array $auth, int $ttl): array
+{
+    $GLOBALS['detail_odata_calls'][] = $url;
+    parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
+    $select = (string) ($query['$select'] ?? '');
+    if ($GLOBALS['detail_odata_mode'] === 'schema_status' && str_contains(',' . $select . ',', ',Status,')) {
+        throw new RuntimeException("HTTP 400 from OData: Could not find a property named 'Status' on type 'NAV.Projecten'.");
+    }
+    if ($GLOBALS['detail_odata_mode'] === 'timeout') {
+        throw new RuntimeException('cURL-fout: Operation timed out after 90001 milliseconds');
+    }
+
+    return [[
+        'No' => '4084207',
+        'Description' => 'Restsaldo',
+        'LVS_Document_Status' => 'Open',
+    ]];
+}
+
+function detail_select_from_call(string $url): string
+{
+    parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
+
+    return (string) ($query['$select'] ?? '');
+}
+
+$omitStatus = false;
+$rows = bc_fetch_projecten_rows('Koninklijke van Twist', "No eq '4084207'", [], 60, $omitStatus);
+assert_same(2, count($GLOBALS['detail_odata_calls']), 'schemafout op Status probeert één keer opnieuw');
+assert_true(str_contains(',' . detail_select_from_call($GLOBALS['detail_odata_calls'][0]) . ',', ',Status,'), 'eerste poging vraagt Status');
+assert_true(!str_contains(',' . detail_select_from_call($GLOBALS['detail_odata_calls'][1]) . ',', ',Status,'), 'tweede poging laat Status weg');
+assert_true($omitStatus === true, 'latere chunks slaan Status over');
+assert_same('4084207', $rows[0]['No'] ?? '', 'kaart blijft beschikbaar zonder Status');
+assert_true(!array_key_exists('Status', $rows[0]), 'antwoord bevat geen Status-sleutel');
+
+$callsBeforeReuse = count($GLOBALS['detail_odata_calls']);
+$reused = bc_fetch_projecten_rows('Koninklijke van Twist', "No eq '4084207'", [], 60, $omitStatus);
+assert_same($callsBeforeReuse + 1, count($GLOBALS['detail_odata_calls']), 'volgende chunk doet één request');
+assert_true(!str_contains(',' . detail_select_from_call($GLOBALS['detail_odata_calls'][$callsBeforeReuse]) . ',', ',Status,'), 'volgende chunk selecteert geen Status');
+assert_same('4084207', $reused[0]['No'] ?? '', 'volgende chunk levert de kaart');
+
+$GLOBALS['detail_odata_calls'] = [];
+$GLOBALS['detail_odata_mode'] = 'timeout';
+$omitOnTimeout = false;
+$timedOut = false;
+try {
+    bc_fetch_projecten_rows('Koninklijke van Twist', "No eq '4084207'", [], 60, $omitOnTimeout);
+} catch (Throwable $error) {
+    $timedOut = str_contains($error->getMessage(), 'timed out');
+}
+assert_true($timedOut, 'timeout blijft een fout');
+assert_same(1, count($GLOBALS['detail_odata_calls']), 'timeout probeert niet opnieuw zonder Status');
+assert_true($omitOnTimeout === false, 'timeout zet de schema-fallback niet aan');
 
 if ($failures > 0) {
     fwrite(STDERR, "{$failures} assertion(s) failed\n");

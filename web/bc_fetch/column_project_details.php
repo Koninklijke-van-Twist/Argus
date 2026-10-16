@@ -19,6 +19,66 @@ function bc_fetch_project_detail_odata_select(): string
 }
 
 /**
+ * Zelfde kaartselectie zonder Status.
+ * Een schemafout op dat veld (HTTP 400) mag de rest van de kaart niet weggooien.
+ */
+function bc_fetch_project_detail_odata_select_without_status(): string
+{
+    $fields = [];
+    foreach (explode(',', bc_fetch_project_detail_odata_select()) as $field) {
+        $field = trim($field);
+        if ($field === '' || strcasecmp($field, 'Status') === 0) {
+            continue;
+        }
+        $fields[] = $field;
+    }
+
+    return implode(',', $fields);
+}
+
+/**
+ * Zelfde schema-fallback als de open-projectquery: een 400 over een onbekend
+ * veld probeert één keer opnieuw zonder Status. Latere chunks slaan Status over.
+ *
+ * @return list<array<string,mixed>>
+ */
+function bc_fetch_projecten_rows(string $company, string $filter, array $auth, int $ttl, ?bool &$omitStatus = null): array
+{
+    $environment = auth_get_environment_for_company($company, 300);
+    $auth = auth_get_auth_for_environment($environment);
+    $selects = ($omitStatus === true)
+        ? [bc_fetch_project_detail_odata_select_without_status()]
+        : [bc_fetch_project_detail_odata_select(), bc_fetch_project_detail_odata_select_without_status()];
+
+    $lastError = null;
+    foreach ($selects as $index => $select) {
+        try {
+            $url = company_entity_url_with_query($GLOBALS['baseUrl'], $environment, $company, 'Projecten', [
+                '$select' => $select,
+                '$filter' => $filter,
+            ]);
+            $rows = odata_get_all($url, $auth, $ttl);
+
+            return is_array($rows) ? $rows : [];
+        } catch (Throwable $error) {
+            $lastError = $error;
+            $retryWithoutStatus = $index === 0
+                && $omitStatus !== true
+                && count($selects) > 1
+                && finance_is_odata_schema_error($error->getMessage());
+            if ($retryWithoutStatus) {
+                $omitStatus = true;
+                continue;
+            }
+
+            throw $error;
+        }
+    }
+
+    throw $lastError instanceof Throwable ? $lastError : new RuntimeException('Projecten ophalen mislukt.');
+}
+
+/**
  * Bewaart alleen kaarten waarvan het nummer in de gevraagde maandlijst zit.
  * Een Projecten-antwoord zonder filter mag de lijst niet verbreden.
  *
@@ -54,8 +114,8 @@ function bc_fetch_project_detail_rows_for_numbers(array $rows, array $projectNum
  */
 function bc_fetch_column_project_details(string $company, string $yearMonth, array $projectNumbers, array $auth, int $ttl): array
 {
-    $auth = auth_get_auth_for_environment(auth_get_environment_for_company($company, 300));
     $dictionary = bc_fetch_seed_project_dictionary($projectNumbers);
+    $omitStatus = false;
     $chunks = array_chunk(array_values(array_unique(array_filter($projectNumbers, static function ($v): bool {
         return trim((string) $v) !== '';
     }))), 20);
@@ -69,13 +129,8 @@ function bc_fetch_column_project_details(string $company, string $yearMonth, arr
             return "No eq '" . str_replace("'", "''", trim((string) $no)) . "'";
         }, $chunk);
 
-        $url = company_entity_url_with_query($GLOBALS['baseUrl'], auth_get_environment_for_company($company, 300), $company, 'Projecten', [
-            '$select' => bc_fetch_project_detail_odata_select(),
-            '$filter' => implode(' or ', $filterParts),
-        ]);
-
-        $rows = odata_get_all($url, $auth, $ttl);
-        $accepted = bc_fetch_project_detail_rows_for_numbers(is_array($rows) ? $rows : [], $chunk);
+        $rows = bc_fetch_projecten_rows($company, implode(' or ', $filterParts), $auth, $ttl, $omitStatus);
+        $accepted = bc_fetch_project_detail_rows_for_numbers($rows, $chunk);
         foreach ($accepted as $norm => $projectValue) {
             $dictionary[$norm] = $projectValue;
         }
