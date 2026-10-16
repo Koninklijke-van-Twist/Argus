@@ -19,7 +19,7 @@ if (!is_trusted_requester()) {
     require __DIR__ . "/../login/lib.php";
 
     if (
-        !array_any($allowedUsers, function ($email) {
+        !empty($allowedUsers) && is_array($allowedUsers) && !array_any($allowedUsers, function ($email) {
             return strtolower((string) $email) === strtolower((string) ($_SESSION['user']['email'] ?? ''));
         })
     ) {
