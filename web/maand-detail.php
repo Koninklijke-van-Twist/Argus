@@ -351,6 +351,7 @@ $defaultColumns = [
     'margin_total',
     'winst_ohw',
     'project_manager',
+    'project_status',
     'document_status',
     'reason_code',
 ];
@@ -382,6 +383,14 @@ $orderedColumns = array_values(array_filter($orderedColumns, static function ($k
 $winstOhwPos = array_search('winst_ohw', $orderedColumns, true);
 $insertMargeAt = $winstOhwPos === false ? count($orderedColumns) : $winstOhwPos;
 array_splice($orderedColumns, $insertMargeAt, 0, ['margin_total']);
+
+// Status (nu) staat direct vóór documentstatus: huidige kaart, niet de peildatum.
+$orderedColumns = array_values(array_filter($orderedColumns, static function ($key): bool {
+    return $key !== 'project_status';
+}));
+$documentStatusPos = array_search('document_status', $orderedColumns, true);
+$insertStatusAt = $documentStatusPos === false ? count($orderedColumns) : $documentStatusPos;
+array_splice($orderedColumns, $insertStatusAt, 0, ['project_status']);
 
 // Keep Kosten t/m heden directly after period costs.
 $orderedColumns = array_values(array_filter($orderedColumns, static function ($key): bool {

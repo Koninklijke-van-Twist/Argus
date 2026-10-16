@@ -10,6 +10,15 @@ require_once __DIR__ . '/../auth_helper.php';
  * Functies
  */
 /**
+ * Velden van de projectkaart voor de maand.
+ * Status is de huidige kaartstatus in BC, niet de status op de peildatum.
+ */
+function bc_fetch_project_detail_odata_select(): string
+{
+    return 'No,Description,Bill_to_Customer_No,Bill_to_Name,Person_Responsible,Project_Manager,LVS_Global_Dimension_1_Code,LVS_Document_Status,Status,Percent_Completed,Total_WIP_Sales_Amount,Recog_Sales_Amount,Calc_Recog_Sales_Amount,KVT_Reason_Code';
+}
+
+/**
  * Bewaart alleen kaarten waarvan het nummer in de gevraagde maandlijst zit.
  * Een Projecten-antwoord zonder filter mag de lijst niet verbreden.
  *
@@ -61,7 +70,7 @@ function bc_fetch_column_project_details(string $company, string $yearMonth, arr
         }, $chunk);
 
         $url = company_entity_url_with_query($GLOBALS['baseUrl'], auth_get_environment_for_company($company, 300), $company, 'Projecten', [
-            '$select' => 'No,Description,Bill_to_Customer_No,Bill_to_Name,Person_Responsible,Project_Manager,LVS_Global_Dimension_1_Code,LVS_Document_Status,Percent_Completed,Total_WIP_Sales_Amount,Recog_Sales_Amount,Calc_Recog_Sales_Amount,KVT_Reason_Code',
+            '$select' => bc_fetch_project_detail_odata_select(),
             '$filter' => implode(' or ', $filterParts),
         ]);
 

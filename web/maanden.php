@@ -1046,7 +1046,7 @@ function fetch_month_data(string $company, string $yearMonth, array $auth): arra
         $filter = implode(' or ', $filterParts);
         try {
             $projectUrl = company_entity_url_with_query($baseUrl, $environmentForCompany, $company, 'Projecten', [
-                '$select' => 'No,Description,Bill_to_Customer_No,Bill_to_Name,Person_Responsible,Project_Manager,LVS_Global_Dimension_1_Code,LVS_Document_Status,Percent_Completed,Total_WIP_Sales_Amount,Recog_Sales_Amount,Calc_Recog_Sales_Amount',
+                '$select' => bc_fetch_project_detail_odata_select(),
                 '$filter' => $filter,
             ]);
             $batchProjects = odata_get_all($projectUrl, $auth, odata_ttl_for_month($yearMonth));
@@ -1706,7 +1706,7 @@ if (($_GET['action'] ?? '') === 'fetch_sub_projects') {
             $filter = implode(' or ', $filterParts);
             try {
                 $projectUrl = company_entity_url_with_query($baseUrl, $environmentForCompany, $company, 'Projecten', [
-                    '$select' => 'No,Description,Bill_to_Customer_No,Bill_to_Name,Person_Responsible,Project_Manager,LVS_Global_Dimension_1_Code,LVS_Document_Status,Percent_Completed,Total_WIP_Sales_Amount,Recog_Sales_Amount,Calc_Recog_Sales_Amount',
+                    '$select' => bc_fetch_project_detail_odata_select(),
                     '$filter' => $filter,
                 ]);
                 $batchProjects = odata_get_all($projectUrl, $auth, $ttl);

@@ -93,6 +93,7 @@
         pct_ready: '% Gereed',
         winst_ohw: 'Winst OHW',
         project_manager: 'Projectmanager',
+        project_status: 'Status (nu)',
         document_status: 'Documentstatus',
         reason_code: 'Redencode',
     };
@@ -202,6 +203,7 @@
                 customer_id: toTrimmedString(projDetail.Bill_to_Customer_No || projSummary.Customer_Id || row.Customer_Id || ''),
                 customer_name: toTrimmedString(projDetail.Bill_to_Name || projSummary.Customer_Name || row.Customer_Name || ''),
                 project_manager: formatProjectManagerName(projDetail.Project_Manager || projSummary.Project_Manager || projDetail.Person_Responsible || ''),
+                current_status: toTrimmedString(projDetail.Status || ''),
                 document_status: toTrimmedString(projDetail.LVS_Document_Status || ''),
                 reason_code: toTrimmedString(projDetail.KVT_Reason_Code || ''),
                 cost_center: primaryDepartmentFromBreakdown(breakdown)
@@ -700,6 +702,7 @@
                     proj.customer_name,
                     proj.customer_id,
                     proj.project_manager,
+                    proj.current_status,
                     proj.cost_center,
                 ].join(' ').toLowerCase();
 
@@ -732,6 +735,7 @@
                     case 'extra_work': return getProjectComputedValues(p).extraWork;
                     case 'margin_total': return getProjectComputedValues(p).marginTotal;
                     case 'project_manager': return p.project_manager || '';
+                    case 'project_status': return p.current_status || '';
                     case 'document_status': return p.document_status || '';
                     case 'reason_code': return p.reason_code || '';
                     case 'cost_center': return p.cost_center || '';
@@ -849,6 +853,8 @@
                 return fmtCurrency(computed.winstOhw);
             case 'project_manager':
                 return proj.project_manager || '';
+            case 'project_status':
+                return proj.current_status || '';
             case 'document_status':
                 return proj.document_status || '';
             case 'reason_code':
@@ -891,6 +897,8 @@
                 return { type: 'computed-field', formula: '(Opbrengst VC - Kosten VC) * (Projecten.Percent_Completed / 100)' };
             case 'project_manager':
                 return { type: 'bc-field', name: 'Project_Manager,Person_Responsible', source: 'Projecten', filters: baseFilter.replace('Job_No=', 'No=') };
+            case 'project_status':
+                return { type: 'bc-field', name: 'Status', source: 'Projecten', filters: baseFilter.replace('Job_No=', 'No=') + ',huidige kaart, niet peildatum' };
             case 'document_status':
                 return { type: 'bc-field', name: 'LVS_Document_Status', source: 'Projecten', filters: baseFilter.replace('Job_No=', 'No=') };
             case 'reason_code':
@@ -1055,7 +1063,7 @@
             th.textContent = lbl;
 
             // Sortable columns
-            if (['description', 'customer', 'total_costs', 'costs_to_date', 'total_revenue', 'costs_vc', 'extra_work', 'margin_total', 'project_manager', 'document_status', 'reason_code', 'cost_center', 'pct_ready'].includes(colKey))
+            if (['description', 'customer', 'total_costs', 'costs_to_date', 'total_revenue', 'costs_vc', 'extra_work', 'margin_total', 'project_manager', 'project_status', 'document_status', 'reason_code', 'cost_center', 'pct_ready'].includes(colKey))
             {
                 th.className = 'sortable';
                 th.dataset.sortKey = colKey;
@@ -1074,6 +1082,11 @@
             if (colKey === 'workorders')
             {
                 th.style.minWidth = '80px';
+            }
+            if (colKey === 'project_status')
+            {
+                th.title = 'Huidige status van de projectkaart in Business Central, niet de status op de peildatum.';
+                th.style.minWidth = '110px';
             }
             if (colKey === 'description')
             {
@@ -1315,6 +1328,10 @@
                     break;
                 case 'project_manager':
                     td.textContent = proj.project_manager || '';
+                    break;
+                case 'project_status':
+                    td.textContent = proj.current_status || '';
+                    td.title = 'Huidige status in Business Central, niet de status op de peildatum.';
                     break;
                 case 'document_status':
                     td.textContent = proj.document_status || '';
