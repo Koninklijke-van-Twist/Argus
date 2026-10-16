@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/kvt_protect_dirs.php';
 require_once __DIR__ . '/json_guard.php';
 argus_configure_error_display();
 
@@ -1688,8 +1689,12 @@ HTML;
 function odata_email_is_allowed(string $email, $allowedUsers): bool
 {
     $email = strtolower(trim($email));
-    if ($email === '' || !is_array($allowedUsers)) {
+    if ($email === '') {
         return false;
+    }
+    // Ontbreekt de lijst of is die leeg: elke ingelogde gebruiker (zelfde semantiek als logincheck).
+    if (!is_array($allowedUsers) || $allowedUsers === []) {
+        return true;
     }
 
     foreach ($allowedUsers as $emailKey => $value) {

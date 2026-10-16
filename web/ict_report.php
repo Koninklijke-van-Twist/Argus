@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/kvt_protect_dirs.php';
 /**
  * POST-endpoint "Rapporteer aan ICT": maakt namens de ingelogde gebruiker een
  * Asclepius-ticket aan en geeft ticketnummer + ticketlink terug.
