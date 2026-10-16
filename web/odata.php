@@ -642,53 +642,7 @@ function odata_cache_read_payload_meta(string $path): ?array
         'cached_at' => (int) ($meta['cached_at'] ?? 0),
         'expires_at' => (int) ($meta['expires_at'] ?? 0),
         'source_url' => (string) ($meta['source_url'] ?? ''),
-        'attributes' => odata_cache_extract_attributes_from_payload($payload),
     ];
-}
-
-function odata_cache_extract_attributes_from_payload(array $payload): array
-{
-    $data = $payload['data'] ?? null;
-    if (!is_array($data) || count($data) === 0) {
-        return [];
-    }
-
-    $firstRow = $data[0] ?? null;
-    if (!is_array($firstRow)) {
-        return [];
-    }
-
-    $result = [];
-    foreach ($firstRow as $key => $value) {
-        if (!is_string($key)) {
-            continue;
-        }
-
-        $key = trim($key);
-        if ($key === '') {
-            continue;
-        }
-
-        if (strcasecmp($key, '@odata.etag') === 0) {
-            continue;
-        }
-
-        if (is_scalar($value) || $value === null) {
-            $valueText = trim((string) $value);
-        } else {
-            $encoded = json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-            $valueText = is_string($encoded) ? $encoded : '';
-        }
-
-        if ($valueText === '') {
-            $result[] = $key;
-            continue;
-        }
-
-        $result[] = $key . ': ' . $valueText;
-    }
-
-    return array_values(array_unique($result));
 }
 
 function odata_cache_title_from_url(string $url, string $fallback): string
@@ -750,7 +704,6 @@ function odata_cache_status_payload(): array
                 'id' => $filename,
                 'name' => odata_cache_title_from_url($url, $nameFallback),
                 'url' => $url,
-                'attributes' => is_array($meta['attributes'] ?? null) ? $meta['attributes'] : [],
                 'size_bytes' => $sizeBytes,
                 'cached_at' => (int) ($meta['cached_at'] ?? 0),
                 'expires_at' => $expiresAt,
@@ -773,6 +726,9 @@ function odata_send_cache_status_json(): void
     if (function_exists('xdebug_disable')) {
         xdebug_disable();
     }
+    if (function_exists('argus_json_discard_preamble')) {
+        argus_json_discard_preamble();
+    }
 
     header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
@@ -786,6 +742,9 @@ function odata_send_cache_delete_json(): void
 {
     if (function_exists('xdebug_disable')) {
         xdebug_disable();
+    }
+    if (function_exists('argus_json_discard_preamble')) {
+        argus_json_discard_preamble();
     }
 
     header('Content-Type: application/json; charset=utf-8');
@@ -821,6 +780,9 @@ function odata_send_cache_clear_json(): void
 {
     if (function_exists('xdebug_disable')) {
         xdebug_disable();
+    }
+    if (function_exists('argus_json_discard_preamble')) {
+        argus_json_discard_preamble();
     }
 
     header('Content-Type: application/json; charset=utf-8');
@@ -903,7 +865,6 @@ function odata_is_direct_request(): bool
  *       "id": "...json",
  *       "name": "ValueEntries",
  *       "url": "https://...",
- *       "attributes": ["No: 1000", "Description: Filter element"],
  *       "size_bytes": 123,
  *       "cached_at": 1700000000,
  *       "expires_at": 1700003600
@@ -1394,18 +1355,7 @@ function injectTimerHtml(array $options = []): string
                     const id = String(entry.id || '');
                     const isDeleting = deletingCacheIds.has(id);
                     const nameBase = String(entry.name || id || 'Onbekend');
-                    const attributes = Array.isArray(entry.attributes) ? entry.attributes : [];
-                    const attrTextRaw = attributes
-                        .map(function (value)
-                        {
-                            return String(value || '').trim();
-                        })
-                        .filter(function (value)
-                        {
-                            return value !== '';
-                        })
-                        .join(', ');
-                    const titleRaw = attrTextRaw !== '' ? (nameBase + ' — ' + attrTextRaw) : nameBase;
+                    const titleRaw = nameBase;
 
                     const url = String(entry.url || '');
                     const sizeBytes = Number(entry.size_bytes || 0);
@@ -1730,13 +1680,191 @@ function injectTimerHtml(array $options = []): string
 HTML;
 }
 
+/**
+ * Zelfde toegestane gebruiker als logincheck.php: lijst of map in $allowedUsers.
+ *
+ * @param mixed $allowedUsers
+ */
+function odata_email_is_allowed(string $email, $allowedUsers): bool
+{
+    $email = strtolower(trim($email));
+    if ($email === '' || !is_array($allowedUsers)) {
+        return false;
+    }
+
+    foreach ($allowedUsers as $emailKey => $value) {
+        $allowedEmail = is_int($emailKey) ? (string) $value : (string) $emailKey;
+        if (strtolower(trim($allowedEmail)) === $email) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
+ * Een nightly/runner mag een actie alleen zonder browsersessie via CLI, of via
+ * een geheim dat al op de server staat. Leeg geheim of alleen localhost telt niet.
+ */
+function odata_direct_action_skips_login(string $sapi, string $presentedSecret, string $serverSecret): bool
+{
+    if ($sapi === 'cli') {
+        return true;
+    }
+    if ($presentedSecret === '' || $serverSecret === '') {
+        return false;
+    }
+
+    return hash_equals($serverSecret, $presentedSecret);
+}
+
+function odata_presented_runner_secret(): string
+{
+    $header = $_SERVER['HTTP_X_ARGUS_SECRET'] ?? '';
+    if (!is_string($header)) {
+        return '';
+    }
+
+    return trim($header);
+}
+
+/**
+ * @param array<string, mixed> $authVars
+ */
+function odata_configured_runner_secret(array $authVars = []): string
+{
+    $candidates = [];
+    if (isset($GLOBALS['argusRunnerSecret']) && is_string($GLOBALS['argusRunnerSecret'])) {
+        $candidates[] = $GLOBALS['argusRunnerSecret'];
+    }
+    if (isset($authVars['argusRunnerSecret']) && is_string($authVars['argusRunnerSecret'])) {
+        $candidates[] = $authVars['argusRunnerSecret'];
+    }
+    $env = getenv('ARGUS_RUNNER_SECRET');
+    if (is_string($env)) {
+        $candidates[] = $env;
+    }
+
+    foreach ($candidates as $candidate) {
+        $secret = trim($candidate);
+        if ($secret !== '') {
+            return $secret;
+        }
+    }
+
+    return '';
+}
+
+/**
+ * @return array<string, mixed>
+ */
+function odata_read_auth_file_vars(): array
+{
+    $path = odata_bc_auth_php_path();
+    if (!is_file($path)) {
+        return [];
+    }
+
+    $loaded = (static function (string $__path): array {
+        ob_start();
+        try {
+            require $__path;
+        } finally {
+            ob_end_clean();
+        }
+        unset($__path);
+        return get_defined_vars();
+    })($path);
+
+    return is_array($loaded) ? $loaded : [];
+}
+
+function odata_deny_action_access(): void
+{
+    if (function_exists('argus_json_discard_preamble')) {
+        argus_json_discard_preamble();
+    }
+    if (!headers_sent()) {
+        http_response_code(403);
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    }
+    echo json_encode(['ok' => false, 'error' => 'Geen toegang'], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+/**
+ * Zelfde login/sessie als de rest van Argus (login/lib.php + $allowedUsers),
+ * vóór elke directe odata.php-actie. Geen anonieme of localhost-bypass.
+ * CLI (php_sapi_name() === 'cli') en header X-Argus-Secret blijven open voor
+ * een nightly. Zet daarvoor $argusRunnerSecret in auth.php, of ARGUS_RUNNER_SECRET.
+ * Een leeg geheim telt niet. Geen queryparameter.
+ */
+function odata_require_direct_action_access(): void
+{
+    $sapi = php_sapi_name();
+    $presented = odata_presented_runner_secret();
+    $authVars = [];
+    $serverSecret = '';
+    if ($sapi !== 'cli') {
+        $authVars = odata_read_auth_file_vars();
+        $serverSecret = odata_configured_runner_secret($authVars);
+    }
+    if (odata_direct_action_skips_login($sapi, $presented, $serverSecret)) {
+        return;
+    }
+
+    $loginLib = __DIR__ . '/../login/lib.php';
+    if (!is_file($loginLib)) {
+        odata_deny_action_access();
+    }
+    require_once $loginLib;
+
+    global $allowedUsers;
+    if (!isset($allowedUsers) && array_key_exists('allowedUsers', $authVars)) {
+        $allowedUsers = $authVars['allowedUsers'];
+    }
+    $email = strtolower(trim((string) ($_SESSION['user']['email'] ?? '')));
+    if (!odata_email_is_allowed($email, $allowedUsers ?? null)) {
+        $forbidden = __DIR__ . '/../login/403.php';
+        if (is_file($forbidden)) {
+            require $forbidden;
+            die();
+        }
+        odata_deny_action_access();
+    }
+
+    // cache_status polt elke 2s en leest alle cachebestanden. Het sessiebestand
+    // niet vasthouden tijdens dat werk.
+    odata_release_session_lock();
+}
+
+function odata_release_session_lock(): void
+{
+    if (function_exists('session_status') && function_exists('session_write_close') && session_status() === PHP_SESSION_ACTIVE) {
+        session_write_close();
+    }
+}
+
 $odataAction = (string) ($_GET['action'] ?? '');
-if (odata_is_direct_request() && $odataAction === 'cache_status') {
-    odata_send_cache_status_json();
-}
-if (odata_is_direct_request() && $odataAction === 'cache_delete') {
-    odata_send_cache_delete_json();
-}
-if (odata_is_direct_request() && $odataAction === 'cache_clear') {
-    odata_send_cache_clear_json();
+if (odata_is_direct_request() && $odataAction !== '') {
+    odata_require_direct_action_access();
+    if ($odataAction === 'cache_status') {
+        odata_send_cache_status_json();
+    } elseif ($odataAction === 'cache_delete') {
+        odata_send_cache_delete_json();
+    } elseif ($odataAction === 'cache_clear') {
+        odata_send_cache_clear_json();
+    } else {
+        if (function_exists('argus_json_discard_preamble')) {
+            argus_json_discard_preamble();
+        }
+        if (!headers_sent()) {
+            http_response_code(404);
+            header('Content-Type: application/json; charset=utf-8');
+            header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+        }
+        echo json_encode(['ok' => false, 'error' => 'Onbekende actie'], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
 }
