@@ -197,10 +197,11 @@ $onlyRollup = finance_baseline_cost_from_task_rows([
 ]);
 assert_same(0.0, $onlyRollup['amount'], 'alleen totaalregels geven som 0');
 
-assert_same(2, ARGUS_MONTH_CACHE_VERSION, 'maandcache is versie 2');
-assert_same('.v2.json', argus_month_cache_suffix(), 'snapshots heten .v2.json');
+assert_same(3, ARGUS_MONTH_CACHE_VERSION, 'maandcache is versie 3');
+assert_same('.v3.json', argus_month_cache_suffix(), 'snapshots heten .v3.json');
 assert_same(false, argus_month_cache_is_current([]), 'ongenummerde snapshot is niet actueel');
-assert_same(true, argus_month_cache_is_current(['cache_version' => 2]), 'versie 2 is actueel');
+assert_same(false, argus_month_cache_is_current(['cache_version' => 2]), 'versie 2 (schedule-prijs) is niet actueel');
+assert_same(true, argus_month_cache_is_current(['cache_version' => 3]), 'versie 3 is actueel');
 
 if ($failures > 0) {
     fwrite(STDERR, "{$failures} assertion(s) failed\n");

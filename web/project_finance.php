@@ -42,6 +42,15 @@ class ProjectFinanceService
     private array $auth;
 
     /**
+     * JobTaskLines-sleutels die in dit verzoek al zijn opgehaald.
+     * Kosten VC en Opbrengst VC delen dezelfde fallback-projecten; een tweede
+     * ronde over die batches hing eerder de voorcalculatie.
+     *
+     * @var array<string,array<string,true>>
+     */
+    private array $bookingTaskKeyCache = [];
+
+    /**
      * Initialiseert de service voor een specifiek bedrijf en environment.
      * Als environment leeg is, gebruikt het de primaire environment.
      */
@@ -126,7 +135,9 @@ class ProjectFinanceService
             // Voorcalculatie (statisch, huidige BC-stand):
             // - kosten: ProjectTaken.LVS_Baseline_Total_Cost. Taak 000, anders 000-000-000,
             //   anders de som van Boeking-taken (type uit JobTaskLines, niet ProjectTaken).
-            // - opbrengst VC: ProjectTaken.LVS_Schedule_Total_Price_2 voor Job_Task_No '000' (schedule/budget)
+            // - opbrengst VC: ProjectTaken.LVS_Contract_Total_Price_2. Taak 000, anders
+            //   000-000-000, anders de som van Boeking-taken. Dat totaal bevat het
+            //   meerwerk; het hoofdproject is dit bedrag minus de opbrengst meerwerk.
             // - opbrengst: FactureerbareProjectPlanningsRegels, G/L-type en No 800000, geen prognose.
             //   Niet LVS_Contract_Total_Price_2 en niet het factureerbaar-vlaggetje.
             //   Leeg én gevuld subordernr. tellen mee; meerwerk is alleen het gevulde deel.
@@ -542,7 +553,9 @@ class ProjectFinanceService
      * Haalt voorcalculatie op per project (huidige BC-stand, geen historie).
      *
      * Kosten: ProjectTaken.LVS_Baseline_Total_Cost (taak 000, anders 000-000-000, anders som Boeking-taken).
-     * Opbrengst VC: ProjectTaken.LVS_Schedule_Total_Price_2 (Job_Task_No 000 / schedule-prijs).
+     * Opbrengst VC: ProjectTaken.LVS_Contract_Total_Price_2, dezelfde taakkeuze als de kosten.
+     * Het contracttotaal bevat het meerwerk. Het hoofdproject is dat totaal minus de
+     * opbrengst meerwerk die hieronder al apart wordt opgehaald.
      * Opbrengst/aanneemsom en opbrengst meerwerk: FactureerbareProjectPlanningsRegels, G/L 800000, geen prognose.
      * Opbrengst telt regels met leeg én gevuld LVS_Job_Change_Order_No.
      * Meerwerk is alleen het deel met gevuld subordernr. en blijft in de opbrengst zitten.
@@ -746,11 +759,34 @@ class ProjectFinanceService
             }
         }
 
+        foreach ($totalsByProject as $normalizedProject => $totals) {
+            if (!is_array($totals)) {
+                continue;
+            }
+
+            $revenueLines = $breakdownByProject[$normalizedProject]['expected_revenue_lines'] ?? [];
+            $split = finance_opbrengst_vc_hoofdproject(
+                (float) ($totals['expected_revenue'] ?? 0.0),
+                (float) ($totals['extra_work'] ?? 0.0),
+                is_array($revenueLines) ? $revenueLines : []
+            );
+            $totalsByProject[$normalizedProject]['expected_revenue'] = $split['amount'];
+            if (!isset($breakdownByProject[$normalizedProject]) || !is_array($breakdownByProject[$normalizedProject])) {
+                $breakdownByProject[$normalizedProject] = [
+                    'expected_revenue_lines' => [],
+                    'expected_costs_lines' => [],
+                    'extra_work_lines' => [],
+                    'aanneemsom_lines' => [],
+                ];
+            }
+            $breakdownByProject[$normalizedProject]['expected_revenue_lines'] = $split['lines'];
+        }
+
         return [
             'forecast_totals_by_job' => $totalsByProject,
             'forecast_breakdown_by_job' => $breakdownByProject,
             'warning' => $forecastWarning,
-            'task_type_error' => !empty($costData['task_type_error']),
+            'task_type_error' => !empty($costData['task_type_error']) || !empty($revenueData['task_type_error']),
         ];
     }
 
@@ -768,6 +804,9 @@ class ProjectFinanceService
      */
     private function fetchVoorcalculatieCostsForProjects(array $projectNumbers, int $ttl): array
     {
+        // Elke kostenronde begint schoon. De opbrengstronde hierna, in dezelfde
+        // collect, hergebruikt de sleutels die deze ronde net heeft opgehaald.
+        $this->bookingTaskKeyCache = [];
         $totals = [];
         $breakdown = [];
         $loaded = $this->fetchRowsForJobChunks(
@@ -910,6 +949,11 @@ class ProjectFinanceService
      */
     private function fetchBookingTaskKeys(array $projectNumbers, int $ttl): array
     {
+        $cacheKey = $this->bookingTaskKeyCacheKey($projectNumbers);
+        if ($cacheKey !== '' && isset($this->bookingTaskKeyCache[$cacheKey])) {
+            return $this->bookingTaskKeyCache[$cacheKey];
+        }
+
         $chunks = finance_job_task_lines_chunks($projectNumbers);
         if ($chunks === []) {
             return [];
@@ -937,7 +981,39 @@ class ProjectFinanceService
             $keys += $this->bookingKeysFromJobTaskRows(odata_get_all($url, $this->auth, $ttl));
         }
 
+        if ($cacheKey !== '') {
+            $this->bookingTaskKeyCache[$cacheKey] = $keys;
+        }
+
         return $keys;
+    }
+
+    /**
+     * Stabiele cachesleutel voor een verzameling projectnummers.
+     * Leeg als er niets te onthouden valt.
+     *
+     * @param array<int,mixed> $projectNumbers
+     */
+    private function bookingTaskKeyCacheKey(array $projectNumbers): string
+    {
+        $normalized = [];
+        foreach ($projectNumbers as $projectNo) {
+            $text = strtolower(trim((string) $projectNo));
+            if ($text === '') {
+                continue;
+            }
+
+            $normalized[$text] = true;
+        }
+
+        if ($normalized === []) {
+            return '';
+        }
+
+        $keys = array_keys($normalized);
+        sort($keys, SORT_STRING);
+
+        return implode("\n", $keys);
     }
 
     /**
@@ -1009,23 +1085,33 @@ class ProjectFinanceService
     }
 
     /**
-     * ProjectTaken taak 000: Opbrengst VC én contracttotaal in één fetch.
+     * ProjectTaken: Opbrengst VC én het opgeslagen contracttotaal in één fetch.
      *
-     * Opbrengst VC: LVS_Schedule_Total_Price_2. Eén schedule/budgetprijs per project.
-     * Niet LVS_Baseline_Total_Price, niet de aanneemsom (G/L 800000 / Line_Amount_LCY)
-     * en niet de som van factureerbare planningsregels.
+     * Opbrengst VC: LVS_Contract_Total_Price_2. Taak 000 als die er is, anders
+     * 000-000-000, anders de som van de Boeking-taken. ProjectTaken heeft geen
+     * Job_Task_Type; dat type komt uit JobTaskLines, alleen voor projecten die
+     * de detailsom nodig hebben. Het contracttotaal bevat het meerwerk. De
+     * aanroeper trekt de al opgehaalde opbrengst meerwerk eraf, zodat het
+     * hoofdproject dat deel niet nog eens toont.
+     * Niet LVS_Schedule_Total_Price_2, niet LVS_Baseline_Total_Price, niet de
+     * aanneemsom (G/L 800000 / Line_Amount_LCY) en niet de som van factureerbare
+     * planningsregels.
      *
-     * LVS_Contract_Total_Price_2 van taak 000 wordt nog meegelezen, maar de kolom Opbrengst
-     * gebruikt dat veld niet. Die kolom is de som van planningsregels met No 800000.
-     * Niet Contract_Invoiced_Price en niet Grootboekposten_OHW G/L 899901.
-     * Nulbedragen worden overgeslagen; de kolom blijft dan 0 zonder breakdownregel.
+     * LVS_Contract_Total_Price_2 van taak 000 wordt daarnaast als contracttotaal
+     * bewaard. De kolom Opbrengst/aanneemsom en Opbrengst t/m gebruiken dat niet:
+     * die sommen planningsregels met No 800000. Nulbedragen worden overgeslagen.
+     *
+     * Een schemafout op het prijsveld leegt Opbrengst VC met één melding.
+     * Een timeout of andere queryfout op JobTaskLines zet task_type_error, zodat
+     * de maand de vorige snapshot niet vervangt door een halve voorcalculatie.
      *
      * @return array{
      *   totals:array<string,float>,
      *   breakdown:array<string,array<int,array<string,mixed>>>,
      *   contract_totals:array<string,float>,
      *   contract_breakdown:array<string,array<int,array<string,mixed>>>,
-     *   warning:?string
+     *   warning:?string,
+     *   task_type_error:bool
      * }
      */
     private function fetchVoorcalculatieRevenueForProjects(array $projectNumbers, int $ttl): array
@@ -1034,13 +1120,11 @@ class ProjectFinanceService
         $breakdown = [];
         $contractTotals = [];
         $contractBreakdown = [];
-        $projectTotaalTaskNo = '000';
-        // Opbrengst VC en Opbrengst t/m delen één fetch, maar een ontbrekend veld mag de
-        // andere kolom niet meenemen: bij een schemafout op één prijsveld valt alleen dat
-        // veld weg (één melding) en wordt de rest één keer opnieuw opgehaald.
+        $projectTotaalTaskNo = FINANCE_PROJECT_TOTAL_TASK_NO;
+        // Eén prijsveld. Ontbreekt het, dan blijft Opbrengst VC leeg en komt er
+        // één melding, niet een herhaling per project.
         $priceFields = [
             FINANCE_OPBRENGST_VC_FIELD => 'Opbrengst VC',
-            FINANCE_CONTRACT_TOTAL_PRICE_FIELD => 'Opbrengst t/m',
         ];
         $fieldWarnings = [];
         $loaded = ['rows' => [], 'warning' => null];
@@ -1050,10 +1134,10 @@ class ProjectFinanceService
                 $projectNumbers,
                 $ttl,
                 8,
-                function (string $projectFilter) use ($projectTotaalTaskNo, $selectFields): string {
+                function (string $projectFilter) use ($selectFields): string {
                     return $this->companyEntityUrlWithQuery('ProjectTaken', [
                         '$select' => 'Job_No,Job_Task_No,Description,' . implode(',', $selectFields),
-                        '$filter' => $projectFilter . " and Job_Task_No eq '" . self::escapeOdataString($projectTotaalTaskNo) . "'",
+                        '$filter' => $projectFilter,
                     ]);
                 },
                 'Voorcalculatie opbrengst ophalen mislukt (ProjectTaken)'
@@ -1073,6 +1157,7 @@ class ProjectFinanceService
         }
         $loaded['warning'] = self::joinForecastWarnings(array_merge($fieldWarnings, [$loaded['warning'] ?? null]));
 
+        $rowsByProject = [];
         foreach ($loaded['rows'] as $row) {
             if (!is_array($row)) {
                 continue;
@@ -1084,40 +1169,63 @@ class ProjectFinanceService
             }
 
             $normalizedProject = self::normalizeMatchValue($projectNo);
-            $scheduleAmount = finance_opbrengst_vc_amount($row, $projectTotaalTaskNo);
+            $rowsByProject[$normalizedProject][] = $row;
+
             $contractAmount = finance_contract_total_price_amount($row, $projectTotaalTaskNo);
+            if ($contractAmount === 0.0) {
+                continue;
+            }
+
             $taskNo = (string) ($row['Job_Task_No'] ?? $projectTotaalTaskNo);
             $description = (string) ($row['Description'] ?? '');
+            $contractTotals[$normalizedProject] = $contractAmount;
+            $contractBreakdown[$normalizedProject] = [
+                [
+                    'Job_Task_No' => $taskNo,
+                    'Line_No' => 0,
+                    'Type' => '',
+                    'No' => '',
+                    'Description' => $description !== '' ? $description : 'Contracttotaal',
+                    'Line_Amount' => $contractAmount,
+                    'Line_Type' => FINANCE_CONTRACT_TOTAL_PRICE_FIELD,
+                ],
+            ];
+        }
 
-            if ($scheduleAmount !== 0.0) {
-                $totals[$normalizedProject] = $scheduleAmount;
-                $breakdown[$normalizedProject] = [
-                    [
-                        'Job_Task_No' => $taskNo,
-                        'Line_No' => 0,
-                        'Type' => '',
-                        'No' => '',
-                        'Description' => $description,
-                        'Line_Amount' => $scheduleAmount,
-                        'Line_Type' => '',
-                    ],
-                ];
+        $bookingKeys = null;
+        $typeWarning = null;
+        $taskTypeError = false;
+        $fallbackProjects = $this->baselineFallbackProjectNumbers($rowsByProject);
+        if ($fallbackProjects !== []) {
+            try {
+                $bookingKeys = $this->fetchBookingTaskKeys($fallbackProjects, $ttl);
+            } catch (Throwable $taskTypeLoadError) {
+                $bookingKeys = null;
+                $summary = self::summarizeOdataThrowable($taskTypeLoadError);
+                if (self::jobTaskLinesFailureKeepsUnfilteredSum($summary)) {
+                    $typeWarning = 'Veld Job_Task_Type bestaat niet op ProjectTaken in ' . $this->environment
+                        . '; totaal- en kopregels kunnen niet worden overgeslagen.';
+                } else {
+                    $taskTypeError = true;
+                    $typeWarning = 'JobTaskLines ophalen mislukt: ' . ($summary !== ''
+                        ? $summary
+                        : 'geen antwoord van Business Central');
+                }
+            }
+        }
+
+        foreach ($rowsByProject as $normalizedProject => $projectRows) {
+            if ($bookingKeys !== null && finance_baseline_cost_uses_detail_sum($projectRows)) {
+                $projectRows = $this->keepBookingBaselineRows($projectRows, $bookingKeys, $normalizedProject);
             }
 
-            if ($contractAmount !== 0.0) {
-                $contractTotals[$normalizedProject] = $contractAmount;
-                $contractBreakdown[$normalizedProject] = [
-                    [
-                        'Job_Task_No' => $taskNo,
-                        'Line_No' => 0,
-                        'Type' => '',
-                        'No' => '',
-                        'Description' => $description !== '' ? $description : 'Contracttotaal',
-                        'Line_Amount' => $contractAmount,
-                        'Line_Type' => FINANCE_CONTRACT_TOTAL_PRICE_FIELD,
-                    ],
-                ];
+            $resolved = finance_opbrengst_vc_from_task_rows($projectRows);
+            if ($resolved['amount'] === 0.0) {
+                continue;
             }
+
+            $totals[$normalizedProject] = $resolved['amount'];
+            $breakdown[$normalizedProject] = $resolved['lines'];
         }
 
         return [
@@ -1125,7 +1233,8 @@ class ProjectFinanceService
             'breakdown' => $breakdown,
             'contract_totals' => $contractTotals,
             'contract_breakdown' => $contractBreakdown,
-            'warning' => $loaded['warning'],
+            'warning' => self::joinForecastWarnings([$typeWarning, $loaded['warning'] ?? null]),
+            'task_type_error' => $taskTypeError,
         ];
     }
 
