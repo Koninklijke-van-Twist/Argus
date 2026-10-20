@@ -76,6 +76,15 @@ $departments = bc_fetch_project_departments('Koninklijke van Twist', [
 assert_same([['Koninklijke van Twist', "No eq 'PRJ1' or No eq 'O''Neil'"]], $calls, 'dubbelen vallen weg en een apostrof wordt geëscapet');
 assert_same(['prj1' => '50', "o'neil" => ''], $departments, 'een lege BC-code blijft leeg');
 
+$numericDepartments = bc_fetch_project_departments('KvT', ['159927', '159928'], static function (): array {
+    return [
+        ['No' => '159927', 'LVS_Global_Dimension_1_Code' => '50'],
+        ['No' => '159928', 'LVS_Global_Dimension_1_Code' => '40'],
+    ];
+});
+assert_same('50', $numericDepartments['159927'], 'een numeriek projectnummer houdt de afdeling');
+assert_same('40', $numericDepartments['159928'], 'een tweede numeriek projectnummer houdt de afdeling');
+
 $many = [];
 for ($i = 1; $i <= 21; $i++) {
     $many[] = 'P' . $i;

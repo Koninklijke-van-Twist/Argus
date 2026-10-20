@@ -150,7 +150,8 @@ function bc_fetch_project_departments(string $company, array $projectNumbers, ?c
                 'Projectafdeling ophalen mislukt (' . BC_FETCH_PROJECT_DEPARTMENT_ENTITY . '.' . BC_FETCH_PROJECT_DEPARTMENT_FIELD . ').'
             );
         }
-        $found = array_merge($found, bc_fetch_project_departments_from_rows($rows));
+        // array_merge hernummert numerieke sleutels (159927 wordt 0) en de afdeling valt dan weg.
+        $found = array_replace($found, bc_fetch_project_departments_from_rows($rows));
     }
 
     $result = [];
