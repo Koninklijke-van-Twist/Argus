@@ -32,14 +32,14 @@ $auth = $auth_list['Production'];
 
 Met `$mimirApi` gezet proberen company-discovery en alle OData-fetches (`odata_get_all` / `ProjectFinanceService` / `bc_fetch/*`, en `odata_mimir_companies_as_rows` vanuit `auth_helper.php`) eerst Mímir. Faalt die aanroep (verbinding/timeout, non-2xx, ongeldige JSON of een Mímir-foutpayload), dan haalt Argus dezelfde data op via het directe Business Central-pad van vóór Mímir (`$baseUrl`, `$auth` / `$auth_list`, `$environment`, lokale odata-filecache) en slaat Mímir voor de rest van dat PHP-verzoek over. Laat die BC-credentials in `auth.php` naast `$mimirApi` staan; ontbreken ze, dan komt de oorspronkelijke Mímir-fout terug. Zonder `$mimirApi` blijft het bestaande directe BC-pad ongewijzigd.
 
-Dat geldt voor live webverzoeken (`index.php`, `maanden.php`, `maand-detail.php`) en voor CLI. Argus heeft geen `nightly.php` of `hourly.php`; het CLI-script `web/tools/probe_ohw_gl_accounts.php` laadt wel `auth.php`. cURL naar Mímir: connect-timeout 10s, totale timeout 90s op web-SAPI's en 600s op CLI.
+Dat geldt voor live webverzoeken (`index.php`, `maanden.php`, `maand-detail.php`), voor `web/nightly.php` en `web/hourly.php`, en voor CLI. Het CLI-script `web/tools/probe_ohw_gl_accounts.php` laadt ook `auth.php`. cURL naar Mímir: connect-timeout 10s, totale timeout 90s op web-SAPI's en 600s op CLI.
 
 **max_age-beleid**
 
 | Soort fetch | `max_age` naar Mímir |
 | --- | --- |
-| `nightly.php` | niet aanwezig in Argus — constant `ARGUS_NIGHTLY_MAX_AGE` (**14400**, 4u) gereserveerd in `odata.php` |
-| `hourly.php` | niet aanwezig in Argus |
+| `nightly.php` | **14400** (4 uur), `ARGUS_NIGHTLY_MAX_AGE` |
+| `hourly.php` | **1800** (30 minuten), `ARGUS_HOURLY_MAX_AGE` |
 | UI / on-demand | bestaande TTLs via `odata_ttl_for_month()` — huidige maand **1 dag**, vorige maand **1 week**, ouder **1 jaar** |
 
 Tim moet `$mimirApi` (en optioneel `$mimirBase`) lokaal/op de server zetten, mét de BC-credentials ernaast; `auth.php` wordt niet gecommit. Zie [Mímir Implementatie](https://wiki.kvt.nl/books/mimir/page/implementatie).
@@ -56,6 +56,7 @@ Geen `auth.php` in deze repository (staat in `.gitignore`). Lokaal/op de server 
 - `web/project_finance.php` en `web/finance_calculations.php`: Opbrengst VC leest `ProjectTaken.LVS_Contract_Total_Price_2` (taak `000`, anders `000-000-000`, anders de som van Boeking-taken), niet meer `LVS_Schedule_Total_Price_2` en niet `LVS_Baseline_Total_Price`. Het contracttotaal bevat het meerwerk; het hoofdproject in de kolom is dat totaal minus de opbrengst meerwerk die al apart wordt getoond. Maandsnapshots zijn cacheversie 3 (`.v3.json`). Dezelfde wijziging kan nodig zijn in andere projecten die dit patroon kopiëren.
 - `web/finance_calculations.php`, `web/maanden.php` en `web/maand-detail.php`: de maandlijst herkent weer `.v3.json`, `.v2.json` en legacy `.json`. Een maand komt één keer voor; v3 wint van v2, v2 van legacy. Openen zonder v3 bouwt die maand opnieuw op met dezelfde peildatum en schrijft alleen een nieuw `.v3.json`. Lukt dat niet, dan blijft de oude snapshot zichtbaar met een melding. Oude bestanden worden niet verwijderd of overschreven. Een lopende herbouw wordt hervat: `begin_month_refresh` wist geen WIP, en een tweede tabblad volgt dezelfde refresh tot de v3 er is. Een herlaadbeurt tijdens een stap wacht tot die stap de WIP heeft weggeschreven en krijgt daarna een nieuwe generatie. Een stap schrijft de WIP alleen terug als die generatie nog klopt. Losse kaarten blijven staan; OHW-rijen en voorcalculatieregels worden vervangen. Het overzicht blijft pollen zolang een stap bezig is en pakt de opbouw daarna zelf weer op. Die herbouw wijzigt `web/project_finance.php` niet.
 - `web/project_finance.php` en `web/finance_calculations.php`: de kolom Opbrengst t/m is de som van `ProjectTaken.Contract_Invoiced_Price` tot en met de laatste dag van de gekozen maand. Het OData-filter is `Posting_Date_Filter eq '..YYYY-MM-DD'` (datum als string tussen quotes, met `..` ervoor). Alleen taken met `Job_Task_Type` Boeking uit `JobTaskLines` tellen mee; kop- en totaaltaken niet, anders tel je dubbel. De 800000-planningsregels blijven de aanneemsom en opbrengst meerwerk. Opbrengst VC, Kosten VC en de snapshotversie (`.v3.json`) zijn niet gewijzigd. Dezelfde wijziging kan nodig zijn in andere projecten die dit patroon kopiëren.
+- `web/nightly.php` en `web/hourly.php`: een maand zonder `.v3.json`, of met een open Verversen-WIP, wordt server-side opgebouwd met dezelfde stappen als de browser (OHW, projectdetails, voorcalculatie inclusief Opbrengst t/m, publicatie). Dezelfde lock en generatie gelden. Een verse lock van een browsertabblad blijft van dat tabblad. Nightly-fetches gebruiken max_age 4 uur, hourly 30 minuten. Oude `.json`- en `.v2.json`-bestanden worden niet verwijderd of overschreven. `web/project_finance.php` is hier niet gewijzigd.
 - Voorcalculatie van een maand gaat in stappen van 40 projecten (`VOORCALCULATIE_PROJECT_CHUNK_SIZE`). Eén HTTP-request voor alle projecten werd na 10–15 minuten door de proxy afgekapt (`Netwerkfout`), terwijl de oude snapshot bleef staan. Elke stap vervangt de totalen van die projecten. De snapshot wordt pas gepubliceerd als elk project uit de maandlijst een totaal heeft. `maanden.php` en `maand-detail.php` laten het sessie-lock los en lezen de bedrijfslijst een uur uit `cache/companies/discovery.json`, zodat een andere pagina niet op Mímir wacht zolang een stap bezig is. `web/project_finance.php` is hier niet gewijzigd.
 
 ## Tests
@@ -79,5 +80,6 @@ php web/tests/test_open_projects.php
 php web/tests/test_json_guard.php
 php web/tests/test_month_snapshot_fallback.php
 php web/tests/test_month_rebuild_lock.php
+php web/tests/test_month_rebuild_schedule.php
 node web/tests/test_overview_rebuild_action.js
 ```

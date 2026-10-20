@@ -32,12 +32,13 @@ function consolelog($text)
  *   $mimirApi  = 'mimir_…';              // verplicht om Mímir te activeren
  *   $mimirBase = 'https://sleutels.kvt.nl/mimir/api'; // optioneel
  *
- * max_age-beleid: Argus heeft geen nightly.php / hourly.php.
- * UI/on-demand houdt bestaande TTLs (odata_ttl_for_month: dag/week/jaar).
- * ARGUS_NIGHTLY_MAX_AGE (14400) is gereserveerd voor eventuele future nightly paths.
+ * max_age-beleid:
+ * - web/nightly.php gebruikt ARGUS_NIGHTLY_MAX_AGE (14400, 4 uur)
+ * - web/hourly.php gebruikt ARGUS_HOURLY_MAX_AGE (1800, 30 minuten) in month_rebuild_schedule.php
+ * - UI/on-demand houdt bestaande TTLs (odata_ttl_for_month: dag/week/jaar)
  */
 
-/** Mímir max_age for nightly-style fetches (4h). Argus has no nightly.php today. */
+/** Mímir max_age for nightly.php fetches (4h). */
 const ARGUS_NIGHTLY_MAX_AGE = 14400;
 
 require_once __DIR__ . '/mimir_fallback.php';
