@@ -1325,7 +1325,7 @@ function argus_claim_running_month_rebuild(string $dir, string $company, string 
                 return argus_month_rebuild_claim_response(false, '', '', false, '', false, 'WIP kon niet worden aangemaakt.');
             }
 
-            argus_month_rebuild_write_state($handle, $refreshId, $workerOwner, $now);
+            argus_month_rebuild_write_state($handle, $refreshId, $workerOwner, $now, true);
 
             return argus_month_rebuild_claim_response(true, $refreshId, 'worker', false, $workerOwner, false);
         }
@@ -1336,13 +1336,15 @@ function argus_claim_running_month_rebuild(string $dir, string $company, string 
         $lockMatchesWip = $storedId === $existingId && $storedOwner !== '';
         $sameOwner = $lockMatchesWip && $requestedOwner !== '' && hash_equals($storedOwner, $requestedOwner);
         $fresh = $lockMatchesWip && $age < $ttlSeconds;
-
-        if ($fresh && !$sameOwner) {
+        $busy = $lockMatchesWip && !empty($state['busy']);
+        // Een verse stap, ook van hetzelfde tabblad, mag niet opnieuw starten.
+        // Die schrijft de hele WIP terug en zou nieuwere details of voorcalculatie wissen.
+        if ($fresh && ($busy || !$sameOwner)) {
             return argus_month_rebuild_claim_response(true, $existingId, 'watcher', true, $storedOwner, false);
         }
 
         $workerOwner = $requestedOwner !== '' ? $requestedOwner : ($storedOwner !== '' ? $storedOwner : bin2hex(random_bytes(8)));
-        argus_month_rebuild_write_state($handle, $existingId, $workerOwner, $now);
+        argus_month_rebuild_write_state($handle, $existingId, $workerOwner, $now, true);
 
         return argus_month_rebuild_claim_response(true, $existingId, 'worker', true, $workerOwner, false);
     } finally {
@@ -1384,7 +1386,7 @@ function argus_month_rebuild_heartbeat(string $dir, string $company, string $yea
             return false;
         }
 
-        argus_month_rebuild_write_state($handle, $refreshId, $owner, $now ?? time());
+        argus_month_rebuild_write_state($handle, $refreshId, $owner, $now ?? time(), true);
 
         return true;
     } finally {
@@ -1394,14 +1396,148 @@ function argus_month_rebuild_heartbeat(string $dir, string $company, string $yea
 }
 
 /**
+ * De stap is klaar met schrijven. Hetzelfde tabblad mag daarna verder; een ander tabblad niet.
+ */
+function argus_month_rebuild_release(string $dir, string $company, string $yearMonth, string $refreshId): bool
+{
+    $refreshId = argus_month_refresh_id($refreshId);
+    $lockPath = argus_month_wip_lock_path($dir, $company, $yearMonth);
+    if ($refreshId === '' || $lockPath === null || !is_file($lockPath)) {
+        return false;
+    }
+
+    $handle = @fopen($lockPath, 'c+');
+    if ($handle === false) {
+        return false;
+    }
+
+    try {
+        if (!flock($handle, LOCK_EX)) {
+            return false;
+        }
+
+        rewind($handle);
+        $raw = stream_get_contents($handle);
+        $state = is_string($raw) && $raw !== '' ? json_decode($raw, true) : null;
+        if (!is_array($state) || argus_month_refresh_id((string) ($state['refresh_id'] ?? '')) !== $refreshId) {
+            return false;
+        }
+
+        $owner = argus_month_rebuild_owner((string) ($state['owner'] ?? ''));
+        if ($owner === '') {
+            return false;
+        }
+
+        argus_month_rebuild_write_state($handle, $refreshId, $owner, (int) ($state['updated_at'] ?? time()), false);
+
+        return true;
+    } finally {
+        flock($handle, LOCK_UN);
+        fclose($handle);
+    }
+}
+
+/**
+ * Voegt een late WIP-schrijfactie samen met wat er nu op schijf staat.
+ * Lege waarden vervangen geen al opgeslagen details of voorcalculatie.
+ *
+ * @param array<string,mixed> $base
+ * @param array<string,mixed> $overlay
+ * @return array<string,mixed>
+ */
+function argus_merge_month_wip(array $base, array $overlay): array
+{
+    foreach ($overlay as $key => $value) {
+        if (!array_key_exists($key, $base)) {
+            $base[$key] = $value;
+            continue;
+        }
+
+        $current = $base[$key];
+        if (is_array($value) && is_array($current)) {
+            if ($value === []) {
+                continue;
+            }
+            if (array_is_list($value) && array_is_list($current)) {
+                foreach ($value as $item) {
+                    if (!in_array($item, $current, true)) {
+                        $current[] = $item;
+                    }
+                }
+                $base[$key] = $current;
+                continue;
+            }
+            $base[$key] = argus_merge_month_wip($current, $value);
+            continue;
+        }
+
+        if ($value === null || $value === '') {
+            continue;
+        }
+
+        $base[$key] = $value;
+    }
+
+    return $base;
+}
+
+/**
+ * Schrijft WIP zonder nieuwere sleutels van een parallelle stap te wissen.
+ *
+ * @param array<string,mixed> $data
+ */
+function argus_save_month_wip_merged(string $path, array $data): bool
+{
+    $dir = dirname($path);
+    if (!is_dir($dir) && !@mkdir($dir, 0777, true) && !is_dir($dir)) {
+        return false;
+    }
+
+    $lockHandle = @fopen($path . '.merge.lock', 'c');
+    if ($lockHandle === false) {
+        return false;
+    }
+
+    try {
+        if (!flock($lockHandle, LOCK_EX)) {
+            return false;
+        }
+
+        $latest = [];
+        if (is_file($path)) {
+            $raw = @file_get_contents($path);
+            $decoded = is_string($raw) ? json_decode($raw, true) : null;
+            if (is_array($decoded)) {
+                $latest = $decoded;
+            }
+        }
+
+        if ($latest !== []) {
+            $data = argus_merge_month_wip($latest, $data);
+        }
+        $data['cache_version'] = ARGUS_MONTH_CACHE_VERSION;
+        $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if (!is_string($json)) {
+            return false;
+        }
+
+        return argus_write_file_atomically($path, $json);
+    } finally {
+        flock($lockHandle, LOCK_UN);
+        fclose($lockHandle);
+    }
+}
+
+/**
  * @param resource $handle
  */
-function argus_month_rebuild_write_state($handle, string $refreshId, string $owner, int $now): bool
+function argus_month_rebuild_write_state($handle, string $refreshId, string $owner, int $now, bool $busy): bool
 {
     $json = json_encode([
         'refresh_id' => $refreshId,
         'owner' => $owner,
         'updated_at' => $now,
+        'busy' => $busy,
     ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if (!is_string($json)) {
         return false;

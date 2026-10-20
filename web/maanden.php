@@ -528,12 +528,7 @@ function batch_wip_load(string $company, string $targetYearMonth, string $refres
 
 function batch_wip_save(string $company, string $targetYearMonth, array $data, string $refreshId = ''): void
 {
-    $data['cache_version'] = ARGUS_MONTH_CACHE_VERSION;
-    $path = batch_wip_path($company, $targetYearMonth, $refreshId);
-    $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if (is_string($json)) {
-        argus_write_file_atomically($path, $json);
-    }
+    argus_save_month_wip_merged(batch_wip_path($company, $targetYearMonth, $refreshId), $data);
 }
 
 function batch_wip_delete(string $company, string $targetYearMonth, string $refreshId = ''): void
@@ -602,6 +597,18 @@ function maanden_rebuild_heartbeat(string $company, string $yearMonth, string $r
     }
 
     argus_month_rebuild_heartbeat(maanden_cache_dir(), $company, $yearMonth, $refreshId);
+}
+
+/**
+ * De lopende stap heeft de WIP weggeschreven. Een herlaadbeurt mag daarna verder.
+ */
+function maanden_rebuild_release(string $company, string $yearMonth, string $refreshId): void
+{
+    if ($refreshId === '') {
+        return;
+    }
+
+    argus_month_rebuild_release(maanden_cache_dir(), $company, $yearMonth, $refreshId);
 }
 
 /**
@@ -1425,6 +1432,7 @@ if (($_GET['action'] ?? '') === 'fetch_column_batch') {
     }
     $auth = auth_get_auth_for_company($company, 300);
 
+    $refreshId = '';
     try {
         if (!$isTargetScoped) {
             throw new RuntimeException('Kolom ' . $columnKey . ' wordt alleen nog per snapshot opgehaald.');
@@ -1511,6 +1519,8 @@ if (($_GET['action'] ?? '') === 'fetch_column_batch') {
     } catch (Throwable $e) {
         http_response_code(500);
         echo json_encode(['ok' => false, 'error' => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+    } finally {
+        maanden_rebuild_release($company, $targetYm, $refreshId);
     }
     exit;
 }
@@ -1722,6 +1732,7 @@ if (($_GET['action'] ?? '') === 'fetch_sub_planning') {
         $company = $companies[0];
     }
 
+    $refreshId = '';
     try {
         $ttl = odata_ttl_for_month($targetYm);
         $refreshId = batch_wip_refresh_id_from_request();
@@ -1824,6 +1835,8 @@ if (($_GET['action'] ?? '') === 'fetch_sub_planning') {
     } catch (Throwable $e) {
         http_response_code(500);
         echo json_encode(['ok' => false, 'error' => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+    } finally {
+        maanden_rebuild_release($company, $targetYm, $refreshId);
     }
     exit;
 }
@@ -1846,6 +1859,7 @@ if (($_GET['action'] ?? '') === 'build_month_snapshot') {
         $company = $companies[0];
     }
 
+    $refreshId = '';
     try {
         $refreshId = batch_wip_refresh_id_from_request();
         maanden_rebuild_heartbeat($company, $targetYm, $refreshId);
@@ -1900,6 +1914,8 @@ if (($_GET['action'] ?? '') === 'build_month_snapshot') {
     } catch (Throwable $e) {
         http_response_code(500);
         echo json_encode(['ok' => false, 'error' => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+    } finally {
+        maanden_rebuild_release($company, $targetYm, $refreshId);
     }
     exit;
 }

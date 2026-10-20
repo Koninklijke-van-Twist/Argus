@@ -82,8 +82,14 @@ assert_same('watcher', $emptyOwner['role'], 'een lege eigenaar pikt een verse lo
 assert_same($refreshId, $emptyOwner['refresh_id'], 'een lege eigenaar hergebruikt de lopende id');
 assert_same($lockBefore, (string) file_get_contents($dir . '/' . $lockName), 'een toeschouwer verlengt de lock niet');
 
-$same = argus_claim_running_month_rebuild($dir, $company, $ym, $ownerA, true, 1006, 10);
-assert_same('worker', $same['role'], 'hetzelfde tabblad blijft bouwer');
+$sameWhileBusy = argus_claim_running_month_rebuild($dir, $company, $ym, $ownerA, true, 1006, 10);
+assert_same('watcher', $sameWhileBusy['role'], 'een herlaadbeurt wacht tot de lopende stap de WIP heeft weggeschreven');
+assert_same($refreshId, $sameWhileBusy['refresh_id'], 'de herlaadbeurt houdt dezelfde refresh-id');
+assert_same($wipBytes, (string) file_get_contents($dir . '/' . $wipName), 'de herlaadbeurt wist de WIP niet');
+
+assert_true(argus_month_rebuild_release($dir, $company, $ym, $refreshId), 'een afgeronde stap geeft de lock vrij');
+$same = argus_claim_running_month_rebuild($dir, $company, $ym, $ownerA, true, 1007, 10);
+assert_same('worker', $same['role'], 'hetzelfde tabblad gaat verder nadat de stap klaar is');
 assert_same(true, $same['resumed'], 'hetzelfde tabblad hervat');
 assert_same($refreshId, $same['refresh_id'], 'hervatten houdt dezelfde refresh-id');
 assert_same($wipBytes, (string) file_get_contents($dir . '/' . $wipName), 'hervatten wist de WIP niet');
@@ -132,6 +138,29 @@ assert_true($explicit['refresh_id'] !== '' && $explicit['refresh_id'] !== $refre
 
 assert_same(['2026-09'], argus_list_saved_months($dir, $company), 'lock en WIP staan niet in de maandlijst');
 assert_same(['2024-02'], argus_list_saved_months($dir, 'KVT Gas'), 'een lock van KvT voegt geen maand toe bij KVT Gas');
+
+$mergePath = $dir . '/merge-wip.json';
+assert_true(argus_save_month_wip_merged($mergePath, [
+    'column_data_target' => [
+        'grootboekposten_ohw' => ['by_project' => ['p1' => ['no' => 'p1']]],
+        'project_details' => ['by_project' => ['p1' => ['name' => 'Een']]],
+    ],
+    'planning_totals_by_job' => ['p1' => 10],
+    'open_project_numbers' => ['p1'],
+]), 'de eerste WIP-schrijfactie slaagt');
+assert_true(argus_save_month_wip_merged($mergePath, [
+    'column_data_target' => [
+        'grootboekposten_ohw' => ['by_project' => ['p1' => ['no' => 'p1'], 'p2' => ['no' => 'p2']]],
+    ],
+    'planning_totals_by_job' => [],
+    'open_project_numbers' => ['p1', 'p2'],
+]), 'een late OHW-schrijfactie slaagt');
+$merged = json_decode((string) file_get_contents($mergePath), true);
+assert_true(is_array($merged), 'de samengevoegde WIP is JSON');
+assert_same('Een', $merged['column_data_target']['project_details']['by_project']['p1']['name'] ?? null, 'een late schrijfactie laat projectdetails staan');
+assert_same(10, $merged['planning_totals_by_job']['p1'] ?? null, 'een late schrijfactie laat voorcalculatie staan');
+assert_same('p2', $merged['column_data_target']['grootboekposten_ohw']['by_project']['p2']['no'] ?? null, 'een late schrijfactie houdt haar eigen OHW');
+assert_same(['p1', 'p2'], $merged['open_project_numbers'] ?? null, 'projectnummers worden samengevoegd');
 
 foreach ($original as $name => $bytes) {
     assert_same($bytes, (string) file_get_contents($dir . '/' . $name), 'herbouw laat ' . $name . ' bytegelijk');
