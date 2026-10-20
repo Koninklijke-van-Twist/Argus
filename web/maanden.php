@@ -12,6 +12,7 @@ require_once __DIR__ . '/odata.php';
 require_once __DIR__ . '/finance_calculations.php';
 require_once __DIR__ . '/project_finance.php';
 require_once __DIR__ . '/bc_fetch/registry.php';
+require_once __DIR__ . '/bc_fetch/project_department.php';
 
 /**
  * Constants
@@ -528,6 +529,7 @@ function batch_wip_load(string $company, string $targetYearMonth, string $refres
 
 function batch_wip_save(string $company, string $targetYearMonth, array $data, string $refreshId = ''): void
 {
+    $data = maanden_refresh_departments_on_column_save($company, $data);
     argus_save_month_wip_merged(batch_wip_path($company, $targetYearMonth, $refreshId), $data);
 }
 
@@ -617,8 +619,39 @@ function maanden_rebuild_release(string $company, string $yearMonth, string $ref
     argus_month_rebuild_release(maanden_cache_dir(), $company, $yearMonth, $refreshId, maanden_rebuild_generation());
 }
 
+/**
+ * Leest de projectafdeling opnieuw aan het eind van een OHW-ronde, de laatste
+ * projectdetail-chunk en de losse projectdetailstap. Een eerdere chunk slaat
+ * dit over: die merge zou anders de verse code weer met de kaartcache overschrijven.
+ *
+ * @param array<string,mixed> $wip
+ * @return array<string,mixed>
+ */
+function maanden_refresh_departments_on_column_save(string $company, array $wip): array
+{
+    $action = (string) ($_GET['action'] ?? '');
+    $columnKey = (string) ($_POST['column_key'] ?? '');
+    $chunkComplete = true;
+    if ($action === 'fetch_column_batch' && $columnKey === 'project_details') {
+        $chunkIndex = max(0, (int) ($_POST['chunk_index'] ?? 0));
+        $plan = bc_fetch_project_detail_chunk_at(
+            wip_project_numbers($wip),
+            $chunkIndex,
+            PROJECT_DETAILS_FETCH_CHUNK_SIZE
+        );
+        $chunkComplete = !empty($plan['chunks_complete']);
+    }
+    if (!bc_fetch_column_save_should_refresh_departments($action, $columnKey, $chunkComplete)) {
+        return $wip;
+    }
+
+    return bc_fetch_apply_departments_to_wip($company, $wip);
+}
+
 function maanden_rebuild_save_wip(string $company, string $yearMonth, array $data, string $refreshId): bool
 {
+    $data = maanden_refresh_departments_on_column_save($company, $data);
+
     return argus_save_month_wip_if_current(
         maanden_cache_dir(),
         $company,
@@ -894,7 +927,8 @@ function aggregate_grootboekposten_ohw_rows(array $rows): array
 
 /**
  * Bouwt projectsamenvattingen en totalen vanuit eerder opgehaalde data.
- * Doet geen OData-calls; alle benodigde data wordt als parameter meegegeven.
+ * De projectafdeling komt niet uit die data: die wordt hier opnieuw uit
+ * Projecten.LVS_Global_Dimension_1_Code gelezen (max_age 0).
  */
 function build_month_rows(
     string $company,
@@ -914,6 +948,18 @@ function build_month_rows(
         array_keys($projectDetails)
     )));
 
+    $departmentNumbers = [];
+    foreach ($projectKeys as $rawKey) {
+        $normKey = strtolower(trim((string) $rawKey));
+        if ($normKey === '') {
+            continue;
+        }
+        $card = $projectDetails[$normKey] ?? null;
+        $cardNo = trim((string) (is_array($card) ? ($card['No'] ?? '') : ''));
+        $departmentNumbers[] = $cardNo !== '' ? $cardNo : strtoupper($normKey);
+    }
+    $departmentsByNorm = bc_fetch_project_departments($company, $departmentNumbers);
+
     foreach ($projectKeys as $normJob) {
         $normJob = strtolower(trim((string) $normJob));
         if ($normJob === '') {
@@ -922,6 +968,11 @@ function build_month_rows(
 
         $proj = $projectDetails[$normJob] ?? null;
         $jobNo = trim((string) (($proj['No'] ?? '') ?: strtoupper($normJob)));
+        $departmentCode = $departmentsByNorm[$normJob] ?? '';
+        if (is_array($proj)) {
+            $proj[BC_FETCH_PROJECT_DEPARTMENT_FIELD] = $departmentCode;
+            $projectDetails[$normJob] = $proj;
+        }
         $planningTotals = $planningTotalsByJob[$normJob] ?? ['expected_revenue' => 0.0, 'expected_costs' => 0.0, 'extra_work' => 0.0, 'aanneemsom' => 0.0];
         $planningBreakdown = $planningBreakdownByJob[$normJob] ?? ['expected_revenue_lines' => [], 'expected_costs_lines' => [], 'extra_work_lines' => [], 'aanneemsom_lines' => []];
         $projectTotals = $projectTotalsByJob[$normJob] ?? ['costs' => 0.0, 'revenue' => 0.0, 'resultaat' => 0.0];
@@ -932,7 +983,7 @@ function build_month_rows(
             'Customer_Id' => (string) ($proj['Bill_to_Customer_No'] ?? ''),
             'Customer_Name' => (string) ($proj['Bill_to_Name'] ?? ''),
             'Project_Manager' => (string) ($proj['Project_Manager'] ?? $proj['Person_Responsible'] ?? ''),
-            'Cost_Center' => (string) ($proj['LVS_Global_Dimension_1_Code'] ?? ''),
+            'Cost_Center' => $departmentCode,
             'Project_Actual_Costs' => (float) ($projectTotals['costs'] ?? 0.0),
             'Project_Actual_Costs_To_Date' => 0.0,
             // Gefactureerd t/m einde van de gekozen maand (Boeking-taken), niet de 800000-som.
@@ -1135,7 +1186,6 @@ function build_snapshot_from_column_wip(string $company, string $targetYm, array
         ? $wip['planning_breakdown_by_job']
         : [];
     $ohwCostLinesByProject = [];
-    $ohwRevenueLinesByProject = [];
     $columnDataTarget = is_array($wip['column_data_target'] ?? null) ? $wip['column_data_target'] : [];
     $projectNumbers = maanden_wip_sync_project_numbers_from_ohw($wip);
 
@@ -1168,7 +1218,6 @@ function build_snapshot_from_column_wip(string $company, string $targetYm, array
         );
 
         $ohwCostLinesByProject[$normProjectNo] = [];
-        $ohwRevenueLinesByProject[$normProjectNo] = [];
         $sourceRows = is_array($projectValues['rows'] ?? null) ? $projectValues['rows'] : [];
         foreach ($sourceRows as $sourceRow) {
             if (!is_array($sourceRow)) {
@@ -1182,8 +1231,6 @@ function build_snapshot_from_column_wip(string $company, string $targetYm, array
             $kind = bc_fetch_ohw_gl_account_kind((string) ($sourceRow['G_L_Account_No'] ?? ''));
             if ($kind === 'costs') {
                 $ohwCostLinesByProject[$normProjectNo][] = bc_fetch_ohw_breakdown_line_from_row($sourceRow);
-            } elseif ($kind === 'revenue') {
-                $ohwRevenueLinesByProject[$normProjectNo][] = bc_fetch_ohw_breakdown_line_from_row($sourceRow);
             }
         }
     }
@@ -1252,20 +1299,8 @@ function build_snapshot_from_column_wip(string $company, string $targetYm, array
                 continue;
             }
 
-            // Afd. van OHW-regels wint van de projectkaart. Zonder OHW-post blijft
-            // LVS_Global_Dimension_1_Code van Projecten staan. OHW-bedragen blijven dan 0.
-            $departmentCode = bc_fetch_primary_department_from_breakdown([
-                'total_costs_lines' => is_array($ohwCostLinesByProject[$normProjectNo] ?? null)
-                    ? $ohwCostLinesByProject[$normProjectNo]
-                    : [],
-                'total_revenue_lines' => is_array($ohwRevenueLinesByProject[$normProjectNo] ?? null)
-                    ? $ohwRevenueLinesByProject[$normProjectNo]
-                    : [],
-            ]);
-            if ($departmentCode !== '') {
-                $data['project_summaries'][$summaryIndex]['Cost_Center'] = $departmentCode;
-            }
-
+            // Cost_Center staat al op de verse projectkaart. OHW-regels houden hun
+            // eigen Global_Dimension_1_Code voor de post, maar die wordt niet de afdeling.
             $data['project_summaries'][$summaryIndex]['Project_Actual_Costs_To_Date'] = finance_to_float(
                 $costsThroughTodayByProject[$normProjectNo] ?? 0.0
             );

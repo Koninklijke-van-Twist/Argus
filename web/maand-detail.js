@@ -204,8 +204,9 @@
                 project_manager: formatProjectManagerName(projDetail.Project_Manager || projSummary.Project_Manager || projDetail.Person_Responsible || ''),
                 document_status: toTrimmedString(projDetail.LVS_Document_Status || ''),
                 reason_code: toTrimmedString(projDetail.KVT_Reason_Code || ''),
-                cost_center: primaryDepartmentFromBreakdown(breakdown)
-                    || toTrimmedString(projSummary.Cost_Center || projDetail.LVS_Global_Dimension_1_Code || ''),
+                cost_center: Object.prototype.hasOwnProperty.call(projSummary, 'Cost_Center')
+                    ? toTrimmedString(projSummary.Cost_Center)
+                    : toTrimmedString(projDetail.LVS_Global_Dimension_1_Code || ''),
                 project_total_costs: projectTotalCosts,
                 project_total_costs_to_date: parseDecimal(projSummary.Project_Actual_Costs_To_Date || 0),
                 project_total_revenue: projectTotalRevenue,
@@ -269,25 +270,6 @@
 
         name = name.replace(/^KVT[\/\\]/i, '');
         return name.trim();
-    }
-
-    function primaryDepartmentFromBreakdown (breakdown)
-    {
-        const lineKeys = ['total_costs_lines', 'total_revenue_lines'];
-        for (const lineKey of lineKeys)
-        {
-            const lines = Array.isArray(breakdown[lineKey]) ? breakdown[lineKey] : [];
-            for (const line of lines)
-            {
-                const code = toTrimmedString(line && line.Global_Dimension_1_Code || '');
-                if (code !== '')
-                {
-                    return code;
-                }
-            }
-        }
-
-        return '';
     }
 
     function formatJobCompleteLabel (value)
