@@ -582,6 +582,60 @@ function batch_wip_refresh_id_from_request(): string
 }
 
 /**
+ * Koppelt een automatische herbouw aan de al lopende WIP.
+ * Bestaat die nog niet, dan wordt er één aangemaakt. Niets wordt gewist.
+ */
+function batch_wip_claim_refresh(string $company, string $targetYearMonth): string
+{
+    $dir = maanden_cache_dir();
+    $safeCompany = argus_month_company_slug($company);
+    $safeYM = preg_replace('/[^0-9-]/', '', $targetYearMonth);
+    if (!is_string($safeYM)) {
+        $safeYM = '';
+    }
+    $lockPath = $dir . DIRECTORY_SEPARATOR . $safeCompany . '_wip_' . $safeYM . '.lock';
+    $handle = @fopen($lockPath, 'c');
+    if ($handle === false) {
+        $existing = argus_active_month_wip_refresh_id($dir, $company, $targetYearMonth);
+        if ($existing !== '') {
+            return $existing;
+        }
+
+        $refreshId = bin2hex(random_bytes(8));
+        batch_wip_save($company, $targetYearMonth, ['refresh_id' => $refreshId], $refreshId);
+
+        return $refreshId;
+    }
+
+    try {
+        if (!flock($handle, LOCK_EX)) {
+            $existing = argus_active_month_wip_refresh_id($dir, $company, $targetYearMonth);
+            if ($existing !== '') {
+                return $existing;
+            }
+
+            $refreshId = bin2hex(random_bytes(8));
+            batch_wip_save($company, $targetYearMonth, ['refresh_id' => $refreshId], $refreshId);
+
+            return $refreshId;
+        }
+
+        $existing = argus_active_month_wip_refresh_id($dir, $company, $targetYearMonth);
+        if ($existing !== '') {
+            return $existing;
+        }
+
+        $refreshId = bin2hex(random_bytes(8));
+        batch_wip_save($company, $targetYearMonth, ['refresh_id' => $refreshId], $refreshId);
+
+        return $refreshId;
+    } finally {
+        flock($handle, LOCK_UN);
+        fclose($handle);
+    }
+}
+
+/**
  * Geeft lijst van alle te ophalen maanden voor de gegeven doelmaand (3 jaar terug t/m doelmaand),
  * gesorteerd van oud naar nieuw.
  */
@@ -1425,6 +1479,12 @@ if (($_GET['action'] ?? '') === 'fetch_column_batch') {
         ];
 
         if ($columnKey === 'grootboekposten_ohw') {
+            $existingOhw = $columnDataTarget['grootboekposten_ohw'] ?? null;
+            if (is_array($existingOhw) && array_key_exists('by_project', $existingOhw)) {
+                echo json_encode($response, JSON_UNESCAPED_UNICODE);
+                exit;
+            }
+
             $columnResult = bc_fetch_run_column($columnKey, $company, $targetYm, [], $auth, $ttl);
             $columnDataTarget[$columnKey] = $columnResult;
             $wip['column_data_target'] = $columnDataTarget;
@@ -1724,6 +1784,18 @@ if (($_GET['action'] ?? '') === 'fetch_sub_planning') {
         $chunkWarning = null;
         $blockingError = null;
 
+        if ($plan['chunk_projects'] === [] || bc_fetch_forecast_covers_projects($plan['chunk_projects'], $planningTotalsByJob)) {
+            echo json_encode([
+                'ok' => true,
+                'warning' => null,
+                'project_count' => count($plan['chunk_projects']),
+                'chunk_index' => $chunkIndex,
+                'total_chunks' => $plan['total_chunks'],
+                'chunks_complete' => $plan['chunks_complete'],
+            ], JSON_UNESCAPED_UNICODE);
+            exit;
+        }
+
         if ($plan['chunk_projects'] !== []) {
             try {
                 $environmentForCompany = auth_get_environment_for_company($company, AUTH_COMPANY_DISCOVERY_TTL_SECONDS);
@@ -1891,6 +1963,8 @@ if (($_GET['action'] ?? '') === 'refresh_month') {
 
 // Start een verversing zonder de gepubliceerde snapshot te verwijderen.
 // De opbouw schrijft naar een eigen WIP-bestand; pas een complete snapshot vervangt de oude.
+// resume=1 (de maandpagina die een oude snapshot herbouwt) laat een lopende WIP staan.
+// Zonder resume wist Verversen de WIP en begint opnieuw; dat is een bewuste klik.
 if (($_GET['action'] ?? '') === 'begin_month_refresh') {
     header('Content-Type: application/json; charset=utf-8');
 
@@ -1906,10 +1980,17 @@ if (($_GET['action'] ?? '') === 'begin_month_refresh') {
         $company = $companies[0];
     }
 
-    batch_wip_delete_all($company, $ym);
+    $resume = (string) ($_POST['resume'] ?? '') === '1';
+    if ($resume) {
+        $refreshId = batch_wip_claim_refresh($company, $ym);
+    } else {
+        batch_wip_delete_all($company, $ym);
+        $refreshId = bin2hex(random_bytes(8));
+    }
+
     echo json_encode([
         'ok' => true,
-        'refresh_id' => bin2hex(random_bytes(8)),
+        'refresh_id' => $refreshId,
     ], JSON_UNESCAPED_UNICODE);
     exit;
 }

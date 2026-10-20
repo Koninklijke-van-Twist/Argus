@@ -265,6 +265,28 @@ assert_same(
     'herbouw voegt alleen het ontbrekende v3-bestand toe'
 );
 
+$wipDir = sys_get_temp_dir() . '/argus-wip-' . bin2hex(random_bytes(4));
+mkdir($wipDir);
+file_put_contents($wipDir . '/koninklijke_van_twist_wip_2026-09.v3.json', '{}');
+file_put_contents($wipDir . '/koninklijke_van_twist_wip_2026-09_aaaaaaaaaaaaaaaa.v3.json', '{}');
+file_put_contents($wipDir . '/koninklijke_van_twist_wip_2026-09_bbbbbbbbbbbbbbbb.v3.json', '{}');
+file_put_contents($wipDir . '/koninklijke_van_twist_wip_2026-08_cccccccccccccccc.v3.json', '{}');
+file_put_contents($wipDir . '/koninklijke_van_twist_wip_2026-09_abcdef0123456789.v2.json', '{}');
+touch($wipDir . '/koninklijke_van_twist_wip_2026-09_aaaaaaaaaaaaaaaa.v3.json', time() - 100);
+touch($wipDir . '/koninklijke_van_twist_wip_2026-09_bbbbbbbbbbbbbbbb.v3.json', time() - 10);
+assert_same(
+    'bbbbbbbbbbbbbbbb',
+    argus_active_month_wip_refresh_id($wipDir, $company, '2026-09'),
+    'een hernieuwde pageview pakt de nieuwste lopende WIP, niet een leeg legacy-bestand'
+);
+assert_same('', argus_active_month_wip_refresh_id($wipDir, $company, '2026-01'), 'zonder WIP is er niets om te hervatten');
+assert_same(
+    'cccccccccccccccc',
+    argus_active_month_wip_refresh_id($wipDir, $company, '2026-08'),
+    'een andere maand houdt haar eigen refresh-id'
+);
+assert_same('', argus_active_month_wip_refresh_id($wipDir, 'KVT Gas', '2026-09'), 'een ander bedrijf ziet deze WIP niet');
+
 foreach (scandir($dir) as $entry) {
     if ($entry === '.' || $entry === '..') {
         continue;
@@ -284,6 +306,13 @@ foreach (scandir($emptyGas) as $entry) {
     unlink($emptyGas . '/' . $entry);
 }
 rmdir($emptyGas);
+foreach (scandir($wipDir) as $entry) {
+    if ($entry === '.' || $entry === '..') {
+        continue;
+    }
+    unlink($wipDir . '/' . $entry);
+}
+rmdir($wipDir);
 
 if ($failures > 0) {
     fwrite(STDERR, "{$failures} assertion(s) failed\n");

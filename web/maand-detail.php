@@ -204,7 +204,8 @@ if (($_GET['action'] ?? '') === 'save_user_settings') {
 }
 
 // Load month data. Zonder v3 blijft de oude snapshot zichtbaar en start de pagina
-// een herbouw met de peildatum uit dat bestand. Oude bestanden worden niet vervangen.
+// een herbouw met de peildatum uit dat bestand. Een lopende WIP wordt voortgezet
+// en niet gewist. Oude bestanden worden niet vervangen.
 $monthData = null;
 $errorMessage = null;
 $snapshotNotice = null;
@@ -230,6 +231,7 @@ if ($yearMonth !== '') {
             'planning_url' => 'maanden.php?action=fetch_sub_planning',
             'build_url' => 'maanden.php?action=build_month_snapshot',
             'failure_notice' => argus_month_rebuild_failure_notice(''),
+            'resume' => true,
             'columns' => bc_fetch_target_scoped_column_keys(),
         ];
     } elseif (is_string($openedMonth['notice']) && $openedMonth['notice'] !== '') {

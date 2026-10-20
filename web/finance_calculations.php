@@ -1139,6 +1139,63 @@ function argus_month_refresh_id(string $refreshId): string
 }
 
 /**
+ * Refresh-id van het nieuwste WIP-bestand van deze maand.
+ * Leeg betekent dat er nog geen lopende herbouw is.
+ * Legacy-WIP zonder id, tijdelijke bestanden en andere maanden tellen niet mee.
+ */
+function argus_active_month_wip_refresh_id(string $dir, string $company, string $yearMonth): string
+{
+    $slug = argus_month_company_slug($company);
+    $safeYearMonth = preg_replace('/[^0-9-]/', '', $yearMonth);
+    if ($slug === '' || !is_string($safeYearMonth) || preg_match('/^\d{4}-\d{2}$/', $safeYearMonth) !== 1) {
+        return '';
+    }
+
+    if (!is_dir($dir)) {
+        return '';
+    }
+
+    $prefix = $slug . '_wip_' . $safeYearMonth . '_';
+    $suffix = argus_month_cache_suffix();
+    $entries = @scandir($dir);
+    if (!is_array($entries)) {
+        return '';
+    }
+
+    $bestId = '';
+    $bestMtime = -1;
+    foreach ($entries as $entry) {
+        if (!is_string($entry) || !str_starts_with($entry, $prefix) || !str_ends_with($entry, $suffix)) {
+            continue;
+        }
+
+        $refreshId = argus_month_refresh_id(substr($entry, strlen($prefix), -strlen($suffix)));
+        if ($refreshId === '') {
+            continue;
+        }
+
+        $path = $dir . DIRECTORY_SEPARATOR . $entry;
+        if (!is_file($path)) {
+            continue;
+        }
+
+        $mtime = @filemtime($path);
+        $mtime = $mtime === false ? 0 : $mtime;
+        if ($mtime < $bestMtime) {
+            continue;
+        }
+        if ($mtime === $bestMtime && strcmp($refreshId, $bestId) < 0) {
+            continue;
+        }
+
+        $bestMtime = $mtime;
+        $bestId = $refreshId;
+    }
+
+    return $bestId;
+}
+
+/**
  * Fout die de vorige maandsnapshot moet laten staan.
  * Een JobTaskLines-timeout of filterfout mag de maand niet vervangen door een halve voorcalculatie.
  * Een ontbrekend taaktype (schema) blijft een waarschuwing: die som wordt nog gepubliceerd.

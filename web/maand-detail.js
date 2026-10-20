@@ -2324,10 +2324,15 @@
             ? request.columns
             : ['grootboekposten_ohw', 'project_details'];
 
-        postSnapshotForm(request.begin_url, {
+        const beginParams = {
             year_month: period,
             company: String(request.company || ''),
-        })
+        };
+        if (request.resume)
+        {
+            beginParams.resume = '1';
+        }
+        postSnapshotForm(request.begin_url, beginParams)
             .then(function (started)
             {
                 if (!started.ok || !started.refresh_id)
