@@ -1499,7 +1499,7 @@ if (($_GET['action'] ?? '') === 'fetch_column_batch') {
     if (empty($result['ok']) && empty($result['stale'])) {
         http_response_code(500);
     }
-    echo json_encode($result, JSON_UNESCAPED_UNICODE);
+    echo maanden_rebuild_json_response($result);
     exit;
 }
 
@@ -1711,19 +1711,23 @@ if (($_GET['action'] ?? '') === 'fetch_sub_planning') {
     }
 
     $hasChunkIndex = array_key_exists('chunk_index', $_POST);
-    $result = maanden_rebuild_planning_step(
-        $company,
-        $targetYm,
-        $hasChunkIndex ? max(0, (int) $_POST['chunk_index']) : 0,
-        $hasChunkIndex,
-        batch_wip_refresh_id_from_request(),
-        maanden_rebuild_generation(),
-        odata_ttl_for_month($targetYm)
-    );
+    try {
+        $result = maanden_rebuild_planning_step(
+            $company,
+            $targetYm,
+            $hasChunkIndex ? max(0, (int) $_POST['chunk_index']) : 0,
+            $hasChunkIndex,
+            batch_wip_refresh_id_from_request(),
+            maanden_rebuild_generation(),
+            odata_ttl_for_month($targetYm)
+        );
+    } catch (Throwable $error) {
+        $result = ['ok' => false, 'error' => $error->getMessage()];
+    }
     if (empty($result['ok']) && empty($result['stale'])) {
         http_response_code(500);
     }
-    echo json_encode($result, JSON_UNESCAPED_UNICODE);
+    echo maanden_rebuild_json_response($result);
     exit;
 }
 
@@ -1752,14 +1756,10 @@ if (($_GET['action'] ?? '') === 'build_month_snapshot') {
         maanden_rebuild_generation(),
         odata_ttl_for_month($targetYm)
     );
-    $flags = JSON_UNESCAPED_UNICODE;
-    if (!empty($result['ok'])) {
-        $flags |= JSON_UNESCAPED_SLASHES;
-    }
     if (empty($result['ok']) && empty($result['stale'])) {
         http_response_code(500);
     }
-    echo json_encode($result, $flags);
+    echo maanden_rebuild_json_response($result);
     exit;
 }
 

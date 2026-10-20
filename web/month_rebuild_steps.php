@@ -350,6 +350,27 @@ function maanden_rebuild_build_step(
 }
 
 /**
+ * JSON voor een herbouwstap. Een OData-fout bevat de ruwe BC-body; die is vaak
+ * geen geldige UTF-8. json_encode geeft dan false, echo print niets, en de
+ * handler heeft al HTTP 500 gezet. De browser ziet een lege response.
+ *
+ * @param array<string,mixed> $result
+ */
+function maanden_rebuild_json_response(array $result): string
+{
+    $flags = JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE;
+    if (!empty($result['ok'])) {
+        $flags |= JSON_UNESCAPED_SLASHES;
+    }
+    $json = json_encode($result, $flags);
+    if (!is_string($json) || $json === '') {
+        return '{"ok":false,"error":"De server kon het antwoord niet als JSON schrijven."}';
+    }
+
+    return $json;
+}
+
+/**
  * Draait OHW, projectdetails, voorcalculatie en publicatie in één proces.
  * De lock blijft bezet tot de aanroeper hem vrijgeeft, zodat een browser
  * tussendoor geen nieuwe generatie start.
