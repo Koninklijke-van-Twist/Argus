@@ -19,9 +19,15 @@ const FINANCE_REVENUE_GL_ACCOUNT_TYPE_ALIASES = [
 
 /**
  * Opbrengst VC (omzet voorcalculatie) op de project-totaalregel.
- * Schedule/budgetprijs; niet de aanneemsom op G/L 800000.
+ * Contracttotaal op ProjectTaken (LVS_Contract_Total_Price_2), inclusief meerwerk.
+ * Niet LVS_Schedule_Total_Price_2 (actueel budget; bij PRJ2602195 toevallig één
+ * verkoopregel) en niet LVS_Baseline_Total_Price. Die basislijnprijs is op open
+ * KVT-projecten met taak 000 bijna altijd 0 (4 van 53 gevuld) en is daarom al
+ * afgewezen in #787 en #1170 (ticket #1264).
+ * Het hoofdproject in de kolom is dit totaal minus de opbrengst meerwerk die
+ * Argus al apart toont, zodat dat meerwerk niet dubbel telt.
  */
-const FINANCE_OPBRENGST_VC_FIELD = 'LVS_Schedule_Total_Price_2';
+const FINANCE_OPBRENGST_VC_FIELD = 'LVS_Contract_Total_Price_2';
 
 /**
  * Historisch veld op ProjectTaken. De kolom Opbrengst leest dit niet meer:
@@ -32,6 +38,7 @@ const FINANCE_OPBRENGST_VC_FIELD = 'LVS_Schedule_Total_Price_2';
  * kvtmdlive_aad (KVT/HVT): taak 000 LVS_Contract_Total_Price_2 == JobTaskLines.Contract_Total_Price
  * (bv. PRJ2602239: 24.297 vs basislijn 24.209). Niet LVS_Baseline_Total_Price: dat is
  * de bevroren basislijn, geen actueel contract (ticket #1170).
+ * Opbrengst VC leest ditzelfde veld. De kolom Opbrengst/aanneemsom doet dat niet.
  */
 const FINANCE_CONTRACT_TOTAL_PRICE_FIELD = 'LVS_Contract_Total_Price_2';
 
@@ -71,9 +78,12 @@ const FINANCE_JOB_TASK_LINES_DEADLINE_SECONDS = 300;
 /**
  * Maandsnapshot-versie. Ongenummerde bestanden (`.json`) zijn versie 1:
  * Opbrengst uit het contracttotaal, Kosten VC alleen taak 000, alleen OHW-projecten.
- * Versie 2 bewaart snapshots als `.v2.json` zodat die oude uitkomst niet blijft hangen.
+ * Versie 2 bewaart snapshots als `.v2.json`: Opbrengst VC uit de schedule-prijs.
+ * Versie 3 bewaart snapshots als `.v3.json`. Opbrengst VC komt uit
+ * LVS_Contract_Total_Price_2 minus het al getoonde meerwerk. Versie 2 blijft
+ * daardoor niet hangen (ticket #1264).
  */
-const ARGUS_MONTH_CACHE_VERSION = 2;
+const ARGUS_MONTH_CACHE_VERSION = 3;
 
 /**
  * Functies
@@ -364,7 +374,7 @@ function finance_is_revenue_gl_account_type(string $type): bool
  * Bepaalt of een BC-projectplanningsregel op omzetrekening 800000 staat.
  * Alleen G/L-type (GB-rekening / Grootboekrekening / G/L Account / GLAccount) en No = 800000 telt mee;
  * resource-/artikelboekingen op dezelfde planning blijven buiten deze som.
- * Opbrengst VC gebruikt dit filter niet; die kolom leest LVS_Schedule_Total_Price_2.
+ * Opbrengst VC gebruikt dit filter niet; die kolom leest LVS_Contract_Total_Price_2.
  */
 function finance_is_revenue_gl_account_line(array $row): bool
 {
@@ -520,12 +530,13 @@ function finance_split_contract_revenue(array $rows): array
 }
 
 /**
- * Leest Opbrengst VC uit LVS_Schedule_Total_Price_2 (schedule/omzet VC).
- * Alleen Job_Task_No 000 (Project TOTAAL) telt; andere taken leveren 0.
+ * Leest het contracttotaal van één ProjectTaken-regel voor Opbrengst VC.
+ * Alleen Job_Task_No 000 telt; andere taken leveren 0.
  * Ontbreekt het taaknummer, dan telt de regel wel (één projectkaartwaarde).
- * LVS_Baseline_Total_Price wordt niet gelezen: op PRJ2602236 is dat veld 0
- * terwijl de schedule-prijs ongeveer 219000 is.
- * Line_Amount_LCY en G/L 800000 (aanneemsom) worden genegeerd.
+ * De kolom zelf gebruikt finance_opbrengst_vc_from_task_rows: taak 000, anders
+ * 000-000-000, anders de detailtaken. LVS_Schedule_Total_Price_2 en
+ * LVS_Baseline_Total_Price worden niet gelezen.
+ * Line_Amount_LCY en G/L 800000 (aanneemsom, opbrengst meerwerk) worden genegeerd.
  */
 function finance_opbrengst_vc_amount(array $row, string $projectTotaalTaskNo = '000'): float
 {
@@ -541,6 +552,113 @@ function finance_opbrengst_vc_amount(array $row, string $projectTotaalTaskNo = '
     }
 
     return finance_to_float($row[FINANCE_OPBRENGST_VC_FIELD]);
+}
+
+/**
+ * Berekent het contracttotaal voor Opbrengst VC uit ProjectTaken-rijen van één project.
+ * Zelfde taakkeuze als Kosten VC (finance_baseline_cost_pick_rows): taak 000 als die
+ * bestaat, ook bij bedrag 0; anders taak 000-000-000; anders de detailtaken zonder
+ * kop- en totaalregels. Het bedrag is LVS_Contract_Total_Price_2 en bevat het meerwerk.
+ * finance_opbrengst_vc_hoofdproject haalt dat meerwerk eraf voor de kolom.
+ *
+ * @param array<int,mixed> $rows
+ * @return array{amount:float,lines:array<int,array<string,mixed>>}
+ */
+function finance_opbrengst_vc_from_task_rows(array $rows): array
+{
+    $amount = 0.0;
+    $lines = [];
+
+    foreach (finance_baseline_cost_pick_rows($rows) as $row) {
+        $lineAmount = finance_to_float($row[FINANCE_OPBRENGST_VC_FIELD] ?? 0.0);
+        $amount = finance_add_amount($amount, $lineAmount);
+        if ($lineAmount === 0.0) {
+            continue;
+        }
+
+        $lines[] = [
+            'Job_Task_No' => trim((string) ($row['Job_Task_No'] ?? '')),
+            'Line_No' => 0,
+            'Type' => (string) ($row['Job_Task_Type'] ?? ''),
+            'No' => '',
+            'Description' => (string) ($row['Description'] ?? ''),
+            'Line_Amount' => $lineAmount,
+            'Line_Type' => '',
+        ];
+    }
+
+    return [
+        'amount' => $amount,
+        'lines' => $lines,
+    ];
+}
+
+/**
+ * Hoofdproject voor de kolom Opbrengst VC.
+ * Het contracttotaal (taak 000 of de fallback) bevat het meerwerk al. De kolom
+ * Opbrengst meerwerk toont dat deel apart, uit planningsregels met gevuld
+ * subordernummer, en blijft zelf ongewijzigd. Het hoofdproject is het
+ * contracttotaal minus dat meerwerk.
+ * Lager dan 0 wordt 0: een contract van 0 bevat het meerwerk niet, en een
+ * groter meerwerk blijft volledig in zijn eigen kolom.
+ * Breakdownregels worden vanaf het einde verlaagd tot ze samen het hoofdproject
+ * zijn. De weergave somt die regels; zonder deze verlaging zou het meerwerk
+ * alsnog in Opbrengst VC meetellen.
+ *
+ * @param array<int,mixed> $lines
+ * @return array{amount:float,lines:array<int,array<string,mixed>>}
+ */
+function finance_opbrengst_vc_hoofdproject(float $contractTotal, float $meerwerk, array $lines = []): array
+{
+    $contractTotal = finance_to_float($contractTotal);
+    $meerwerk = finance_to_float($meerwerk);
+    if ($meerwerk < 0.0) {
+        $meerwerk = 0.0;
+    }
+
+    $hoofdproject = $contractTotal - $meerwerk;
+    if ($hoofdproject < 0.0) {
+        $hoofdproject = 0.0;
+    }
+
+    $work = [];
+    $lineSum = 0.0;
+    foreach ($lines as $line) {
+        if (!is_array($line)) {
+            continue;
+        }
+
+        $work[] = $line;
+        $lineSum = finance_add_amount($lineSum, $line['Line_Amount'] ?? 0.0);
+    }
+
+    $excess = $lineSum - $hoofdproject;
+    if ($excess < 0.0) {
+        $excess = 0.0;
+    }
+
+    for ($index = count($work) - 1; $index >= 0 && $excess > 0.0; $index--) {
+        $lineAmount = finance_to_float($work[$index]['Line_Amount'] ?? 0.0);
+        $cut = $lineAmount < $excess ? $lineAmount : $excess;
+        $work[$index]['Line_Amount'] = $lineAmount - $cut;
+        $excess -= $cut;
+    }
+
+    $adjusted = [];
+    foreach ($work as $line) {
+        $lineAmount = finance_to_float($line['Line_Amount'] ?? 0.0);
+        if ($lineAmount === 0.0) {
+            continue;
+        }
+
+        $line['Line_Amount'] = $lineAmount;
+        $adjusted[] = $line;
+    }
+
+    return [
+        'amount' => $hoofdproject,
+        'lines' => $adjusted,
+    ];
 }
 
 /**
@@ -567,7 +685,7 @@ function finance_contract_total_price_amount(array $row, string $projectTotaalTa
 }
 
 /**
- * Bestandssuffix van een maandsnapshot. Oude `.json`-bestanden (versie 1) worden niet gelezen.
+ * Bestandssuffix van een maandsnapshot. Oudere bestanden (`.json`, `.v2.json`) worden niet gelezen.
  */
 function argus_month_cache_suffix(): string
 {

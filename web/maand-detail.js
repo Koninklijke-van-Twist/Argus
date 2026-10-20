@@ -878,13 +878,13 @@
             case 'cost_center':
                 return { type: 'bc-field', name: 'Global_Dimension_1_Code', source: 'Grootboekposten_OHW', filters: baseFilter };
             case 'expected_revenue':
-                return { type: 'bc-field', name: 'LVS_Schedule_Total_Price_2', source: 'ProjectTaken', filters: baseFilter + ',Job_Task_No=000' };
+                return { type: 'computed-field', formula: 'ProjectTaken.LVS_Contract_Total_Price_2 (Job_Task_No=000, anders 000-000-000, anders som Boeking-taken uit JobTaskLines) - Opbrengst meerwerk' };
             case 'costs_vc':
                 return { type: 'bc-field', name: 'LVS_Baseline_Total_Cost', source: 'ProjectTaken', filters: baseFilter + ',Job_Task_No=000, anders 000-000-000, anders som Boeking-taken (JobTaskLines)' };
             case 'extra_work':
                 return { type: 'bc-field', name: 'Line_Amount_LCY', source: 'FactureerbareProjectPlanningsRegels', filters: baseFilter + ',Type=GB-rekening|Grootboekrekening|GLAccount,No=800000,Line_Type!=Prognose,LVS_Job_Change_Order_No=gevuld' };
             case 'margin_total':
-                return { type: 'computed-field', formula: 'ProjectTaken.LVS_Schedule_Total_Price_2 (Job_Task_No=000) - Kosten VC (taak 000, anders 000-000-000, anders som Boeking-taken uit JobTaskLines)' };
+                return { type: 'computed-field', formula: 'Opbrengst VC (LVS_Contract_Total_Price_2 min Opbrengst meerwerk) - Kosten VC (taak 000, anders 000-000-000, anders som Boeking-taken uit JobTaskLines)' };
             case 'pct_ready':
                 return { type: 'computed-field', formula: 'Kosten t/m periode / Kosten VC' };
             case 'winst_ohw':
