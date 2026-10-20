@@ -83,6 +83,7 @@ assert_same('watcher', $emptyOwner['role'], 'een lege eigenaar pikt een verse lo
 assert_same($refreshId, $emptyOwner['refresh_id'], 'een lege eigenaar hergebruikt de lopende id');
 assert_same($lockBefore, (string) file_get_contents($dir . '/' . $lockName), 'een toeschouwer verlengt de lock niet');
 
+assert_true(argus_month_rebuild_heartbeat($dir, $company, $ym, $refreshId, 1, 1004), 'een gestarte stap zet de lock op bezet');
 $sameWhileBusy = argus_claim_running_month_rebuild($dir, $company, $ym, $ownerA, true, 1006, 10);
 assert_same('watcher', $sameWhileBusy['role'], 'een herlaadbeurt wacht tot de lopende stap de WIP heeft weggeschreven');
 assert_same(1, $sameWhileBusy['generation'], 'wachten verhoogt de generatie niet');
@@ -211,6 +212,88 @@ assert_same(
 foreach ($original as $name => $bytes) {
     assert_same($bytes, (string) file_get_contents($dir . '/' . $name), 'herbouw laat ' . $name . ' bytegelijk');
 }
+
+$stuck = sys_get_temp_dir() . '/argus-stuck-rebuild-' . bin2hex(random_bytes(4));
+mkdir($stuck);
+$stuckLegacy = $stuck . '/koninklijke_van_twist_2026-09.json';
+$stuckV2 = $stuck . '/koninklijke_van_twist_2026-09.v2.json';
+file_put_contents($stuckLegacy, '{"year_month":"2026-09","label":"legacy"}');
+file_put_contents($stuckV2, '{"year_month":"2026-09","cache_version":2,"label":"v2"}');
+$stuckLegacyBytes = (string) file_get_contents($stuckLegacy);
+$stuckV2Bytes = (string) file_get_contents($stuckV2);
+$stuckRefresh = 'abcdef0123456789';
+$stuckLegacyWip = $stuck . '/koninklijke_van_twist_wip_2026-09.v3.json';
+$stuckLiveWip = $stuck . '/koninklijke_van_twist_wip_2026-09_' . $stuckRefresh . '.v3.json';
+$stuckLiveBytes = '{"cache_version":3,"refresh_id":"' . $stuckRefresh . '","progress":1}';
+file_put_contents($stuckLegacyWip, '{"cache_version":3,"legacy":true}');
+file_put_contents($stuckLiveWip, $stuckLiveBytes);
+$stuckLock = $stuck . '/koninklijke_van_twist_wip_2026-09.lock';
+$stuckNow = 1760954820;
+file_put_contents($stuckLock, json_encode([
+    'refresh_id' => $stuckRefresh,
+    'owner' => $ownerA,
+    'updated_at' => 1760950000000,
+    'busy' => true,
+], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+$stuckTaken = argus_claim_running_month_rebuild($stuck, $company, $ym, $ownerB, true, $stuckNow, 1200);
+assert_same(true, $stuckTaken['ok'], 'een lock in milliseconden wordt overgenomen');
+assert_same('worker', $stuckTaken['role'], 'een lock die niet verloopt wordt bouwer in plaats van toeschouwer');
+assert_same($stuckRefresh, $stuckTaken['refresh_id'], 'overnemen houdt de bestaande refresh-id');
+assert_same(2, $stuckTaken['generation'], 'een lock zonder generatie gaat naar generatie 2');
+assert_same(false, is_file($stuckLegacyWip), 'legacy-WIP zonder refresh-id wordt opgeruimd');
+assert_same($stuckLiveBytes, (string) file_get_contents($stuckLiveWip), 'de geldige WIP blijft bytegelijk');
+assert_same($stuckLegacyBytes, (string) file_get_contents($stuckLegacy), 'de legacy-snapshot blijft staan');
+assert_same($stuckV2Bytes, (string) file_get_contents($stuckV2), 'de v2-snapshot blijft staan');
+assert_same(false, is_file($stuck . '/koninklijke_van_twist_2026-09.v3.json'), 'overnemen publiceert nog geen v3');
+
+file_put_contents($stuckLock, json_encode([
+    'refresh_id' => $stuckRefresh,
+    'owner' => $ownerA,
+    'updated_at' => $stuckNow,
+    'busy' => true,
+], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+$stuckLegacyLock = argus_claim_running_month_rebuild($stuck, $company, $ym, $ownerA, true, $stuckNow + 30, 1200);
+assert_same('worker', $stuckLegacyLock['role'], 'een verse lock zonder generatie wordt overgenomen');
+assert_same($stuckRefresh, $stuckLegacyLock['refresh_id'], 'een lock zonder generatie houdt dezelfde WIP');
+assert_same(2, $stuckLegacyLock['generation'], 'een lock zonder generatie begint opnieuw bij generatie 2');
+
+file_put_contents($stuckLock, json_encode([
+    'refresh_id' => $stuckRefresh,
+    'owner' => $ownerA,
+    'updated_at' => $stuckNow + 86400,
+    'busy' => true,
+    'generation' => 4,
+], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+$stuckFuture = argus_claim_running_month_rebuild($stuck, $company, $ym, $ownerB, true, $stuckNow, 1200);
+assert_same('worker', $stuckFuture['role'], 'een lock in de toekomst wordt overgenomen');
+assert_same(5, $stuckFuture['generation'], 'een toekomstige lock verhoogt de generatie');
+assert_same($stuckRefresh, $stuckFuture['refresh_id'], 'een toekomstige lock houdt dezelfde WIP');
+
+$stuckIdle = argus_claim_running_month_rebuild($stuck, $company, $ym, $ownerB, false, $stuckNow + 5, 1200);
+assert_same('worker', $stuckIdle['role'], 'dezelfde tab pakt een claim zonder gestarte stap meteen op');
+assert_same(6, $stuckIdle['generation'], 'een idle lock krijgt een nieuwe generatie');
+assert_same($stuckRefresh, $stuckIdle['refresh_id'], 'een idle lock houdt dezelfde refresh-id');
+assert_same($stuckLiveBytes, (string) file_get_contents($stuckLiveWip), 'een idle overname wist de WIP niet');
+$stuckIdleGeneration = (int) $stuckIdle['generation'];
+assert_true(
+    argus_month_rebuild_heartbeat($stuck, $company, $ym, $stuckRefresh, $stuckIdleGeneration, $stuckNow + 6),
+    'een echte stap zet de lock op bezet'
+);
+$stuckWaiting = argus_claim_running_month_rebuild($stuck, $company, $ym, $ownerA, true, $stuckNow + 7, 1200);
+assert_same('watcher', $stuckWaiting['role'], 'tijdens een verse stap blijft een ander tabblad toeschouwer');
+assert_same($stuckIdleGeneration, $stuckWaiting['generation'], 'wachten op een verse stap verhoogt de generatie niet');
+assert_same($stuckLiveBytes, (string) file_get_contents($stuckLiveWip), 'wachten laat de WIP bytegelijk');
+
+foreach (scandir($stuck) ?: [] as $entry) {
+    if ($entry === '.' || $entry === '..') {
+        continue;
+    }
+    $path = $stuck . '/' . $entry;
+    if (is_file($path)) {
+        unlink($path);
+    }
+}
+rmdir($stuck);
 
 foreach (scandir($dir) ?: [] as $entry) {
     if ($entry === '.' || $entry === '..') {
