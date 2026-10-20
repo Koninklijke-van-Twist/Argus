@@ -113,9 +113,12 @@ function bc_fetch_project_detail_chunk_at(array $projectNumbers, int $chunkIndex
 /**
  * Projecten per HTTP-stap voor de voorcalculatie.
  * Eén request voor alle projecten (KvT: ~3700, 17–23 min) wordt door de
- * proxy of de browser afgekapt. Een stap van dit formaat blijft daar onder.
+ * proxy afgekapt. Een stap van 40 projecten deed daarbinnen nog kosten,
+ * opbrengst, contract en Opbrengst t/m; BC antwoordde dan HTTP 500 of de
+ * proxy gaf een lege 500 terug. Acht projecten is één Job_No-batch en blijft
+ * hervatbaar: een mislukte stap laat de OHW en eerdere chunks staan.
  */
-const VOORCALCULATIE_PROJECT_CHUNK_SIZE = 40;
+const VOORCALCULATIE_PROJECT_CHUNK_SIZE = 8;
 
 /**
  * Eén stabiele voorcalculatie-chunk op de volledige projectlijst.

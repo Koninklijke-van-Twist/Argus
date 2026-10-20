@@ -63,6 +63,20 @@ function argusDetailRebuildStepNotice (stepKey)
     return 'Bezig met opnieuw opbouwen...';
 }
 
+function argusRebuildStepFollowup (json)
+{
+    if (json && json.stale === true)
+    {
+        return 'join';
+    }
+    if (!json || json.ok !== true)
+    {
+        return 'fail';
+    }
+
+    return 'continue';
+}
+
 (function ()
 {
     /**
@@ -2346,7 +2360,14 @@ function argusDetailRebuildStepNotice (stepKey)
 
             return postSnapshotForm(request.column_url, body).then(function (json)
             {
-                if (!json.ok)
+                const followup = argusRebuildStepFollowup(json);
+                if (followup === 'join')
+                {
+                    const staleError = new Error(json.error || 'Deze herbouw is vervangen door een nieuwere poging.');
+                    staleError.stale = true;
+                    throw staleError;
+                }
+                if (followup === 'fail')
                 {
                     throw new Error(json.error || 'Kolom ophalen mislukt.');
                 }
@@ -2370,8 +2391,9 @@ function argusDetailRebuildStepNotice (stepKey)
     {
         const period = String(request.period || request.year_month || '');
 
-        function step (chunkIndex)
+        function step (chunkIndex, attempt)
         {
+            const tries = Number(attempt) || 0;
             showRebuildProgress('Deze maand wordt opnieuw opgebouwd. ' + argusDetailRebuildStepNotice('planning'));
             return postSnapshotForm(request.planning_url, {
                 target_month: period,
@@ -2381,20 +2403,40 @@ function argusDetailRebuildStepNotice (stepKey)
                 chunk_index: String(chunkIndex),
             }).then(function (json)
             {
-                if (!json.ok)
+                const followup = argusRebuildStepFollowup(json);
+                if (followup === 'join')
                 {
-                    throw new Error(json.error || 'Voorcalculatie mislukt.');
+                    const staleError = new Error(json.error || 'Deze herbouw is vervangen door een nieuwere poging.');
+                    staleError.stale = true;
+                    throw staleError;
+                }
+                if (followup === 'fail')
+                {
+                    const failed = new Error(json.error || 'Voorcalculatie mislukt.');
+                    failed.retry = true;
+                    throw failed;
                 }
                 const total = Math.max(1, Number(json.total_chunks || 1));
                 if (json.chunks_complete || (chunkIndex + 1) >= total || chunkIndex >= 199)
                 {
                     return json;
                 }
-                return step(chunkIndex + 1);
+                return step(chunkIndex + 1, 0);
+            }).catch(function (error)
+            {
+                if (error && error.stale)
+                {
+                    throw error;
+                }
+                if (tries < 1)
+                {
+                    return step(chunkIndex, tries + 1);
+                }
+                throw error;
             });
         }
 
-        return step(0);
+        return step(0, 0);
     }
 
     function monthRebuildOwner ()
@@ -2460,6 +2502,12 @@ function argusDetailRebuildStepNotice (stepKey)
             });
         }).then(function (built)
         {
+            if (argusRebuildStepFollowup(built) === 'join')
+            {
+                const staleError = new Error((built && built.error) || 'Deze herbouw is vervangen door een nieuwere poging.');
+                staleError.stale = true;
+                throw staleError;
+            }
             if (!built || !built.ok)
             {
                 throw new Error((built && built.error) || 'Snapshot opslaan mislukt.');
@@ -2504,11 +2552,7 @@ function argusDetailRebuildStepNotice (stepKey)
                 showRebuildProgress(argusDetailRebuildNotice('wait', request));
                 window.setTimeout(function ()
                 {
-                    claim().then(handleClaim).catch(function (error)
-                    {
-                        const reason = error && error.message ? error.message : '';
-                        showRebuildFailure(request, reason);
-                    });
+                    claim().then(handleClaim).catch(fail);
                 }, 3000);
                 return;
             }
@@ -2516,13 +2560,24 @@ function argusDetailRebuildStepNotice (stepKey)
             return runRebuildSteps(request, String(started.refresh_id), Number(started.generation));
         }
 
+        function fail (error)
+        {
+            if (error && error.stale)
+            {
+                showRebuildProgress(argusDetailRebuildNotice('wait', request));
+                window.setTimeout(function ()
+                {
+                    claim().then(handleClaim).catch(fail);
+                }, 3000);
+                return;
+            }
+            const reason = error && error.message ? error.message : '';
+            showRebuildFailure(request, reason);
+        }
+
         claim()
             .then(handleClaim)
-            .catch(function (error)
-            {
-                const reason = error && error.message ? error.message : '';
-                showRebuildFailure(request, reason);
-            });
+            .catch(fail);
     }
 
     // Initial render. Een fout in de tabel mag de herbouw niet overslaan:

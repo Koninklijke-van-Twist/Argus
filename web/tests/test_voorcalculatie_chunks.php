@@ -23,7 +23,7 @@ function check(bool $ok, string $message): void
     }
 }
 
-check(VOORCALCULATIE_PROJECT_CHUNK_SIZE === 40, 'een stap blijft klein genoeg voor de proxy');
+check(VOORCALCULATIE_PROJECT_CHUNK_SIZE === 8, 'een stap blijft één Job_No-batch');
 
 $numbers = [];
 for ($i = 1; $i <= 3730; $i++) {
@@ -31,18 +31,18 @@ for ($i = 1; $i <= 3730; $i++) {
 }
 
 $first = bc_fetch_voorcalculatie_chunk_at($numbers, 0);
-check($first['total_chunks'] === 94, '3730 projecten zijn 94 stappen, kreeg ' . $first['total_chunks']);
+check($first['total_chunks'] === 467, '3730 projecten zijn 467 stappen, kreeg ' . $first['total_chunks']);
 check($first['chunks_complete'] === false, 'de eerste stap is niet de laatste');
-check(count($first['chunk_projects']) === 40, 'eerste stap heeft 40 projecten');
+check(count($first['chunk_projects']) === 8, 'eerste stap heeft 8 projecten');
 check(($first['chunk_projects'][0] ?? '') === 'P1', 'eerste stap begint bij project 1, kreeg ' . ($first['chunk_projects'][0] ?? ''));
 
 $again = bc_fetch_voorcalculatie_chunk_at($numbers, 0);
 check($again['chunk_projects'] === $first['chunk_projects'], 'dezelfde index blijft dezelfde projecten');
 
-$last = bc_fetch_voorcalculatie_chunk_at($numbers, 93);
-check($last['chunks_complete'] === true, 'stap 94 rondt de reeks af');
-check(count($last['chunk_projects']) === 10, 'laatste stap heeft de resterende 10 projecten, kreeg ' . count($last['chunk_projects']));
-check(($last['chunk_projects'][0] ?? '') === 'P3721', 'laatste stap begint bij P3721, kreeg ' . ($last['chunk_projects'][0] ?? ''));
+$last = bc_fetch_voorcalculatie_chunk_at($numbers, 466);
+check($last['chunks_complete'] === true, 'stap 467 rondt de reeks af');
+check(count($last['chunk_projects']) === 2, 'laatste stap heeft de resterende 2 projecten, kreeg ' . count($last['chunk_projects']));
+check(($last['chunk_projects'][0] ?? '') === 'P3729', 'laatste stap begint bij P3729, kreeg ' . ($last['chunk_projects'][0] ?? ''));
 
 $withProject = $numbers;
 $withProject[] = '162659';

@@ -3,7 +3,8 @@
 /**
  * Eén herbouw per bedrijf en maand.
  * Een tweede tabblad wordt toeschouwer en laat WIP en oude snapshots staan.
- * Dezelfde tab of een verlopen lock hervat dezelfde refresh-id.
+ * Een herlaadbeurt volgt een verse lock en vervangt die niet.
+ * Alleen Verversen neemt een verse herbouw over. De server hervat de eigen lock.
  * Een automatische herbouw start niet opnieuw als de v3 al gepubliceerd is.
  */
 if (PHP_SAPI !== 'cli') {
@@ -91,10 +92,18 @@ assert_same($refreshId, $sameWhileBusy['refresh_id'], 'de herlaadbeurt houdt dez
 assert_same($wipBytes, (string) file_get_contents($dir . '/' . $wipName), 'de herlaadbeurt wist de WIP niet');
 
 assert_true(argus_month_rebuild_release($dir, $company, $ym, $refreshId, 1), 'een afgeronde stap geeft de lock vrij');
-$same = argus_claim_running_month_rebuild($dir, $company, $ym, $ownerA, true, 1007, 10);
-assert_same('worker', $same['role'], 'hetzelfde tabblad gaat verder nadat de stap klaar is');
-assert_same(true, $same['resumed'], 'hetzelfde tabblad hervat');
-assert_same(2, $same['generation'], 'hervatten door hetzelfde tabblad krijgt een nieuwe generatie');
+$lockAfterRelease = (string) file_get_contents($dir . '/' . $lockName);
+$pageReload = argus_claim_running_month_rebuild($dir, $company, $ym, $ownerA, true, 1007, 10, true);
+assert_same('watcher', $pageReload['role'], 'een herlaadbeurt volgt een verse herbouw');
+assert_same(true, $pageReload['resumed'], 'een herlaadbeurt ziet de lopende herbouw');
+assert_same(1, $pageReload['generation'], 'een herlaadbeurt verhoogt de generatie niet');
+assert_same($refreshId, $pageReload['refresh_id'], 'een herlaadbeurt houdt dezelfde refresh-id');
+assert_same($wipBytes, (string) file_get_contents($dir . '/' . $wipName), 'een herlaadbeurt wist de WIP niet');
+assert_same($lockAfterRelease, (string) file_get_contents($dir . '/' . $lockName), 'een herlaadbeurt herschrijft de lock niet');
+$same = argus_claim_running_month_rebuild($dir, $company, $ym, $ownerA, true, 1007, 10, false);
+assert_same('worker', $same['role'], 'de server hervat de eigen vrijgegeven herbouw');
+assert_same(true, $same['resumed'], 'de server hervat');
+assert_same(2, $same['generation'], 'hervatten door dezelfde eigenaar krijgt een nieuwe generatie');
 assert_same($refreshId, $same['refresh_id'], 'hervatten houdt dezelfde refresh-id');
 assert_same($wipBytes, (string) file_get_contents($dir . '/' . $wipName), 'hervatten wist de WIP niet');
 assert_same(false, argus_month_rebuild_release($dir, $company, $ym, $refreshId, 1), 'een oude generatie geeft de nieuwe lock niet vrij');
@@ -111,12 +120,14 @@ assert_same($wipBytes, (string) file_get_contents($dir . '/' . $wipName), 'een o
 assert_true(argus_month_rebuild_heartbeat($dir, $company, $ym, $refreshId, 2, 1008), 'een hartslag houdt de lopende herbouw vers');
 assert_same(false, argus_month_rebuild_heartbeat($dir, $company, $ym, '0123456789abcdef', 2, 1010), 'een vreemde refresh-id verlengt de lock niet');
 assert_same(false, argus_month_rebuild_heartbeat($dir, $company, $ym, $refreshId, 1, 1009), 'een oude generatie verlengt de lock niet');
-$seesCursor = argus_claim_running_month_rebuild($dir, $company, $ym, $ownerB, false, 1009, 10);
-assert_same('watcher', $seesCursor['role'], 'Verversen volgt een verse herbouw en wist die niet');
-assert_same($refreshId, $seesCursor['refresh_id'], 'Verversen hergebruikt de lopende refresh-id');
+$seesCursor = argus_claim_running_month_rebuild($dir, $company, $ym, $ownerB, false, 1009, 10, false);
+assert_same('worker', $seesCursor['role'], 'Verversen neemt een verse herbouw over');
+assert_same(3, $seesCursor['generation'], 'Verversen krijgt een nieuwe generatie');
+assert_same($refreshId, $seesCursor['refresh_id'], 'Verversen houdt dezelfde refresh-id');
+assert_same($ownerB, $seesCursor['owner'], 'Verversen zet de nieuwe eigenaar');
 assert_same($wipBytes, (string) file_get_contents($dir . '/' . $wipName), 'Verversen laat de WIP bytegelijk');
 
-$taken = argus_claim_running_month_rebuild($dir, $company, $ym, $ownerB, false, 1008 + 10, 10);
+$taken = argus_claim_running_month_rebuild($dir, $company, $ym, $ownerB, false, 1009 + 10, 10);
 assert_same('worker', $taken['role'], 'een verlopen lock gaat naar het andere tabblad');
 assert_same(true, $taken['resumed'], 'een verlopen lock hervat de herbouw');
 assert_same($refreshId, $taken['refresh_id'], 'overnemen houdt dezelfde refresh-id');

@@ -51,6 +51,12 @@ const failure = notice('error', { failure_notice: 'Deze maand kon niet opnieuw w
 assertSame(true, failure.indexOf('niet opnieuw') !== -1, 'een fout blijft in de banner staan');
 assertSame(true, source.indexOf('rebuildLegacyMonth(rebuildRequest)') > source.indexOf('catch (renderError)'), 'een fout in de tabel slaat de herbouw niet over');
 
+const followup = loadFunction('argusRebuildStepFollowup');
+assertSame('join', followup({ ok: false, stale: true, error: 'Deze herbouw is vervangen door een nieuwere poging.' }), 'een vervangen herbouw wacht mee');
+assertSame('fail', followup({ ok: false, error: 'HTTP 500' }), 'een echte stapfout blijft een fout');
+assertSame(true, source.indexOf('error.stale') !== -1, 'de detailpagina behandelt een vervangen herbouw niet als fout');
+assertSame(true, source.indexOf('argusDetailRebuildNotice(\'wait\', request)') !== -1, 'na een vervangen poging toont de pagina de wachttekst');
+
 if (failures > 0) {
     console.error(failures + ' assertion(s) failed');
     process.exit(1);

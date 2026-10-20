@@ -35,12 +35,15 @@ function maanden_rebuild_column_step(
             throw new RuntimeException('Kolom ' . $columnKey . ' wordt alleen nog per snapshot opgehaald.');
         }
 
-        $auth = auth_get_auth_for_company($company, 300);
+        @set_time_limit(0);
+        // Hartslag vóór de BC-login. Anders is de lock even vers maar niet bezet
+        // en kan een tweede claim de generatie verhogen voordat OHW begint.
         maanden_rebuild_heartbeat($company, $targetYm, $refreshId, $generation);
         if (!argus_month_rebuild_generation_is_current(maanden_cache_dir(), $company, $targetYm, $refreshId, $generation)) {
             $result = maanden_rebuild_stale_result();
             return $result;
         }
+        $auth = auth_get_auth_for_company($company, 300);
 
         $wip = batch_wip_load($company, $targetYm, $refreshId);
         $columnDataTarget = is_array($wip['column_data_target'] ?? null) ? $wip['column_data_target'] : [];
@@ -152,6 +155,7 @@ function maanden_rebuild_planning_step(
             return $result;
         }
 
+        @set_time_limit(0);
         maanden_rebuild_heartbeat($company, $targetYm, $refreshId, $generation);
         if (!argus_month_rebuild_generation_is_current(maanden_cache_dir(), $company, $targetYm, $refreshId, $generation)) {
             $result = maanden_rebuild_stale_result();

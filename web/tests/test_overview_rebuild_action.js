@@ -48,6 +48,20 @@ assertSame(true, waiting.indexOf('september 2026') !== -1, 'de wachttekst noemt 
 assertSame(true, statusText('run', 'september 2026', '').indexOf('opgebouwd') !== -1, 'een eigen stap toont dat de opbouw loopt');
 assertSame(true, statusText('error', 'september 2026', 'lock').indexOf('lock') !== -1, 'een fout blijft op de kaart zichtbaar');
 
+const followupMatch = source.match(/function argusRebuildStepFollowup \(json\)\r?\n\{[\s\S]*?\r?\n\}\r?\n/);
+if (!followupMatch) {
+    console.error('FAIL: argusRebuildStepFollowup staat niet in maanden.js');
+    process.exit(1);
+}
+const followupContext = {};
+vm.runInNewContext(followupMatch[0] + '\nthis.followup = argusRebuildStepFollowup;', followupContext);
+const followup = followupContext.followup;
+assertSame('join', followup({ ok: false, stale: true, error: 'Deze herbouw is vervangen door een nieuwere poging.' }), 'een vervangen herbouw sluit aan');
+assertSame('fail', followup({ ok: false, error: 'HTTP 500' }), 'een echte stapfout blijft een fout');
+assertSame('continue', followup({ ok: true }), 'een geslaagde stap gaat door');
+assertSame(true, source.indexOf('argusRebuildStepFollowup(json)') < source.indexOf("toast('Fout bij ' + step.label"), 'een vervangen OHW-stap toont geen fouttoast');
+assertSame(true, source.indexOf('followup === \'join\'') !== -1, 'het overzicht volgt een vervangen stap');
+
 if (failures > 0) {
     console.error(failures + ' assertion(s) failed');
     process.exit(1);
