@@ -172,7 +172,7 @@ assert_true(argus_save_month_wip_merged($mergePath, [
             ['no' => '800000', 'amount' => 4],
         ],
     ],
-    'open_project_numbers' => ['p1'],
+    'open_project_numbers' => ['p1', 'p3'],
 ]), 'de eerste WIP-schrijfactie slaagt');
 assert_true(argus_save_month_wip_merged($mergePath, [
     'column_data_target' => [
@@ -196,7 +196,7 @@ assert_true(is_array($merged), 'de samengevoegde WIP is JSON');
 assert_same('Een', $merged['column_data_target']['project_details']['by_project']['p1']['name'] ?? null, 'een late schrijfactie laat projectdetails staan');
 assert_same(10, $merged['planning_totals_by_job']['p1'] ?? null, 'een late schrijfactie laat voorcalculatie staan');
 assert_same('p2', $merged['column_data_target']['grootboekposten_ohw']['by_project']['p2']['no'] ?? null, 'een late schrijfactie houdt haar eigen OHW');
-assert_same(['p1', 'p2'], $merged['open_project_numbers'] ?? null, 'een nieuwe projectlijst vervangt de vorige');
+assert_same(['p1', 'p3', 'p2'], $merged['open_project_numbers'] ?? null, 'projectnummers worden samengevoegd');
 assert_same(
     [['entry' => 'a', 'amount' => 3]],
     $merged['column_data_target']['grootboekposten_ohw']['rows'] ?? null,

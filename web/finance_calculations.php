@@ -1449,12 +1449,14 @@ function argus_month_rebuild_release(string $dir, string $company, string $yearM
 /**
  * Voegt een late WIP-schrijfactie samen met wat er nu op schijf staat.
  * Lege waarden vervangen geen al opgeslagen details of voorcalculatie.
+ * Geneste lijsten (OHW-rijen, voorcalculatieregels) worden vervangen.
+ * Een lijst op het hoogste niveau, zoals projectnummers, wordt samengevoegd.
  *
  * @param array<string,mixed> $base
  * @param array<string,mixed> $overlay
  * @return array<string,mixed>
  */
-function argus_merge_month_wip(array $base, array $overlay): array
+function argus_merge_month_wip(array $base, array $overlay, bool $nested = false): array
 {
     foreach ($overlay as $key => $value) {
         if (!array_key_exists($key, $base)) {
@@ -1468,12 +1470,21 @@ function argus_merge_month_wip(array $base, array $overlay): array
                 continue;
             }
             if (array_is_list($value) && array_is_list($current)) {
-                // OHW-rijen en voorcalculatieregels zijn de volledige stap.
-                // Samenvoegen liet oude regels staan en telde Opbrengst VC dubbel.
-                $base[$key] = $value;
+                if ($nested) {
+                    // OHW-rijen en voorcalculatieregels zijn de volledige stap.
+                    // Samenvoegen liet oude regels staan en telde Opbrengst VC dubbel.
+                    $base[$key] = $value;
+                    continue;
+                }
+                foreach ($value as $item) {
+                    if (!in_array($item, $current, true)) {
+                        $current[] = $item;
+                    }
+                }
+                $base[$key] = $current;
                 continue;
             }
-            $base[$key] = argus_merge_month_wip($current, $value);
+            $base[$key] = argus_merge_month_wip($current, $value, true);
             continue;
         }
 
