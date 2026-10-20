@@ -2317,57 +2317,126 @@
         return step(0);
     }
 
-    function rebuildLegacyMonth (request)
+    function monthRebuildOwner ()
+    {
+        const key = 'argusMonthRebuildOwner';
+        try
+        {
+            const existing = window.sessionStorage.getItem(key);
+            if (existing && /^[a-f0-9]{16}$/.test(existing))
+            {
+                return existing;
+            }
+            const bytes = new Uint8Array(8);
+            if (window.crypto && window.crypto.getRandomValues)
+            {
+                window.crypto.getRandomValues(bytes);
+            }
+            else
+            {
+                for (let i = 0; i < bytes.length; i++)
+                {
+                    bytes[i] = Math.floor(Math.random() * 256);
+                }
+            }
+            const owner = Array.from(bytes).map(function (value)
+            {
+                return value.toString(16).padStart(2, '0');
+            }).join('');
+            window.sessionStorage.setItem(key, owner);
+            return owner;
+        }
+        catch (error)
+        {
+            return '';
+        }
+    }
+
+    function runRebuildSteps (request, refreshId)
     {
         const period = String(request.period || request.year_month || '');
         const columns = Array.isArray(request.columns) && request.columns.length > 0
             ? request.columns
             : ['grootboekposten_ohw', 'project_details'];
-
-        const beginParams = {
-            year_month: period,
-            company: String(request.company || ''),
-        };
-        if (request.resume)
+        let chain = Promise.resolve();
+        columns.forEach(function (columnKey)
         {
-            beginParams.resume = '1';
+            chain = chain.then(function ()
+            {
+                return runColumnChunks(request, refreshId, String(columnKey));
+            });
+        });
+        return chain.then(function ()
+        {
+            return runPlanningChunks(request, refreshId);
+        }).then(function ()
+        {
+            return postSnapshotForm(request.build_url, {
+                target_month: period,
+                company: String(request.company || ''),
+                refresh_id: refreshId,
+            });
+        }).then(function (built)
+        {
+            if (!built || !built.ok)
+            {
+                throw new Error((built && built.error) || 'Snapshot opslaan mislukt.');
+            }
+            window.location.reload();
+        });
+    }
+
+    function rebuildLegacyMonth (request)
+    {
+        const period = String(request.period || request.year_month || '');
+        const owner = monthRebuildOwner();
+
+        function claim ()
+        {
+            const beginParams = {
+                year_month: period,
+                company: String(request.company || ''),
+                owner: owner,
+            };
+            if (request.resume)
+            {
+                beginParams.resume = '1';
+            }
+            return postSnapshotForm(request.begin_url, beginParams);
         }
-        postSnapshotForm(request.begin_url, beginParams)
-            .then(function (started)
+
+        function handleClaim (started)
+        {
+            if (!started || !started.ok)
             {
-                if (!started.ok || !started.refresh_id)
-                {
-                    throw new Error(started.error || 'Herbouw starten mislukt.');
-                }
-                const refreshId = String(started.refresh_id);
-                let chain = Promise.resolve();
-                columns.forEach(function (columnKey)
-                {
-                    chain = chain.then(function ()
-                    {
-                        return runColumnChunks(request, refreshId, String(columnKey));
-                    });
-                });
-                return chain.then(function ()
-                {
-                    return runPlanningChunks(request, refreshId);
-                }).then(function ()
-                {
-                    return postSnapshotForm(request.build_url, {
-                        target_month: period,
-                        company: String(request.company || ''),
-                        refresh_id: refreshId,
-                    });
-                });
-            })
-            .then(function (built)
+                throw new Error((started && started.error) || 'Herbouw starten mislukt.');
+            }
+            if (started.published)
             {
-                if (!built || !built.ok)
-                {
-                    throw new Error((built && built.error) || 'Snapshot opslaan mislukt.');
-                }
                 window.location.reload();
-            })
+                return;
+            }
+            if (started.role === 'watcher')
+            {
+                window.setTimeout(function ()
+                {
+                    claim().then(handleClaim).catch(function (error)
+                    {
+                        const reason = error && error.message ? error.message : '';
+                        showRebuildFailure(request, reason);
+                    });
+                }, 3000);
+                return;
+            }
+            if (!started.refresh_id)
+            {
+                throw new Error('Herbouw starten mislukt.');
+            }
+            return runRebuildSteps(request, String(started.refresh_id));
+        }
+
+        claim()
+            .then(handleClaim)
             .catch(function (error)
             {
                 const reason = error && error.message ? error.message : '';

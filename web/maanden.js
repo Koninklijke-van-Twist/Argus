@@ -1194,16 +1194,67 @@
         runTargetColumnStep();
     }
 
+    function monthRebuildOwner ()
+    {
+        const key = 'argusMonthRebuildOwner';
+        try
+        {
+            const existing = window.sessionStorage.getItem(key);
+            if (existing && /^[a-f0-9]{16}$/.test(existing))
+            {
+                return existing;
+            }
+            const bytes = new Uint8Array(8);
+            if (window.crypto && window.crypto.getRandomValues)
+            {
+                window.crypto.getRandomValues(bytes);
+            }
+            else
+            {
+                for (let i = 0; i < bytes.length; i++)
+                {
+                    bytes[i] = Math.floor(Math.random() * 256);
+                }
+            }
+            const owner = Array.from(bytes).map(function (value)
+            {
+                return value.toString(16).padStart(2, '0');
+            }).join('');
+            window.sessionStorage.setItem(key, owner);
+            return owner;
+        }
+        catch (error)
+        {
+            return '';
+        }
+    }
+
     function beginMonthBuild (ym, successMessage)
     {
         showLoader('Bezig met ophalen...');
 
-        const body = new URLSearchParams({ year_month: ym, company: selectedCompany });
+        const body = new URLSearchParams({
+            year_month: ym,
+            company: selectedCompany,
+            owner: monthRebuildOwner(),
+        });
         fetch(beginRefreshUrl, { method: 'POST', body: body })
             .then(parseFetchResponse)
             .then(function (json)
             {
-                if (!json.ok || !json.refresh_id)
+                if (!json.ok)
+                {
+                    hideLoader();
+                    toast('Fout bij starten van ' + formatMonth(ym) + ': ' + (json.error || 'Onbekende fout'), true, errorContext(ym, 'Maand verversen'));
+                    return;
+                }
+                if (json.role === 'watcher')
+                {
+                    hideLoader();
+                    toast(formatMonth(ym) + ' wordt al opgebouwd. Die voortgang blijft behouden.');
+                    return;
+                }
+                if (!json.refresh_id)
                 {
                     hideLoader();
                     toast('Fout bij starten van ' + formatMonth(ym) + ': ' + (json.error || 'Onbekende fout'), true, errorContext(ym, 'Maand verversen'));

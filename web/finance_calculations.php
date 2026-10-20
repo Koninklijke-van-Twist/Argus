@@ -1196,6 +1196,226 @@ function argus_active_month_wip_refresh_id(string $dir, string $company, string 
 }
 
 /**
+ * Eén OHW- of voorcalculatiestap kan minuten duren. Een kortere grens liet een
+ * tweede tabblad dezelfde maand nog een keer starten terwijl de eerste stap liep.
+ */
+const ARGUS_MONTH_REBUILD_LOCK_TTL_SECONDS = 1200;
+
+/**
+ * Normaliseert de tab-eigenaar van een herbouw. Ongeldige waarden worden leeg.
+ */
+function argus_month_rebuild_owner(string $owner): string
+{
+    $owner = strtolower(trim($owner));
+    if (preg_match('/^[a-f0-9]{8,32}$/', $owner) !== 1) {
+        return '';
+    }
+
+    return $owner;
+}
+
+/**
+ * Lockbestand naast de WIP. Geen snapshot en geen WIP-bestand.
+ */
+function argus_month_wip_lock_path(string $dir, string $company, string $yearMonth): ?string
+{
+    $slug = argus_month_company_slug($company);
+    if ($slug === '' || preg_match('/^\d{4}-\d{2}$/', $yearMonth) !== 1) {
+        return null;
+    }
+
+    return $dir . DIRECTORY_SEPARATOR . $slug . '_wip_' . $yearMonth . '.lock';
+}
+
+function argus_month_wip_refresh_path(string $dir, string $company, string $yearMonth, string $refreshId): ?string
+{
+    $slug = argus_month_company_slug($company);
+    $refreshId = argus_month_refresh_id($refreshId);
+    if ($slug === '' || $refreshId === '' || preg_match('/^\d{4}-\d{2}$/', $yearMonth) !== 1) {
+        return null;
+    }
+
+    return $dir . DIRECTORY_SEPARATOR . $slug . '_wip_' . $yearMonth . '_' . $refreshId . argus_month_cache_suffix();
+}
+
+function argus_month_published_v3_exists(string $dir, string $company, string $yearMonth): bool
+{
+    $basename = argus_month_snapshot_basename($company, $yearMonth, ARGUS_MONTH_CACHE_VERSION);
+    if ($basename === null) {
+        return false;
+    }
+
+    $data = argus_read_month_snapshot_file($dir . DIRECTORY_SEPARATOR . $basename);
+
+    return is_array($data) && argus_month_cache_is_current($data);
+}
+
+/**
+ * @param array<string,mixed> $extra
+ * @return array{ok:bool,refresh_id:string,role:string,resumed:bool,owner:string,published:bool,error?:string}
+ */
+function argus_month_rebuild_claim_response(bool $ok, string $refreshId, string $role, bool $resumed, string $owner, bool $published, string $error = ''): array
+{
+    $response = [
+        'ok' => $ok,
+        'refresh_id' => $refreshId,
+        'role' => $role,
+        'resumed' => $resumed,
+        'owner' => $owner,
+        'published' => $published,
+    ];
+    if ($error !== '') {
+        $response['error'] = $error;
+    }
+
+    return $response;
+}
+
+/**
+ * Claimt de enige herbouw voor dit bedrijf en deze maand.
+ * Een verse lock van een andere tab blijft staan: die aanroep wordt toeschouwer.
+ * Dezelfde tab of een verlopen lock hervat de bestaande WIP. Er wordt niets gewist.
+ * Zonder WIP en met een actuele v3 stopt een automatische herbouw (stopWhenPublished).
+ *
+ * @return array{ok:bool,refresh_id:string,role:string,resumed:bool,owner:string,published:bool,error?:string}
+ */
+function argus_claim_running_month_rebuild(string $dir, string $company, string $yearMonth, string $owner, bool $stopWhenPublished, ?int $now = null, int $ttlSeconds = ARGUS_MONTH_REBUILD_LOCK_TTL_SECONDS): array
+{
+    $failed = argus_month_rebuild_claim_response(false, '', '', false, '', false, 'Ongeldige maand.');
+    $lockPath = argus_month_wip_lock_path($dir, $company, $yearMonth);
+    if ($lockPath === null) {
+        return $failed;
+    }
+
+    if (!is_dir($dir) && !@mkdir($dir, 0777, true) && !is_dir($dir)) {
+        return argus_month_rebuild_claim_response(false, '', '', false, '', false, 'Herbouw-lock kon niet worden gemaakt.');
+    }
+
+    $handle = @fopen($lockPath, 'c+');
+    if ($handle === false) {
+        return argus_month_rebuild_claim_response(false, '', '', false, '', false, 'Herbouw-lock kon niet worden geopend.');
+    }
+
+    try {
+        if (!flock($handle, LOCK_EX)) {
+            return argus_month_rebuild_claim_response(false, '', '', false, '', false, 'Herbouw-lock is bezet.');
+        }
+
+        $now = $now ?? time();
+        $ttlSeconds = max(1, $ttlSeconds);
+        $requestedOwner = argus_month_rebuild_owner($owner);
+        rewind($handle);
+        $raw = stream_get_contents($handle);
+        $state = is_string($raw) && $raw !== '' ? json_decode($raw, true) : null;
+        $existingId = argus_active_month_wip_refresh_id($dir, $company, $yearMonth);
+
+        if ($existingId === '') {
+            if ($stopWhenPublished && argus_month_published_v3_exists($dir, $company, $yearMonth)) {
+                return argus_month_rebuild_claim_response(true, '', 'watcher', true, $requestedOwner, true);
+            }
+
+            $refreshId = bin2hex(random_bytes(8));
+            $workerOwner = $requestedOwner !== '' ? $requestedOwner : bin2hex(random_bytes(8));
+            $wipPath = argus_month_wip_refresh_path($dir, $company, $yearMonth, $refreshId);
+            $wipJson = json_encode([
+                'cache_version' => ARGUS_MONTH_CACHE_VERSION,
+                'refresh_id' => $refreshId,
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            if ($wipPath === null || !is_string($wipJson) || !argus_write_file_atomically($wipPath, $wipJson)) {
+                return argus_month_rebuild_claim_response(false, '', '', false, '', false, 'WIP kon niet worden aangemaakt.');
+            }
+
+            argus_month_rebuild_write_state($handle, $refreshId, $workerOwner, $now);
+
+            return argus_month_rebuild_claim_response(true, $refreshId, 'worker', false, $workerOwner, false);
+        }
+
+        $storedId = is_array($state) ? argus_month_refresh_id((string) ($state['refresh_id'] ?? '')) : '';
+        $storedOwner = is_array($state) ? argus_month_rebuild_owner((string) ($state['owner'] ?? '')) : '';
+        $age = $now - (int) (is_array($state) ? ($state['updated_at'] ?? 0) : 0);
+        $lockMatchesWip = $storedId === $existingId && $storedOwner !== '';
+        $sameOwner = $lockMatchesWip && $requestedOwner !== '' && hash_equals($storedOwner, $requestedOwner);
+        $fresh = $lockMatchesWip && $age < $ttlSeconds;
+
+        if ($fresh && !$sameOwner) {
+            return argus_month_rebuild_claim_response(true, $existingId, 'watcher', true, $storedOwner, false);
+        }
+
+        $workerOwner = $requestedOwner !== '' ? $requestedOwner : ($storedOwner !== '' ? $storedOwner : bin2hex(random_bytes(8)));
+        argus_month_rebuild_write_state($handle, $existingId, $workerOwner, $now);
+
+        return argus_month_rebuild_claim_response(true, $existingId, 'worker', true, $workerOwner, false);
+    } finally {
+        flock($handle, LOCK_UN);
+        fclose($handle);
+    }
+}
+
+/**
+ * Houdt een lopende herbouw vers. Een andere refresh-id wijzigt de lock niet.
+ */
+function argus_month_rebuild_heartbeat(string $dir, string $company, string $yearMonth, string $refreshId, ?int $now = null): bool
+{
+    $refreshId = argus_month_refresh_id($refreshId);
+    $lockPath = argus_month_wip_lock_path($dir, $company, $yearMonth);
+    if ($refreshId === '' || $lockPath === null || !is_file($lockPath)) {
+        return false;
+    }
+
+    $handle = @fopen($lockPath, 'c+');
+    if ($handle === false) {
+        return false;
+    }
+
+    try {
+        if (!flock($handle, LOCK_EX)) {
+            return false;
+        }
+
+        rewind($handle);
+        $raw = stream_get_contents($handle);
+        $state = is_string($raw) && $raw !== '' ? json_decode($raw, true) : null;
+        if (!is_array($state) || argus_month_refresh_id((string) ($state['refresh_id'] ?? '')) !== $refreshId) {
+            return false;
+        }
+
+        $owner = argus_month_rebuild_owner((string) ($state['owner'] ?? ''));
+        if ($owner === '') {
+            return false;
+        }
+
+        argus_month_rebuild_write_state($handle, $refreshId, $owner, $now ?? time());
+
+        return true;
+    } finally {
+        flock($handle, LOCK_UN);
+        fclose($handle);
+    }
+}
+
+/**
+ * @param resource $handle
+ */
+function argus_month_rebuild_write_state($handle, string $refreshId, string $owner, int $now): bool
+{
+    $json = json_encode([
+        'refresh_id' => $refreshId,
+        'owner' => $owner,
+        'updated_at' => $now,
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if (!is_string($json)) {
+        return false;
+    }
+
+    rewind($handle);
+    ftruncate($handle, 0);
+    fwrite($handle, $json);
+    fflush($handle);
+
+    return true;
+}
+
+/**
  * Fout die de vorige maandsnapshot moet laten staan.
  * Een JobTaskLines-timeout of filterfout mag de maand niet vervangen door een halve voorcalculatie.
  * Een ontbrekend taaktype (schema) blijft een waarschuwing: die som wordt nog gepubliceerd.

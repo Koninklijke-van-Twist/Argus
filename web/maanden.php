@@ -582,57 +582,26 @@ function batch_wip_refresh_id_from_request(): string
 }
 
 /**
- * Koppelt een automatische herbouw aan de al lopende WIP.
+ * Koppelt een herbouw aan de al lopende WIP.
  * Bestaat die nog niet, dan wordt er één aangemaakt. Niets wordt gewist.
  */
 function batch_wip_claim_refresh(string $company, string $targetYearMonth): string
 {
-    $dir = maanden_cache_dir();
-    $safeCompany = argus_month_company_slug($company);
-    $safeYM = preg_replace('/[^0-9-]/', '', $targetYearMonth);
-    if (!is_string($safeYM)) {
-        $safeYM = '';
-    }
-    $lockPath = $dir . DIRECTORY_SEPARATOR . $safeCompany . '_wip_' . $safeYM . '.lock';
-    $handle = @fopen($lockPath, 'c');
-    if ($handle === false) {
-        $existing = argus_active_month_wip_refresh_id($dir, $company, $targetYearMonth);
-        if ($existing !== '') {
-            return $existing;
-        }
+    $claim = argus_claim_running_month_rebuild(maanden_cache_dir(), $company, $targetYearMonth, '', false);
 
-        $refreshId = bin2hex(random_bytes(8));
-        batch_wip_save($company, $targetYearMonth, ['refresh_id' => $refreshId], $refreshId);
+    return (string) ($claim['refresh_id'] ?? '');
+}
 
-        return $refreshId;
+/**
+ * Houdt de herbouw-lock vers aan het begin van een lange stap.
+ */
+function maanden_rebuild_heartbeat(string $company, string $yearMonth, string $refreshId): void
+{
+    if ($refreshId === '') {
+        return;
     }
 
-    try {
-        if (!flock($handle, LOCK_EX)) {
-            $existing = argus_active_month_wip_refresh_id($dir, $company, $targetYearMonth);
-            if ($existing !== '') {
-                return $existing;
-            }
-
-            $refreshId = bin2hex(random_bytes(8));
-            batch_wip_save($company, $targetYearMonth, ['refresh_id' => $refreshId], $refreshId);
-
-            return $refreshId;
-        }
-
-        $existing = argus_active_month_wip_refresh_id($dir, $company, $targetYearMonth);
-        if ($existing !== '') {
-            return $existing;
-        }
-
-        $refreshId = bin2hex(random_bytes(8));
-        batch_wip_save($company, $targetYearMonth, ['refresh_id' => $refreshId], $refreshId);
-
-        return $refreshId;
-    } finally {
-        flock($handle, LOCK_UN);
-        fclose($handle);
-    }
+    argus_month_rebuild_heartbeat(maanden_cache_dir(), $company, $yearMonth, $refreshId);
 }
 
 /**
@@ -1462,6 +1431,7 @@ if (($_GET['action'] ?? '') === 'fetch_column_batch') {
         }
 
         $refreshId = batch_wip_refresh_id_from_request();
+        maanden_rebuild_heartbeat($company, $targetYm, $refreshId);
         $wip = batch_wip_load($company, $targetYm, $refreshId);
         $ttl = odata_ttl_for_month($targetYm);
         $columnDataTarget = is_array($wip['column_data_target'] ?? null) ? $wip['column_data_target'] : [];
@@ -1755,6 +1725,7 @@ if (($_GET['action'] ?? '') === 'fetch_sub_planning') {
     try {
         $ttl = odata_ttl_for_month($targetYm);
         $refreshId = batch_wip_refresh_id_from_request();
+        maanden_rebuild_heartbeat($company, $targetYm, $refreshId);
         $wip = batch_wip_load($company, $targetYm, $refreshId);
         maanden_wip_sync_project_numbers_from_ohw($wip);
         $projectNumbers = wip_project_numbers($wip);
@@ -1877,6 +1848,7 @@ if (($_GET['action'] ?? '') === 'build_month_snapshot') {
 
     try {
         $refreshId = batch_wip_refresh_id_from_request();
+        maanden_rebuild_heartbeat($company, $targetYm, $refreshId);
         $wip = batch_wip_load($company, $targetYm, $refreshId);
 
         $columnDataTarget = is_array($wip['column_data_target'] ?? null) ? $wip['column_data_target'] : [];
@@ -1961,10 +1933,9 @@ if (($_GET['action'] ?? '') === 'refresh_month') {
     exit;
 }
 
-// Start een verversing zonder de gepubliceerde snapshot te verwijderen.
-// De opbouw schrijft naar een eigen WIP-bestand; pas een complete snapshot vervangt de oude.
-// resume=1 (de maandpagina die een oude snapshot herbouwt) laat een lopende WIP staan.
-// Zonder resume wist Verversen de WIP en begint opnieuw; dat is een bewuste klik.
+// Start of hervat een verversing zonder de gepubliceerde snapshot te verwijderen.
+// Per bedrijf en maand loopt hoogstens één herbouw. Een tweede tabblad volgt die.
+// resume=1 stopt zodra een actuele v3 er is en er geen WIP meer loopt.
 if (($_GET['action'] ?? '') === 'begin_month_refresh') {
     header('Content-Type: application/json; charset=utf-8');
 
@@ -1980,18 +1951,17 @@ if (($_GET['action'] ?? '') === 'begin_month_refresh') {
         $company = $companies[0];
     }
 
-    $resume = (string) ($_POST['resume'] ?? '') === '1';
-    if ($resume) {
-        $refreshId = batch_wip_claim_refresh($company, $ym);
-    } else {
-        batch_wip_delete_all($company, $ym);
-        $refreshId = bin2hex(random_bytes(8));
+    $claim = argus_claim_running_month_rebuild(
+        maanden_cache_dir(),
+        $company,
+        $ym,
+        (string) ($_POST['owner'] ?? ''),
+        (string) ($_POST['resume'] ?? '') === '1'
+    );
+    if (empty($claim['ok'])) {
+        http_response_code(500);
     }
-
-    echo json_encode([
-        'ok' => true,
-        'refresh_id' => $refreshId,
-    ], JSON_UNESCAPED_UNICODE);
+    echo json_encode($claim, JSON_UNESCAPED_UNICODE);
     exit;
 }
 

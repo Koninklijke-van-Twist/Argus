@@ -1,0 +1,156 @@
+<?php
+
+/**
+ * Eén herbouw per bedrijf en maand.
+ * Een tweede tabblad wordt toeschouwer en laat WIP en oude snapshots staan.
+ * Dezelfde tab of een verlopen lock hervat dezelfde refresh-id.
+ * Een automatische herbouw start niet opnieuw als de v3 al gepubliceerd is.
+ */
+if (PHP_SAPI !== 'cli') {
+    http_response_code(404);
+    exit;
+}
+
+require_once __DIR__ . '/../finance_calculations.php';
+
+$failures = 0;
+
+function assert_same(mixed $expected, mixed $actual, string $message): void
+{
+    global $failures;
+    if ($expected !== $actual) {
+        $failures++;
+        fwrite(STDERR, "FAIL: {$message}\n  expected " . var_export($expected, true) . "\n  actual   " . var_export($actual, true) . "\n");
+    }
+}
+
+function assert_true(bool $ok, string $message): void
+{
+    assert_same(true, $ok, $message);
+}
+
+$company = 'Koninklijke van Twist';
+$ym = '2026-09';
+$ownerA = 'aaaaaaaaaaaaaaaa';
+$ownerB = 'bbbbbbbbbbbbbbbb';
+$dir = sys_get_temp_dir() . '/argus-rebuild-lock-' . bin2hex(random_bytes(4));
+mkdir($dir);
+
+$legacyName = 'koninklijke_van_twist_2026-09.json';
+$v2Name = 'koninklijke_van_twist_2026-09.v2.json';
+$unrelatedName = 'kvt_gas_2024-02.json';
+file_put_contents($dir . '/' . $legacyName, '{"year_month":"2026-09","label":"legacy"}');
+file_put_contents($dir . '/' . $v2Name, '{"year_month":"2026-09","cache_version":2,"label":"v2"}');
+file_put_contents($dir . '/' . $unrelatedName, '{"year_month":"2024-02","label":"gas"}');
+$original = [
+    $legacyName => (string) file_get_contents($dir . '/' . $legacyName),
+    $v2Name => (string) file_get_contents($dir . '/' . $v2Name),
+    $unrelatedName => (string) file_get_contents($dir . '/' . $unrelatedName),
+];
+
+$invalid = argus_claim_running_month_rebuild($dir, $company, '2026', $ownerA, true, 1000, 10);
+assert_same(false, $invalid['ok'], 'een ongeldige maand krijgt geen herbouw');
+assert_same(false, is_file($dir . '/koninklijke_van_twist_wip_2026.lock'), 'een ongeldige maand maakt geen lock');
+
+$first = argus_claim_running_month_rebuild($dir, $company, $ym, $ownerA, true, 1000, 10);
+assert_same(true, $first['ok'], 'eerste claim slaagt');
+assert_same('worker', $first['role'], 'eerste tabblad is de bouwer');
+assert_same(false, $first['resumed'], 'een nieuwe herbouw is geen hervatting');
+assert_same(false, $first['published'], 'zonder v3 is de herbouw niet klaar');
+assert_same($ownerA, $first['owner'], 'de lock onthoudt het tabblad');
+assert_true(preg_match('/^[a-f0-9]{16}$/', (string) $first['refresh_id']) === 1, 'refresh-id is 16 hex');
+$refreshId = (string) $first['refresh_id'];
+$wipName = 'koninklijke_van_twist_wip_' . $ym . '_' . $refreshId . '.v3.json';
+assert_true(is_file($dir . '/' . $wipName), 'de claim maakt een WIP-bestand');
+$wipBytes = (string) file_get_contents($dir . '/' . $wipName);
+$wipData = json_decode($wipBytes, true);
+assert_same(3, is_array($wipData) ? ($wipData['cache_version'] ?? null) : null, 'nieuwe WIP hoort bij cacheversie 3');
+file_put_contents($dir . '/' . $wipName, '{"cache_version":3,"progress":1,"refresh_id":"' . $refreshId . '"}');
+$wipBytes = (string) file_get_contents($dir . '/' . $wipName);
+
+$watcher = argus_claim_running_month_rebuild($dir, $company, $ym, $ownerB, true, 1005, 10);
+assert_same('watcher', $watcher['role'], 'een tweede tabblad wordt toeschouwer');
+assert_same(true, $watcher['resumed'], 'de toeschouwer ziet een lopende herbouw');
+assert_same(false, $watcher['published'], 'een lopende herbouw is nog niet gepubliceerd');
+assert_same($refreshId, $watcher['refresh_id'], 'de toeschouwer krijgt dezelfde refresh-id');
+assert_same($wipBytes, (string) file_get_contents($dir . '/' . $wipName), 'een tweede claim wist de WIP niet');
+
+$lockName = 'koninklijke_van_twist_wip_' . $ym . '.lock';
+$lockBefore = (string) file_get_contents($dir . '/' . $lockName);
+$emptyOwner = argus_claim_running_month_rebuild($dir, $company, $ym, '', true, 1006, 10);
+assert_same('watcher', $emptyOwner['role'], 'een lege eigenaar pikt een verse lock niet in');
+assert_same($refreshId, $emptyOwner['refresh_id'], 'een lege eigenaar hergebruikt de lopende id');
+assert_same($lockBefore, (string) file_get_contents($dir . '/' . $lockName), 'een toeschouwer verlengt de lock niet');
+
+$same = argus_claim_running_month_rebuild($dir, $company, $ym, $ownerA, true, 1006, 10);
+assert_same('worker', $same['role'], 'hetzelfde tabblad blijft bouwer');
+assert_same(true, $same['resumed'], 'hetzelfde tabblad hervat');
+assert_same($refreshId, $same['refresh_id'], 'hervatten houdt dezelfde refresh-id');
+assert_same($wipBytes, (string) file_get_contents($dir . '/' . $wipName), 'hervatten wist de WIP niet');
+
+assert_true(argus_month_rebuild_heartbeat($dir, $company, $ym, $refreshId, 1008), 'een hartslag houdt de lopende herbouw vers');
+assert_same(false, argus_month_rebuild_heartbeat($dir, $company, $ym, '0123456789abcdef', 1010), 'een vreemde refresh-id verlengt de lock niet');
+$seesCursor = argus_claim_running_month_rebuild($dir, $company, $ym, $ownerB, false, 1009, 10);
+assert_same('watcher', $seesCursor['role'], 'Verversen volgt een verse herbouw en wist die niet');
+assert_same($refreshId, $seesCursor['refresh_id'], 'Verversen hergebruikt de lopende refresh-id');
+assert_same($wipBytes, (string) file_get_contents($dir . '/' . $wipName), 'Verversen laat de WIP bytegelijk');
+
+$taken = argus_claim_running_month_rebuild($dir, $company, $ym, $ownerB, false, 1008 + 10, 10);
+assert_same('worker', $taken['role'], 'een verlopen lock gaat naar het andere tabblad');
+assert_same(true, $taken['resumed'], 'een verlopen lock hervat de herbouw');
+assert_same($refreshId, $taken['refresh_id'], 'overnemen houdt dezelfde refresh-id');
+assert_same($ownerB, $taken['owner'], 'overnemen zet de nieuwe eigenaar');
+assert_same($wipBytes, (string) file_get_contents($dir . '/' . $wipName), 'overnemen wist de WIP niet');
+
+$otherMonth = argus_claim_running_month_rebuild($dir, $company, '2026-08', $ownerA, false, 2000, 10);
+assert_same('worker', $otherMonth['role'], 'een andere maand heeft een eigen herbouw');
+assert_same(false, $otherMonth['refresh_id'] === $refreshId, 'een andere maand krijgt een andere refresh-id');
+
+$v3Name = 'koninklijke_van_twist_2026-09.v3.json';
+$v3Bytes = '{"year_month":"2026-09","cache_version":3,"label":"v3"}';
+file_put_contents($dir . '/' . $v3Name, $v3Bytes);
+$whileRunning = argus_claim_running_month_rebuild($dir, $company, $ym, $ownerA, true, 2010, 10);
+assert_same(false, $whileRunning['published'], 'een v3 naast lopende WIP stopt de herbouw niet');
+assert_same($refreshId, $whileRunning['refresh_id'], 'een v3 naast WIP houdt de lopende id');
+assert_same($v3Bytes, (string) file_get_contents($dir . '/' . $v3Name), 'de claim overschrijft de v3 niet');
+
+unlink($dir . '/' . $wipName);
+$published = argus_claim_running_month_rebuild($dir, $company, $ym, $ownerB, true, 3000, 10);
+assert_same(true, $published['published'], 'automatisch hervatten stopt als de v3 af is');
+assert_same('', $published['refresh_id'], 'een afgeronde herbouw start geen nieuwe refresh-id');
+assert_same(false, is_file($dir . '/koninklijke_van_twist_wip_' . $ym . '_' . $published['refresh_id'] . '.v3.json'), 'een afgeronde herbouw maakt geen WIP');
+$wipLeft = array_values(array_filter(scandir($dir) ?: [], static function ($entry) use ($ym): bool {
+    return is_string($entry) && str_contains($entry, '_wip_' . $ym . '_') && str_ends_with($entry, '.v3.json');
+}));
+assert_same([], $wipLeft, 'na publicatie blijft er geen nieuwe WIP achter');
+
+$explicit = argus_claim_running_month_rebuild($dir, $company, $ym, $ownerA, false, 3010, 10);
+assert_same('worker', $explicit['role'], 'Verversen zonder WIP start een nieuwe herbouw');
+assert_same(false, $explicit['published'], 'Verversen gaat door als de v3 al bestaat');
+assert_same(false, $explicit['resumed'], 'Verversen zonder WIP is geen hervatting');
+assert_true($explicit['refresh_id'] !== '' && $explicit['refresh_id'] !== $refreshId, 'Verversen zonder WIP krijgt een nieuwe id');
+
+assert_same(['2026-09'], argus_list_saved_months($dir, $company), 'lock en WIP staan niet in de maandlijst');
+assert_same(['2024-02'], argus_list_saved_months($dir, 'KVT Gas'), 'een lock van KvT voegt geen maand toe bij KVT Gas');
+
+foreach ($original as $name => $bytes) {
+    assert_same($bytes, (string) file_get_contents($dir . '/' . $name), 'herbouw laat ' . $name . ' bytegelijk');
+}
+
+foreach (scandir($dir) ?: [] as $entry) {
+    if ($entry === '.' || $entry === '..') {
+        continue;
+    }
+    $path = $dir . '/' . $entry;
+    if (is_file($path)) {
+        unlink($path);
+    }
+}
+rmdir($dir);
+
+if ($failures > 0) {
+    fwrite(STDERR, "{$failures} assertion(s) failed\n");
+    exit(1);
+}
+
+echo "OK month rebuild lock\n";
