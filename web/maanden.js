@@ -40,6 +40,20 @@ function argusOverviewRebuildStatusText (action, monthLabel, errorText)
     return '';
 }
 
+function argusRebuildStepFollowup (json)
+{
+    if (json && json.stale === true)
+    {
+        return 'join';
+    }
+    if (!json || json.ok !== true)
+    {
+        return 'fail';
+    }
+
+    return 'continue';
+}
+
 (function ()
 {
     /**
@@ -1041,8 +1055,9 @@ function argusOverviewRebuildStatusText (action, monthLabel, errorText)
             totalSteps += newItems.length;
         }
 
-        function runVoorcalculatieStep ()
+        function runVoorcalculatieStep (attempt)
         {
+            const tries = Number(attempt) || 0;
             const chunkIndex = voorcalculatieChunkIndex;
             const progressKey = 'planning::voorcalculatie::' + chunkIndex;
             markProgressLoading(progressState, progressKey, totalSteps, completedSteps);
@@ -1071,8 +1086,19 @@ function argusOverviewRebuildStatusText (action, monthLabel, errorText)
             fetchJsonWithRetry(subPlanningUrl, { method: 'POST', body: body })
                 .then(function (json)
                 {
-                    if (!json.ok)
+                    const followup = argusRebuildStepFollowup(json);
+                    if (followup === 'join')
                     {
+                        beginMonthBuild(ym, successMessage, true);
+                        return;
+                    }
+                    if (followup === 'fail')
+                    {
+                        if (tries < 1)
+                        {
+                            runVoorcalculatieStep(tries + 1);
+                            return;
+                        }
                         hideLoader();
                         toast('Fout bij voorcalculatie voor ' + formatMonth(ym) + ': ' + (json.error || 'Onbekende fout'), true, errorContext(ym, stepLabel));
                         return;
@@ -1104,6 +1130,11 @@ function argusOverviewRebuildStatusText (action, monthLabel, errorText)
                 })
                 .catch(function (err)
                 {
+                    if (tries < 1)
+                    {
+                        runVoorcalculatieStep(tries + 1);
+                        return;
+                    }
                     hideLoader();
                     toast('Netwerkfout bij voorcalculatie voor ' + formatMonth(ym) + ': ' + err.message, true, errorContext(ym, stepLabel, err));
                 });
@@ -1157,7 +1188,13 @@ function argusOverviewRebuildStatusText (action, monthLabel, errorText)
             fetchJsonWithRetry(columnBatchUrl, { method: 'POST', body: body })
                 .then(function (json)
                 {
-                    if (!json.ok)
+                    const followup = argusRebuildStepFollowup(json);
+                    if (followup === 'join')
+                    {
+                        beginMonthBuild(ym, successMessage, true);
+                        return;
+                    }
+                    if (followup === 'fail')
                     {
                         hideLoader();
                         toast('Fout bij ' + step.label.toLowerCase() + ' voor ' + formatMonth(ym) + ': ' + (json.error || 'Onbekende fout'), true, errorContext(ym, stepLabel));
@@ -1219,6 +1256,11 @@ function argusOverviewRebuildStatusText (action, monthLabel, errorText)
                 .then(parseFetchResponse)
                 .then(function (json)
                 {
+                    if (argusRebuildStepFollowup(json) === 'join')
+                    {
+                        beginMonthBuild(ym, successMessage, true);
+                        return;
+                    }
                     hideLoader();
                     if (!json.ok)
                     {

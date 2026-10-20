@@ -985,8 +985,8 @@ class ProjectFinanceService
     /**
      * Taaknummers met Job_Task_Type Boeking.
      * Mímir negeert $select; elke batch blijft klein genoeg om af te ronden.
-     * Eén mislukte batch stopt de reeks. Geen herhaling per project: dat zou
-     * een timeout vermenigvuldigen tot een nieuwe hang.
+     * HTTP 500 op een te lang filter wordt gehalveerd en één keer per project
+     * opnieuw geprobeerd. Een timeout stopt de reeks: dat zou de hang vermenigvuldigen.
      *
      * @param list<string> $projectNumbers
      * @return array<string,true> sleutel "project\ntaak", beide genormaliseerd
@@ -1009,26 +1009,7 @@ class ProjectFinanceService
         $deadline = microtime(true) + FINANCE_JOB_TASK_LINES_DEADLINE_SECONDS;
         $keys = [];
         foreach ($chunks as $chunk) {
-            if (microtime(true) > $deadline) {
-                throw new RuntimeException(
-                    'JobTaskLines ophalen duurde langer dan ' . FINANCE_JOB_TASK_LINES_DEADLINE_SECONDS
-                    . ' seconden en is afgebroken, zodat de maandverversing niet blijft hangen.'
-                );
-            }
-
-            $filter = finance_job_task_lines_filter($chunk);
-            if ($filter === '') {
-                continue;
-            }
-
-            $url = $this->companyEntityUrlWithQuery('JobTaskLines', [
-                '$select' => 'Job_No,Job_Task_No,Job_Task_Type',
-                '$filter' => $filter,
-            ]);
-            $keys += $this->bookingKeysFromJobTaskRows(
-                odata_get_all($url, $this->auth, $ttl),
-                $requireExplicitBookingType
-            );
+            $keys += $this->fetchBookingTaskKeysForChunk($chunk, $ttl, $requireExplicitBookingType, $deadline, false);
         }
 
         if ($cacheKey !== '') {
@@ -1036,6 +1017,63 @@ class ProjectFinanceService
         }
 
         return $keys;
+    }
+
+    /**
+     * Eén JobTaskLines-batch. HTTP 500 (filter of pagina te zwaar) wordt één keer
+     * per los project opnieuw geprobeerd en anders gehalveerd. Een timeout stopt
+     * de reeks: per project opnieuw vragen zou de hang vermenigvuldigen.
+     *
+     * @param list<string> $chunk
+     * @return array<string,true>
+     */
+    private function fetchBookingTaskKeysForChunk(
+        array $chunk,
+        int $ttl,
+        bool $requireExplicitBookingType,
+        float $deadline,
+        bool $retriedSingle
+    ): array {
+        if (microtime(true) > $deadline) {
+            throw new RuntimeException(
+                'JobTaskLines ophalen duurde langer dan ' . FINANCE_JOB_TASK_LINES_DEADLINE_SECONDS
+                . ' seconden en is afgebroken, zodat de maandverversing niet blijft hangen.'
+            );
+        }
+
+        $filter = finance_job_task_lines_filter($chunk);
+        if ($filter === '') {
+            return [];
+        }
+
+        $url = $this->companyEntityUrlWithQuery('JobTaskLines', [
+            '$select' => 'Job_No,Job_Task_No,Job_Task_Type',
+            '$filter' => $filter,
+        ]);
+
+        try {
+            return $this->bookingKeysFromJobTaskRows(
+                odata_get_all($url, $this->auth, $ttl),
+                $requireExplicitBookingType
+            );
+        } catch (Throwable $error) {
+            if (finance_odata_is_timeout($error) || !finance_odata_is_retryable_server_error($error)) {
+                throw $error;
+            }
+
+            if (count($chunk) <= 1) {
+                if ($retriedSingle) {
+                    throw $error;
+                }
+
+                return $this->fetchBookingTaskKeysForChunk($chunk, $ttl, $requireExplicitBookingType, $deadline, true);
+            }
+
+            $mid = intdiv(count($chunk), 2);
+
+            return $this->fetchBookingTaskKeysForChunk(array_slice($chunk, 0, $mid), $ttl, $requireExplicitBookingType, $deadline, false)
+                + $this->fetchBookingTaskKeysForChunk(array_slice($chunk, $mid), $ttl, $requireExplicitBookingType, $deadline, false);
+        }
     }
 
     /**
@@ -1572,7 +1610,8 @@ class ProjectFinanceService
         array $chunk,
         int $ttl,
         callable $urlBuilder,
-        string $errorPrefix
+        string $errorPrefix,
+        bool $retryServerError = true
     ): array {
         $projectFilter = self::buildJobNoOrFilter($chunk);
         if ($projectFilter === '') {
@@ -1595,7 +1634,20 @@ class ProjectFinanceService
                 ];
             }
 
+            // Een timeout per project opnieuw proberen vermenigvuldigt de hang.
+            // HTTP 500 van een te lang filter mag wel kleiner opnieuw.
+            if (finance_odata_is_timeout($loadError)) {
+                return [
+                    'rows' => [],
+                    'warning' => self::formatForecastLoadError($errorPrefix, $loadError),
+                ];
+            }
+
             if (count($chunk) <= 1) {
+                if ($retryServerError && finance_odata_is_retryable_server_error($loadError)) {
+                    return $this->fetchRowsForJobChunk($chunk, $ttl, $urlBuilder, $errorPrefix, false);
+                }
+
                 return [
                     'rows' => [],
                     'warning' => self::formatForecastLoadError($errorPrefix, $loadError),
@@ -1962,6 +2014,10 @@ class ProjectFinanceService
         $safeCompany = str_replace("'", "''", $this->company);
         $companySegment = "Company('" . rawurlencode($safeCompany) . "')";
         $url = rtrim($this->baseUrl, '/') . '/' . rawurlencode($this->environment) . '/ODataV4/' . $companySegment . '/' . rawurlencode($entitySet);
+
+        if (!array_key_exists('$top', $query)) {
+            $query['$top'] = (string) FINANCE_ODATA_PAGE_SIZE;
+        }
 
         if ($query !== []) {
             $url .= '?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986);

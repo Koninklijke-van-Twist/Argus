@@ -24,6 +24,9 @@ function odata_get_all(string $url, array $auth, int $ttl): array
     if ($GLOBALS['odata_mode'] === 'flaky' && str_contains($url, 'P2')) {
         throw new RuntimeException('HTTP 500 from OData: {"error":{"code":"Internal","message":"Tijdelijke fout.  CorrelationId:  abc-123."}}');
     }
+    if ($GLOBALS['odata_mode'] === 'timeout') {
+        throw new RuntimeException('cURL error: Operation timed out after 90000 milliseconds with 0 bytes received');
+    }
 
     return [['Job_No' => 'x']];
 }
@@ -70,6 +73,13 @@ assert_true(is_string($result['warning']) && !str_contains($result['warning'], '
 
 assert_true(finance_is_odata_schema_error("Could not find a property named 'X' on type 'NAV.ProjectTaken'."), 'schema detector');
 assert_true(!finance_is_odata_schema_error('HTTP 500: Tijdelijke fout'), 'schema detector ignores 500');
+
+$GLOBALS['odata_calls'] = 0;
+$GLOBALS['odata_mode'] = 'timeout';
+$timedOut = $method->invoke($service, ['P1', 'P2', 'P3'], 60, 8, $builder, 'Test');
+assert_true($GLOBALS['odata_calls'] === 1, 'timeout wordt niet per project herhaald, kreeg ' . $GLOBALS['odata_calls']);
+assert_true($timedOut['rows'] === [], 'timeout levert geen rijen');
+assert_true(is_string($timedOut['warning']) && str_contains($timedOut['warning'], 'timed out'), 'timeout blijft een melding');
 
 if ($failures > 0) {
     fwrite(STDERR, "{$failures} assertion(s) failed\n");

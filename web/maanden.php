@@ -1794,7 +1794,9 @@ if (($_GET['action'] ?? '') === 'refresh_month') {
 
 // Start of hervat een verversing zonder de gepubliceerde snapshot te verwijderen.
 // Per bedrijf en maand loopt hoogstens één herbouw. Een tweede tabblad volgt die.
-// resume=1 of join=1 stopt zodra een actuele v3 er is en er geen WIP meer loopt.
+// resume=1 of join=1 (pagina laden of pollen) volgt een verse herbouw en neemt
+// die niet over. Alleen Verversen zonder die vlaggen mag een verse lock vervangen.
+// resume=1 of join=1 stopt ook zodra een actuele v3 er is en er geen WIP meer loopt.
 if (($_GET['action'] ?? '') === 'begin_month_refresh') {
     header('Content-Type: application/json; charset=utf-8');
 
@@ -1810,12 +1812,16 @@ if (($_GET['action'] ?? '') === 'begin_month_refresh') {
         $company = $companies[0];
     }
 
+    $joinFresh = (string) ($_POST['resume'] ?? '') === '1' || (string) ($_POST['join'] ?? '') === '1';
     $claim = argus_claim_running_month_rebuild(
         maanden_cache_dir(),
         $company,
         $ym,
         (string) ($_POST['owner'] ?? ''),
-        (string) ($_POST['resume'] ?? '') === '1' || (string) ($_POST['join'] ?? '') === '1'
+        $joinFresh,
+        null,
+        ARGUS_MONTH_REBUILD_LOCK_TTL_SECONDS,
+        $joinFresh
     );
     if (empty($claim['ok'])) {
         http_response_code(500);

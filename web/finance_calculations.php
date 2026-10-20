@@ -68,13 +68,21 @@ const FINANCE_BOOKING_TASK_TYPE = 'Boeking';
 
 /**
  * JobTaskLines-batches voor de Kosten VC-detailsom.
- * Eén OR-filter over alle fallback-projecten wordt bij KvT zo lang dat BC/Mímir
- * de query niet afrondt (cache blijft op 0/1 groeien, geen HTTP-fout).
- * 25 projecten of 1200 tekens filter, wat het eerst bereikt, blijft onder de
- * praktische querystring-grens en levert een af te ronden pagina.
+ * Eén OR-filter over tientallen projecten laat Business Central HTTP 500
+ * teruggeven (query te zwaar of de filter te lang). De PHP-stap heeft
+ * set_time_limit(0) en loopt dan door, terwijl de proxy de browser een lege
+ * of HTML-500 geeft: "Server gaf geen geldige JSON terug".
+ * 8 projecten of 480 tekens, wat het eerst bereikt, houdt het filter kort.
+ * $top staat op FINANCE_ODATA_PAGE_SIZE zodat één pagina ook klein blijft.
  */
-const FINANCE_JOB_TASK_LINES_MAX_PROJECTS = 25;
-const FINANCE_JOB_TASK_LINES_MAX_FILTER_CHARS = 1200;
+const FINANCE_JOB_TASK_LINES_MAX_PROJECTS = 8;
+const FINANCE_JOB_TASK_LINES_MAX_FILTER_CHARS = 480;
+
+/**
+ * OData-pagina voor voorcalculatie. Zonder $top kan BC een zware JobTaskLines-
+ * of ProjectTaken-pagina met HTTP 500 afkappen.
+ */
+const FINANCE_ODATA_PAGE_SIZE = 100;
 
 /**
  * Bovengrens voor de reeks JobTaskLines-batches in één voorcalculatie.
@@ -1419,15 +1427,18 @@ function argus_delete_legacy_month_wip(string $dir, string $company, string $yea
 
 /**
  * Claimt de enige herbouw voor dit bedrijf en deze maand.
- * Alleen een verse lock waarvan een stap echt bezig is (hartslag) blijft toeschouwer.
- * Een claim zonder stap zet de lock nog niet op bezet, zodat een herlaadbeurt meteen verdergaat.
- * Een lock zonder generatie, of met een tijdstip dat niet verloopt, wordt overgenomen.
- * Legacy-WIP zonder refresh-id wordt opgeruimd. Snapshots en de geldige WIP blijven staan.
- * Zonder WIP en met een actuele v3 stopt een automatische herbouw (stopWhenPublished).
+ * $watchFresh (pagina laden, herladen, resume of join) volgt een verse lock en
+ * verhoogt de generatie niet, ook niet als die van hetzelfde tabblad is en even
+ * geen hartslag heeft. Alleen een expliciete Verversen neemt een verse lock over.
+ * De server ($watchFresh false en stopWhenPublished) hervat wel de eigen
+ * vrijgegeven lock. Een lock zonder generatie, of met een tijdstip dat niet
+ * verloopt, wordt overgenomen. Legacy-WIP zonder refresh-id wordt opgeruimd.
+ * Snapshots en de geldige WIP blijven staan. Zonder WIP en met een actuele v3
+ * stopt een automatische herbouw (stopWhenPublished).
  *
  * @return array{ok:bool,refresh_id:string,role:string,resumed:bool,owner:string,published:bool,error?:string}
  */
-function argus_claim_running_month_rebuild(string $dir, string $company, string $yearMonth, string $owner, bool $stopWhenPublished, ?int $now = null, int $ttlSeconds = ARGUS_MONTH_REBUILD_LOCK_TTL_SECONDS): array
+function argus_claim_running_month_rebuild(string $dir, string $company, string $yearMonth, string $owner, bool $stopWhenPublished, ?int $now = null, int $ttlSeconds = ARGUS_MONTH_REBUILD_LOCK_TTL_SECONDS, bool $watchFresh = false): array
 {
     $failed = argus_month_rebuild_claim_response(false, '', '', false, '', false, 'Ongeldige maand.');
     $lockPath = argus_month_wip_lock_path($dir, $company, $yearMonth);
@@ -1494,10 +1505,12 @@ function argus_claim_running_month_rebuild(string $dir, string $company, string 
         $fresh = $lockMatchesWip && $generationPresent && argus_month_rebuild_lock_is_fresh($updatedAt, $now, $ttlSeconds);
         $busy = $fresh && !empty($state['busy']);
         $storedGeneration = $generationPresent ? (int) $state['generation'] : 1;
-        // Alleen een stap die al een hartslag heeft gestuurd blokkeert een nieuwe claim.
-        // Een ander tabblad wacht tot die stap klaar is of de lock verloopt.
-        // Zonder hartslag, zonder generatie, of met een tijdstip dat niet verloopt, wordt de WIP overgenomen.
-        if ($fresh && ($busy || !$sameOwner)) {
+        // Een pagina die meeloopt vervangt een verse herbouw niet. Dat deed een
+        // herlaadbeurt wel zodra de lock even niet bezet was, en de lopende stap
+        // kreeg dan "vervangen door een nieuwere poging". Alleen Verversen mag dat.
+        // De server pakt de eigen vrijgegeven lock wel weer op.
+        $explicitTakeover = !$stopWhenPublished && !$watchFresh;
+        if ($fresh && !$explicitTakeover && ($watchFresh || $busy || !$sameOwner)) {
             return argus_month_rebuild_claim_response(true, $existingId, 'watcher', true, $storedOwner, false, '', $storedGeneration);
         }
 
@@ -2109,6 +2122,43 @@ function finance_is_odata_schema_error(string $message): bool
         "/Could not find a property named|Could not find a (?:segment|type|navigation property)|The query specified in the URI is not valid|Resource not found for the segment|Kan geen eigenschap met de naam/i",
         $message
     ) === 1;
+}
+
+/**
+ * HTTP-status uit een OData-exception, of 0 als het geen HTTP-antwoord is.
+ */
+function finance_odata_http_status(Throwable $error): int
+{
+    if (preg_match('/HTTP\s+(\d+)\s+from OData/', $error->getMessage(), $matches) !== 1) {
+        return 0;
+    }
+
+    return (int) $matches[1];
+}
+
+/**
+ * BC antwoordt HTTP 500 als een Job_No-filter te lang of een pagina te zwaar is.
+ * Dat is een snelle fout en mag kleiner opnieuw. Een timeout niet: die zou de wachttijd vermenigvuldigen.
+ */
+function finance_odata_is_retryable_server_error(Throwable $error): bool
+{
+    $status = finance_odata_http_status($error);
+
+    return $status === 500 || $status === 502 || $status === 503 || $status === 504;
+}
+
+/**
+ * cURL- of gateway-timeout. Geen HTTP-status: de aanroep heeft niet afgemaakt.
+ */
+function finance_odata_is_timeout(Throwable $error): bool
+{
+    if (finance_odata_http_status($error) !== 0) {
+        return false;
+    }
+
+    $message = strtolower($error->getMessage());
+
+    return str_contains($message, 'timed out') || str_contains($message, 'curl error');
 }
 
 /**
