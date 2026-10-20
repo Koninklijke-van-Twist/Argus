@@ -2,7 +2,8 @@
 
 /**
  * Projectafdeling komt vers uit Projecten.LVS_Global_Dimension_1_Code.
- * Een oude kaart, OHW-regel of snapshot-code wordt niet overgenomen.
+ * Alleen een nieuwe ophaalronde en Verversen lezen dat veld opnieuw.
+ * Een automatische herbouw neemt de afdeling niet opnieuw uit BC.
  */
 if (PHP_SAPI !== 'cli') {
     http_response_code(404);
@@ -160,13 +161,27 @@ assert_same(true, bc_fetch_column_save_should_refresh_departments('fetch_column_
 assert_same(false, bc_fetch_column_save_should_refresh_departments('fetch_sub_planning', 'project_details', true), 'voorcalculatie leest de afdeling niet nog eens per chunk');
 assert_same(true, bc_fetch_column_save_should_refresh_departments('fetch_sub_projects', '', true), 'de losse projectdetailstap leest de afdeling opnieuw');
 
+assert_same(true, bc_fetch_department_refresh_requested('refresh_month', ''), 'Verversen leest de afdeling opnieuw');
+assert_same(true, bc_fetch_department_refresh_requested('fetch_sub_projects', ''), 'de losse projectronde leest de afdeling opnieuw');
+assert_same(true, bc_fetch_department_refresh_requested('fetch_column_batch', '1'), 'een nieuwe kolomronde vraagt de afdeling zelf');
+assert_same(true, bc_fetch_department_refresh_requested('build_month_snapshot', '1'), 'publiceren na Verversen vraagt de afdeling zelf');
+assert_same(false, bc_fetch_department_refresh_requested('fetch_column_batch', ''), 'een herbouw zonder vraag leest de afdeling niet');
+assert_same(false, bc_fetch_department_refresh_requested('build_month_snapshot', ''), 'publiceren van een herbouw leest de afdeling niet');
+assert_same(false, bc_fetch_department_refresh_requested('fetch_sub_planning', '1'), 'voorcalculatie leest de afdeling niet, ook niet met vlag');
+assert_same(false, bc_fetch_department_refresh_requested('', '1'), 'een leeg verzoek leest de afdeling niet');
+
 $maanden = file_get_contents(__DIR__ . '/../maanden.php');
+$overviewJs = file_get_contents(__DIR__ . '/../maanden.js');
 $detailJs = file_get_contents(__DIR__ . '/../maand-detail.js');
-assert_true(is_string($maanden) && str_contains($maanden, 'bc_fetch_project_departments('), 'de maandopbouw leest de afdeling uit BC');
-assert_true(is_string($maanden) && str_contains($maanden, 'maanden_refresh_departments_on_column_save'), 'elke kolomronde kan de afdeling verversen');
-assert_true(is_string($maanden) && !str_contains($maanden, 'bc_fetch_primary_department_from_breakdown'), 'de snapshot kopieert de afdeling niet meer uit OHW-regels');
+$finance = file_get_contents(__DIR__ . '/../finance_calculations.php');
+assert_true(is_string($maanden) && str_contains($maanden, 'bc_fetch_department_refresh_requested_from_request()'), 'de maandopbouw vraagt eerst of dit Verversen of een nieuwe ronde is');
+assert_true(is_string($maanden) && str_contains($maanden, 'bc_fetch_project_departments('), 'die ronde leest de afdeling uit BC');
+assert_true(is_string($maanden) && str_contains($maanden, 'if (!$refreshDepartments)'), 'een automatische herbouw houdt de afdeling van de bestaande maand');
+assert_true(is_string($overviewJs) && substr_count($overviewJs, 'refresh_project_department') === 2, 'Verversen en een nieuwe maand zetten de vraag op de kolomronde en bij het publiceren');
+assert_true(is_string($detailJs) && !str_contains($detailJs, 'refresh_project_department'), 'openen van een bestaande maand vraagt de afdeling niet opnieuw');
 assert_true(is_string($detailJs) && !str_contains($detailJs, 'primaryDepartmentFromBreakdown'), 'het scherm neemt de afdeling niet uit de opgeslagen OHW-regels');
 assert_true(is_string($detailJs) && str_contains($detailJs, 'LVS_Global_Dimension_1_Code'), 'het scherm valt terug op hetzelfde projectveld');
+assert_true(is_string($finance) && str_contains($finance, 'const ARGUS_MONTH_CACHE_VERSION = 3;'), 'de snapshotversie blijft 3, bestaande maanden worden niet gemigreerd');
 
 $threw = false;
 try {

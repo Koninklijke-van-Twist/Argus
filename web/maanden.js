@@ -1124,6 +1124,7 @@ function argusOverviewRebuildAction (claim)
                 column_key: step.key,
                 refresh_id: refreshId,
                 wip_generation: String(generation),
+                refresh_project_department: '1',
             });
             if (isProjectDetails)
             {
@@ -1194,6 +1195,7 @@ function argusOverviewRebuildAction (claim)
                 company: selectedCompany,
                 refresh_id: refreshId,
                 wip_generation: String(generation),
+                refresh_project_department: '1',
             });
             fetch('maanden.php?action=build_month_snapshot', { method: 'POST', body: body })
                 .then(parseFetchResponse)

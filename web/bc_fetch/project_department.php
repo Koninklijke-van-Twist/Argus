@@ -4,8 +4,10 @@
  * Projectafdeling opnieuw uit Business Central.
  *
  * Het veld dat Argus al op de projectkaart leest is Projecten.LVS_Global_Dimension_1_Code.
- * Dit bestand verandert die veldnaam niet. De waarde komt uit een nieuwe Mímir/OData-query
- * met max_age 0, niet uit een eerder opgeslagen maandsnapshot, WIP-kaart of OHW-regel.
+ * Dit bestand verandert die veldnaam niet. Een nieuwe ophaalronde en Verversen lezen
+ * dat veld opnieuw via Mímir met max_age 0. Een al opgebouwde maand wordt daarvoor
+ * niet automatisch herbouwd of gemigreerd: openen, hervatten en een serverherbouw
+ * houden de afdeling die al op de kaart of in de snapshot staat.
  */
 
 require_once __DIR__ . '/helpers.php';
@@ -23,9 +25,40 @@ const BC_FETCH_PROJECT_DEPARTMENT_CHUNK_SIZE = 20;
  * Functies
  */
 /**
+ * Of dit verzoek de afdeling opnieuw uit BC mag lezen.
+ * Alleen Verversen (refresh_month), de losse projectdetailstap en een
+ * kolomronde of publicatie die daar zelf om vraagt. Een automatische
+ * herbouw stuurt die vraag niet en laat bestaande maanden met rust.
+ */
+function bc_fetch_department_refresh_requested(string $action, string $requested): bool
+{
+    if ($action === 'refresh_month' || $action === 'fetch_sub_projects') {
+        return true;
+    }
+    if ($requested !== '1') {
+        return false;
+    }
+
+    return $action === 'fetch_column_batch' || $action === 'build_month_snapshot';
+}
+
+/**
+ * Leest de vraag uit het huidige verzoek. Zonder POST-vlag is het antwoord nee,
+ * behalve bij de twee acties die zelf Verversen of een losse projectronde zijn.
+ */
+function bc_fetch_department_refresh_requested_from_request(): bool
+{
+    return bc_fetch_department_refresh_requested(
+        (string) ($_GET['action'] ?? ''),
+        (string) ($_POST['refresh_project_department'] ?? '')
+    );
+}
+
+/**
  * Of een kolomstap de projectafdeling opnieuw moet lezen.
  * Een tussenchunk van projectdetails wacht tot de laatste chunk, zodat de
  * net opgehaalde kaarten niet meteen daarna weer de oude afdeling terugzetten.
+ * De aanroeper moet daarnaast nog vragen of dit een ophaalronde of Verversen is.
  */
 function bc_fetch_column_save_should_refresh_departments(string $action, string $columnKey, bool $chunkComplete): bool
 {
