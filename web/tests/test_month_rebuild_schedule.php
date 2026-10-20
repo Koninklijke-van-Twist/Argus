@@ -116,6 +116,53 @@ assert_same($v2Bytes, (string) file_get_contents($publishDir . '/koninklijke_van
 assert_same($legacyBytes, (string) file_get_contents($publishDir . '/koninklijke_van_twist_2026-08.json'), 'publicatie laat het legacy-bestand staan');
 assert_true(is_file($publishDir . '/koninklijke_van_twist_2026-09.v3.json'), 'de herbouw schrijft een v3 naast de v2');
 
+$overlapDir = temp_cache();
+file_put_contents($overlapDir . '/koninklijke_van_twist_2026-09.v2.json', $v2Bytes);
+$overlap = null;
+argus_run_scheduled_month_rebuilds(
+    $overlapDir,
+    [$company],
+    'nightly',
+    static function (string $company, string $yearMonth, string $refreshId, int $generation) use (&$overlap, $overlapDir, $owner): array {
+        $again = argus_claim_running_month_rebuild($overlapDir, $company, $yearMonth, $owner, true, 5100);
+        $overlap = [
+            'generation' => $generation,
+            'role' => (string) ($again['role'] ?? ''),
+            'again_generation' => (int) ($again['generation'] ?? 0),
+            'current' => argus_month_rebuild_generation_is_current($overlapDir, $company, $yearMonth, $refreshId, $generation),
+        ];
+
+        return ['ok' => true];
+    },
+    5000
+);
+assert_same(1, is_array($overlap) ? ($overlap['generation'] ?? null) : null, 'de eerste server-run houdt generatie 1');
+assert_same('watcher', is_array($overlap) ? ($overlap['role'] ?? '') : '', 'een overlappende server-run met dezelfde eigenaar blijft toeschouwer');
+assert_same(1, is_array($overlap) ? ($overlap['again_generation'] ?? 0) : 0, 'de overlappende run verhoogt de generatie niet');
+assert_same(true, is_array($overlap) ? ($overlap['current'] ?? false) : false, 'de eerste run blijft de huidige generatie');
+$overlapResume = null;
+argus_run_scheduled_month_rebuilds(
+    $overlapDir,
+    [$company],
+    'hourly',
+    static function (string $company, string $yearMonth, string $refreshId, int $generation) use (&$overlapResume, $overlapDir, $owner): array {
+        $again = argus_claim_running_month_rebuild($overlapDir, $company, $yearMonth, $owner, true, 5300);
+        $overlapResume = [
+            'generation' => $generation,
+            'role' => (string) ($again['role'] ?? ''),
+            'again_generation' => (int) ($again['generation'] ?? 0),
+            'current' => argus_month_rebuild_generation_is_current($overlapDir, $company, $yearMonth, $refreshId, $generation),
+        ];
+
+        return ['ok' => true];
+    },
+    5200
+);
+assert_same(2, is_array($overlapResume) ? ($overlapResume['generation'] ?? null) : null, 'na vrijgave hervat dezelfde eigenaar met generatie 2');
+assert_same('watcher', is_array($overlapResume) ? ($overlapResume['role'] ?? '') : '', 'een overlappende hervatting blijft toeschouwer tot de lock vrij is');
+assert_same(2, is_array($overlapResume) ? ($overlapResume['again_generation'] ?? 0) : 0, 'de overlappende hervatting verhoogt de generatie niet');
+assert_same(true, is_array($overlapResume) ? ($overlapResume['current'] ?? false) : false, 'de hervattende run blijft de huidige generatie');
+
 $browserDir = temp_cache();
 file_put_contents($browserDir . '/koninklijke_van_twist_2026-08.json', $legacyBytes);
 $browser = 'aaaaaaaaaaaaaaaa';

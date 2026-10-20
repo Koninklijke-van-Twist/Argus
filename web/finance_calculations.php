@@ -1421,13 +1421,15 @@ function argus_delete_legacy_month_wip(string $dir, string $company, string $yea
  * Claimt de enige herbouw voor dit bedrijf en deze maand.
  * Alleen een verse lock waarvan een stap echt bezig is (hartslag) blijft toeschouwer.
  * Een claim zonder stap zet de lock nog niet op bezet, zodat een herlaadbeurt meteen verdergaat.
+ * Een server-claim ($claimBusy) is meteen bezet. Nightly en hourly delen één eigenaar
+ * en mogen elkaar niet overnemen in de pauze tot de eerste hartslag.
  * Een lock zonder generatie, of met een tijdstip dat niet verloopt, wordt overgenomen.
  * Legacy-WIP zonder refresh-id wordt opgeruimd. Snapshots en de geldige WIP blijven staan.
  * Zonder WIP en met een actuele v3 stopt een automatische herbouw (stopWhenPublished).
  *
  * @return array{ok:bool,refresh_id:string,role:string,resumed:bool,owner:string,published:bool,error?:string}
  */
-function argus_claim_running_month_rebuild(string $dir, string $company, string $yearMonth, string $owner, bool $stopWhenPublished, ?int $now = null, int $ttlSeconds = ARGUS_MONTH_REBUILD_LOCK_TTL_SECONDS): array
+function argus_claim_running_month_rebuild(string $dir, string $company, string $yearMonth, string $owner, bool $stopWhenPublished, ?int $now = null, int $ttlSeconds = ARGUS_MONTH_REBUILD_LOCK_TTL_SECONDS, bool $claimBusy = false): array
 {
     $failed = argus_month_rebuild_claim_response(false, '', '', false, '', false, 'Ongeldige maand.');
     $lockPath = argus_month_wip_lock_path($dir, $company, $yearMonth);
@@ -1474,7 +1476,7 @@ function argus_claim_running_month_rebuild(string $dir, string $company, string 
                 return argus_month_rebuild_claim_response(false, '', '', false, '', false, 'WIP kon niet worden aangemaakt.');
             }
 
-            argus_month_rebuild_write_state($handle, $refreshId, $workerOwner, $now, false, 1);
+            argus_month_rebuild_write_state($handle, $refreshId, $workerOwner, $now, $claimBusy, 1);
 
             return argus_month_rebuild_claim_response(true, $refreshId, 'worker', false, $workerOwner, false, '', 1);
         }
@@ -1503,7 +1505,7 @@ function argus_claim_running_month_rebuild(string $dir, string $company, string 
 
         $workerOwner = $requestedOwner !== '' ? $requestedOwner : ($storedOwner !== '' ? $storedOwner : bin2hex(random_bytes(8)));
         $generation = $storedGeneration + 1;
-        argus_month_rebuild_write_state($handle, $existingId, $workerOwner, $now, false, $generation);
+        argus_month_rebuild_write_state($handle, $existingId, $workerOwner, $now, $claimBusy, $generation);
 
         return argus_month_rebuild_claim_response(true, $existingId, 'worker', true, $workerOwner, false, '', $generation);
     } finally {

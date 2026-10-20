@@ -221,6 +221,7 @@ function argus_run_month_rebuild_steps(
 /**
  * Claimt elke kandidaat met de server-eigenaar.
  * Een toeschouwer (browser of bezette stap) krijgt geen tweede herbouw.
+ * De lock is meteen bezet, ook vóór de eerste hartslag, zodat een overlappende run niet overneemt.
  * Na de stappen gaat de lock weer vrij, met dezelfde generatie.
  *
  * @param array<int,mixed> $companies
@@ -242,7 +243,7 @@ function argus_run_scheduled_month_rebuilds(
     foreach (argus_month_rebuild_candidates($dir, $companies) as $job) {
         $company = $job['company'];
         $yearMonth = $job['year_month'];
-        $claim = argus_claim_running_month_rebuild($dir, $company, $yearMonth, $owner, true, $now);
+        $claim = argus_claim_running_month_rebuild($dir, $company, $yearMonth, $owner, true, $now, ARGUS_MONTH_REBUILD_LOCK_TTL_SECONDS, true);
         $base = [
             'company' => $company,
             'year_month' => $yearMonth,
@@ -268,18 +269,6 @@ function argus_run_scheduled_month_rebuilds(
             $results[] = $base + [
                 'status' => 'skipped',
                 'error' => '',
-            ];
-            continue;
-        }
-
-        // De claim zelf is nog niet bezet. Zonder deze hartslag pakt een tweede
-        // nightly of hourly, met dezelfde server-eigenaar, de lock over terwijl
-        // de eerste run nog in de login zit, en die run faalt daarna op de generatie.
-        if (!argus_month_rebuild_heartbeat($dir, $company, $yearMonth, $refreshId, $generation, $now)) {
-            $failed++;
-            $results[] = $base + [
-                'status' => 'error',
-                'error' => 'Herbouw-lock was niet meer van deze run.',
             ];
             continue;
         }
