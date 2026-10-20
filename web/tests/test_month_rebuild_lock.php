@@ -58,6 +58,7 @@ assert_same('worker', $first['role'], 'eerste tabblad is de bouwer');
 assert_same(false, $first['resumed'], 'een nieuwe herbouw is geen hervatting');
 assert_same(false, $first['published'], 'zonder v3 is de herbouw niet klaar');
 assert_same($ownerA, $first['owner'], 'de lock onthoudt het tabblad');
+assert_same(1, $first['generation'], 'een nieuwe herbouw begint bij generatie 1');
 assert_true(preg_match('/^[a-f0-9]{16}$/', (string) $first['refresh_id']) === 1, 'refresh-id is 16 hex');
 $refreshId = (string) $first['refresh_id'];
 $wipName = 'koninklijke_van_twist_wip_' . $ym . '_' . $refreshId . '.v3.json';
@@ -84,18 +85,31 @@ assert_same($lockBefore, (string) file_get_contents($dir . '/' . $lockName), 'ee
 
 $sameWhileBusy = argus_claim_running_month_rebuild($dir, $company, $ym, $ownerA, true, 1006, 10);
 assert_same('watcher', $sameWhileBusy['role'], 'een herlaadbeurt wacht tot de lopende stap de WIP heeft weggeschreven');
+assert_same(1, $sameWhileBusy['generation'], 'wachten verhoogt de generatie niet');
 assert_same($refreshId, $sameWhileBusy['refresh_id'], 'de herlaadbeurt houdt dezelfde refresh-id');
 assert_same($wipBytes, (string) file_get_contents($dir . '/' . $wipName), 'de herlaadbeurt wist de WIP niet');
 
-assert_true(argus_month_rebuild_release($dir, $company, $ym, $refreshId), 'een afgeronde stap geeft de lock vrij');
+assert_true(argus_month_rebuild_release($dir, $company, $ym, $refreshId, 1), 'een afgeronde stap geeft de lock vrij');
 $same = argus_claim_running_month_rebuild($dir, $company, $ym, $ownerA, true, 1007, 10);
 assert_same('worker', $same['role'], 'hetzelfde tabblad gaat verder nadat de stap klaar is');
 assert_same(true, $same['resumed'], 'hetzelfde tabblad hervat');
+assert_same(2, $same['generation'], 'hervatten door hetzelfde tabblad krijgt een nieuwe generatie');
 assert_same($refreshId, $same['refresh_id'], 'hervatten houdt dezelfde refresh-id');
 assert_same($wipBytes, (string) file_get_contents($dir . '/' . $wipName), 'hervatten wist de WIP niet');
+assert_same(false, argus_month_rebuild_release($dir, $company, $ym, $refreshId, 1), 'een oude generatie geeft de nieuwe lock niet vrij');
+assert_same(
+    false,
+    argus_save_month_wip_if_current($dir, $company, $ym, $refreshId, 1, [
+        'column_data_target' => ['project_details' => ['by_project' => []]],
+        'planning_totals_by_job' => ['oud' => 1],
+    ]),
+    'een oude generatie schrijft de WIP niet terug'
+);
+assert_same($wipBytes, (string) file_get_contents($dir . '/' . $wipName), 'een oude OHW-schrijfactie laat de WIP bytegelijk');
 
-assert_true(argus_month_rebuild_heartbeat($dir, $company, $ym, $refreshId, 1008), 'een hartslag houdt de lopende herbouw vers');
-assert_same(false, argus_month_rebuild_heartbeat($dir, $company, $ym, '0123456789abcdef', 1010), 'een vreemde refresh-id verlengt de lock niet');
+assert_true(argus_month_rebuild_heartbeat($dir, $company, $ym, $refreshId, 2, 1008), 'een hartslag houdt de lopende herbouw vers');
+assert_same(false, argus_month_rebuild_heartbeat($dir, $company, $ym, '0123456789abcdef', 2, 1010), 'een vreemde refresh-id verlengt de lock niet');
+assert_same(false, argus_month_rebuild_heartbeat($dir, $company, $ym, $refreshId, 1, 1009), 'een oude generatie verlengt de lock niet');
 $seesCursor = argus_claim_running_month_rebuild($dir, $company, $ym, $ownerB, false, 1009, 10);
 assert_same('watcher', $seesCursor['role'], 'Verversen volgt een verse herbouw en wist die niet');
 assert_same($refreshId, $seesCursor['refresh_id'], 'Verversen hergebruikt de lopende refresh-id');

@@ -2248,7 +2248,7 @@
             : (base || extra);
     }
 
-    function runColumnChunks (request, refreshId, columnKey)
+    function runColumnChunks (request, refreshId, columnKey, generation)
     {
         const period = String(request.period || request.year_month || '');
 
@@ -2260,6 +2260,7 @@
                 company: String(request.company || ''),
                 column_key: columnKey,
                 refresh_id: refreshId,
+                wip_generation: String(generation),
             };
             if (columnKey === 'project_details')
             {
@@ -2288,7 +2289,7 @@
         return step(0);
     }
 
-    function runPlanningChunks (request, refreshId)
+    function runPlanningChunks (request, refreshId, generation)
     {
         const period = String(request.period || request.year_month || '');
 
@@ -2298,6 +2299,7 @@
                 target_month: period,
                 company: String(request.company || ''),
                 refresh_id: refreshId,
+                wip_generation: String(generation),
                 chunk_index: String(chunkIndex),
             }).then(function (json)
             {
@@ -2352,7 +2354,7 @@
         }
     }
 
-    function runRebuildSteps (request, refreshId)
+    function runRebuildSteps (request, refreshId, generation)
     {
         const period = String(request.period || request.year_month || '');
         const columns = Array.isArray(request.columns) && request.columns.length > 0
@@ -2363,18 +2365,19 @@
         {
             chain = chain.then(function ()
             {
-                return runColumnChunks(request, refreshId, String(columnKey));
+                return runColumnChunks(request, refreshId, String(columnKey), generation);
             });
         });
         return chain.then(function ()
         {
-            return runPlanningChunks(request, refreshId);
+            return runPlanningChunks(request, refreshId, generation);
         }).then(function ()
         {
             return postSnapshotForm(request.build_url, {
                 target_month: period,
                 company: String(request.company || ''),
                 refresh_id: refreshId,
+                wip_generation: String(generation),
             });
         }).then(function (built)
         {
@@ -2428,11 +2431,11 @@
                 }, 3000);
                 return;
             }
-            if (!started.refresh_id)
+            if (!started.refresh_id || !started.generation)
             {
                 throw new Error('Herbouw starten mislukt.');
             }
-            return runRebuildSteps(request, String(started.refresh_id));
+            return runRebuildSteps(request, String(started.refresh_id), Number(started.generation));
         }
 
         claim()

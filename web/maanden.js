@@ -881,7 +881,7 @@
         }).catch(function () {});
     }
 
-    function runMonthBuildFlow (ym, successMessage, refreshId)
+    function runMonthBuildFlow (ym, successMessage, refreshId, generation)
     {
         const effectiveTargetColumnSteps = targetColumnSteps.length > 0
             ? targetColumnSteps
@@ -1019,6 +1019,7 @@
                 target_month: ym,
                 company: selectedCompany,
                 refresh_id: refreshId,
+                wip_generation: String(generation),
                 chunk_index: String(chunkIndex),
             });
             const stepLabel = voorcalculatieTotalChunks > 1
@@ -1100,6 +1101,7 @@
                 company: selectedCompany,
                 column_key: step.key,
                 refresh_id: refreshId,
+                wip_generation: String(generation),
             });
             if (isProjectDetails)
             {
@@ -1165,7 +1167,12 @@
 
         function buildSnapshot ()
         {
-            const body = new URLSearchParams({ target_month: ym, company: selectedCompany, refresh_id: refreshId });
+            const body = new URLSearchParams({
+                target_month: ym,
+                company: selectedCompany,
+                refresh_id: refreshId,
+                wip_generation: String(generation),
+            });
             fetch('maanden.php?action=build_month_snapshot', { method: 'POST', body: body })
                 .then(parseFetchResponse)
                 .then(function (json)
@@ -1254,14 +1261,14 @@
                     toast(formatMonth(ym) + ' wordt al opgebouwd. Die voortgang blijft behouden.');
                     return;
                 }
-                if (!json.refresh_id)
+                if (!json.refresh_id || !json.generation)
                 {
                     hideLoader();
                     toast('Fout bij starten van ' + formatMonth(ym) + ': ' + (json.error || 'Onbekende fout'), true, errorContext(ym, 'Maand verversen'));
                     return;
                 }
 
-                runMonthBuildFlow(ym, successMessage, String(json.refresh_id));
+                runMonthBuildFlow(ym, successMessage, String(json.refresh_id), Number(json.generation));
             })
             .catch(function (err)
             {

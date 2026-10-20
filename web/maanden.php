@@ -590,17 +590,23 @@ function batch_wip_claim_refresh(string $company, string $targetYearMonth): stri
 /**
  * Houdt de herbouw-lock vers aan het begin van een lange stap.
  */
+function maanden_rebuild_generation(): int
+{
+    return max(0, (int) ($_POST['wip_generation'] ?? 0));
+}
+
 function maanden_rebuild_heartbeat(string $company, string $yearMonth, string $refreshId): void
 {
     if ($refreshId === '') {
         return;
     }
 
-    argus_month_rebuild_heartbeat(maanden_cache_dir(), $company, $yearMonth, $refreshId);
+    argus_month_rebuild_heartbeat(maanden_cache_dir(), $company, $yearMonth, $refreshId, maanden_rebuild_generation());
 }
 
 /**
  * De lopende stap heeft de WIP weggeschreven. Een herlaadbeurt mag daarna verder.
+ * Een oudere generatie laat de lock van de nieuwe run met rust.
  */
 function maanden_rebuild_release(string $company, string $yearMonth, string $refreshId): void
 {
@@ -608,7 +614,28 @@ function maanden_rebuild_release(string $company, string $yearMonth, string $ref
         return;
     }
 
-    argus_month_rebuild_release(maanden_cache_dir(), $company, $yearMonth, $refreshId);
+    argus_month_rebuild_release(maanden_cache_dir(), $company, $yearMonth, $refreshId, maanden_rebuild_generation());
+}
+
+function maanden_rebuild_save_wip(string $company, string $yearMonth, array $data, string $refreshId): bool
+{
+    return argus_save_month_wip_if_current(
+        maanden_cache_dir(),
+        $company,
+        $yearMonth,
+        $refreshId,
+        maanden_rebuild_generation(),
+        $data
+    );
+}
+
+function maanden_rebuild_stale_response(): void
+{
+    echo json_encode([
+        'ok' => false,
+        'stale' => true,
+        'error' => 'Deze herbouw is vervangen door een nieuwere poging.',
+    ], JSON_UNESCAPED_UNICODE);
 }
 
 /**
@@ -1440,6 +1467,10 @@ if (($_GET['action'] ?? '') === 'fetch_column_batch') {
 
         $refreshId = batch_wip_refresh_id_from_request();
         maanden_rebuild_heartbeat($company, $targetYm, $refreshId);
+        if (!argus_month_rebuild_generation_is_current(maanden_cache_dir(), $company, $targetYm, $refreshId, maanden_rebuild_generation())) {
+            maanden_rebuild_stale_response();
+            exit;
+        }
         $wip = batch_wip_load($company, $targetYm, $refreshId);
         $ttl = odata_ttl_for_month($targetYm);
         $columnDataTarget = is_array($wip['column_data_target'] ?? null) ? $wip['column_data_target'] : [];
@@ -1513,7 +1544,10 @@ if (($_GET['action'] ?? '') === 'fetch_column_batch') {
             $response['warning'] = $columnResult['warning'] ?? null;
         }
 
-        batch_wip_save($company, $targetYm, $wip, $refreshId);
+        if (!maanden_rebuild_save_wip($company, $targetYm, $wip, $refreshId)) {
+            maanden_rebuild_stale_response();
+            exit;
+        }
 
         echo json_encode($response, JSON_UNESCAPED_UNICODE);
     } catch (Throwable $e) {
@@ -1737,6 +1771,10 @@ if (($_GET['action'] ?? '') === 'fetch_sub_planning') {
         $ttl = odata_ttl_for_month($targetYm);
         $refreshId = batch_wip_refresh_id_from_request();
         maanden_rebuild_heartbeat($company, $targetYm, $refreshId);
+        if (!argus_month_rebuild_generation_is_current(maanden_cache_dir(), $company, $targetYm, $refreshId, maanden_rebuild_generation())) {
+            maanden_rebuild_stale_response();
+            exit;
+        }
         $wip = batch_wip_load($company, $targetYm, $refreshId);
         maanden_wip_sync_project_numbers_from_ohw($wip);
         $projectNumbers = wip_project_numbers($wip);
@@ -1822,7 +1860,10 @@ if (($_GET['action'] ?? '') === 'fetch_sub_planning') {
         $wip['planning_totals_by_job'] = $planningTotalsByJob;
         $wip['planning_breakdown_by_job'] = $planningBreakdownByJob;
         $wip['planning_warning'] = $planningWarning;
-        batch_wip_save($company, $targetYm, $wip, $refreshId);
+        if (!maanden_rebuild_save_wip($company, $targetYm, $wip, $refreshId)) {
+            maanden_rebuild_stale_response();
+            exit;
+        }
 
         echo json_encode([
             'ok' => true,
@@ -1863,6 +1904,10 @@ if (($_GET['action'] ?? '') === 'build_month_snapshot') {
     try {
         $refreshId = batch_wip_refresh_id_from_request();
         maanden_rebuild_heartbeat($company, $targetYm, $refreshId);
+        if (!argus_month_rebuild_generation_is_current(maanden_cache_dir(), $company, $targetYm, $refreshId, maanden_rebuild_generation())) {
+            maanden_rebuild_stale_response();
+            exit;
+        }
         $wip = batch_wip_load($company, $targetYm, $refreshId);
 
         $columnDataTarget = is_array($wip['column_data_target'] ?? null) ? $wip['column_data_target'] : [];
@@ -1880,6 +1925,10 @@ if (($_GET['action'] ?? '') === 'build_month_snapshot') {
 
         if (is_array($columnDataTarget['grootboekposten_ohw'] ?? null)) {
             $data = build_snapshot_from_column_wip($company, $targetYm, $wip);
+            if (!argus_month_rebuild_generation_is_current(maanden_cache_dir(), $company, $targetYm, $refreshId, maanden_rebuild_generation())) {
+                maanden_rebuild_stale_response();
+                exit;
+            }
             if (!maand_save($company, $targetYm, $data)) {
                 throw new RuntimeException('De nieuwe snapshot kon niet worden opgeslagen. De vorige snapshot blijft beschikbaar.');
             }
@@ -1905,6 +1954,10 @@ if (($_GET['action'] ?? '') === 'build_month_snapshot') {
             $planningBreakdownByJob
         );
 
+        if (!argus_month_rebuild_generation_is_current(maanden_cache_dir(), $company, $targetYm, $refreshId, maanden_rebuild_generation())) {
+            maanden_rebuild_stale_response();
+            exit;
+        }
         if (!maand_save($company, $targetYm, $data)) {
             throw new RuntimeException('De nieuwe snapshot kon niet worden opgeslagen. De vorige snapshot blijft beschikbaar.');
         }
