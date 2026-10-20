@@ -20,6 +20,26 @@ function argusOverviewRebuildAction (claim)
     return 'run';
 }
 
+function argusOverviewRebuildStatusText (action, monthLabel, errorText)
+{
+    const label = monthLabel || 'Deze maand';
+    if (action === 'poll')
+    {
+        return label + ' wordt opnieuw opgebouwd. Er loopt al een herbouw; dit scherm wacht en probeert het zo opnieuw.';
+    }
+    if (action === 'run')
+    {
+        return label + ' wordt opnieuw opgebouwd...';
+    }
+    if (action === 'error')
+    {
+        const extra = errorText ? String(errorText) : 'Onbekende fout';
+        return label + ' kon niet opnieuw worden opgebouwd. ' + extra;
+    }
+
+    return '';
+}
+
 (function ()
 {
     /**
@@ -1262,6 +1282,35 @@ function argusOverviewRebuildAction (claim)
     {
         showLoader('Bezig met ophalen...');
 
+        function showMonthCardStatus (statusText)
+        {
+            if (!monthGrid || !statusText)
+            {
+                return;
+            }
+            const card = monthGrid.querySelector('.month-card[data-ym="' + ym + '"]');
+            if (!card)
+            {
+                return;
+            }
+            let status = card.querySelector('.month-card-rebuild');
+            if (!status)
+            {
+                status = document.createElement('div');
+                status.className = 'month-card-fetched month-card-rebuild';
+                const actions = card.querySelector('.month-card-actions');
+                if (actions)
+                {
+                    card.insertBefore(status, actions);
+                }
+                else
+                {
+                    card.appendChild(status);
+                }
+            }
+            status.textContent = statusText;
+        }
+
         const body = new URLSearchParams({
             year_month: ym,
             company: selectedCompany,
@@ -1276,10 +1325,13 @@ function argusOverviewRebuildAction (claim)
             .then(function (json)
             {
                 const action = argusOverviewRebuildAction(json);
+                const monthLabel = formatMonth(ym);
                 if (action === 'error')
                 {
                     hideLoader();
-                    toast('Fout bij starten van ' + formatMonth(ym) + ': ' + ((json && json.error) || 'Onbekende fout'), true, errorContext(ym, 'Maand verversen'));
+                    const reason = (json && json.error) || 'Onbekende fout';
+                    showMonthCardStatus(argusOverviewRebuildStatusText('error', monthLabel, reason));
+                    toast('Fout bij starten van ' + monthLabel + ': ' + reason, true, errorContext(ym, 'Maand verversen'));
                     return;
                 }
                 if (action === 'reload')
@@ -1290,10 +1342,12 @@ function argusOverviewRebuildAction (claim)
                 }
                 if (action === 'poll')
                 {
+                    const waiting = argusOverviewRebuildStatusText('poll', monthLabel, '');
                     if (pageLoaderText)
                     {
-                        pageLoaderText.textContent = formatMonth(ym) + ' wordt opgebouwd...';
+                        pageLoaderText.textContent = waiting;
                     }
+                    showMonthCardStatus(waiting);
                     window.setTimeout(function ()
                     {
                         beginMonthBuild(ym, successMessage, true);
@@ -1301,11 +1355,13 @@ function argusOverviewRebuildAction (claim)
                     return;
                 }
 
+                showMonthCardStatus(argusOverviewRebuildStatusText('run', monthLabel, ''));
                 runMonthBuildFlow(ym, successMessage, String(json.refresh_id), Number(json.generation));
             })
             .catch(function (err)
             {
                 hideLoader();
+                showMonthCardStatus(argusOverviewRebuildStatusText('error', formatMonth(ym), err.message));
                 toast('Netwerkfout bij starten van ' + formatMonth(ym) + ': ' + err.message, true, errorContext(ym, 'Maand verversen', err));
             });
     }
