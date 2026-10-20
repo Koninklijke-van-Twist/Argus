@@ -30,17 +30,25 @@ const FINANCE_REVENUE_GL_ACCOUNT_TYPE_ALIASES = [
 const FINANCE_OPBRENGST_VC_FIELD = 'LVS_Contract_Total_Price_2';
 
 /**
- * Historisch veld op ProjectTaken. De kolom Opbrengst leest dit niet meer:
- * die somt planningsregels met No 800000. Niet Contract_Invoiced_Price en niet G/L 899901.
+ * Historisch veld op ProjectTaken. De kolom Opbrengst t/m leest dit niet:
+ * die somt Contract_Invoiced_Price van Boeking-taken. De 800000-planningsregels
+ * blijven de aanneemsom. Niet G/L 899901.
  *
  * ProjectTaken publiceert géén Contract_Total_Price (alleen JobTaskLines e.d. doen dat);
  * het contracttotaal staat op ProjectTaken als LVS_Contract_Total_Price_2. Live
  * kvtmdlive_aad (KVT/HVT): taak 000 LVS_Contract_Total_Price_2 == JobTaskLines.Contract_Total_Price
  * (bv. PRJ2602239: 24.297 vs basislijn 24.209). Niet LVS_Baseline_Total_Price: dat is
  * de bevroren basislijn, geen actueel contract (ticket #1170).
- * Opbrengst VC leest ditzelfde veld. De kolom Opbrengst/aanneemsom doet dat niet.
+ * Opbrengst VC leest ditzelfde veld. De kolom Opbrengst t/m en de aanneemsom doen dat niet.
  */
 const FINANCE_CONTRACT_TOTAL_PRICE_FIELD = 'LVS_Contract_Total_Price_2';
+
+/**
+ * Gefactureerde opbrengst op ProjectTaken (flowfilter Posting_Date_Filter).
+ * De kolom Opbrengst t/m somt dit veld van taken met type Boeking.
+ * Niet de 800000-planningsregels en niet LVS_Contract_Total_Price_2.
+ */
+const FINANCE_INVOICED_PRICE_FIELD = 'Contract_Invoiced_Price';
 
 /**
  * Taaknummers voor de voorcalculatie-basislijn (LVS_Baseline_Total_Cost).
@@ -460,10 +468,11 @@ function finance_is_contract_revenue_planning_line(array $row): bool
 }
 
 /**
- * Berekent kolomwaarde Opbrengst voor één planningsregel.
+ * Berekent de 800000-planningsom voor één planningsregel (aanneemsom).
  * G/L 800000, geen prognose, met leeg én gevuld LVS_Job_Change_Order_No.
  * Meerwerk blijft in dit totaal; finance_opbrengst_meerwerk_amount is alleen extra informatie.
  * Q002 in Description zonder subordernummer telt gewoon mee.
+ * De kolom Opbrengst t/m leest dit niet; die somt Contract_Invoiced_Price van Boeking-taken.
  */
 function finance_opbrengst_amount(array $row): float
 {
@@ -475,8 +484,9 @@ function finance_opbrengst_amount(array $row): float
 }
 
 /**
- * Berekent de opbrengst/aanneemsom voor één planningsregel.
+ * Berekent de aanneemsom voor één planningsregel.
  * Zelfde totaal als finance_opbrengst_amount: leeg en gevuld subordernummer tellen allebei mee.
+ * Dit is niet de kolom Opbrengst t/m.
  */
 function finance_aanneemsom_amount(array $row): float
 {
@@ -682,6 +692,91 @@ function finance_contract_total_price_amount(array $row, string $projectTotaalTa
     }
 
     return finance_to_float($row[FINANCE_CONTRACT_TOTAL_PRICE_FIELD]);
+}
+
+/**
+ * Laatste kalenderdag van een maand (YYYY-MM), of null als de maand ongeldig is.
+ * September 2026 is 2026-09-30. Dat is de peildatum voor Opbrengst t/m.
+ */
+function finance_month_end_date(string $yearMonth): ?string
+{
+    if (preg_match('/^(\d{4})-(\d{2})$/', $yearMonth, $matches) !== 1) {
+        return null;
+    }
+
+    $year = (int) $matches[1];
+    $month = (int) $matches[2];
+    if ($month < 1 || $month > 12) {
+        return null;
+    }
+
+    $start = DateTimeImmutable::createFromFormat('!Y-m-d', sprintf('%04d-%02d-01', $year, $month));
+    if (!$start instanceof DateTimeImmutable) {
+        return null;
+    }
+
+    return $start->format('Y-m-t');
+}
+
+/**
+ * OData-flowfilter voor gefactureerde opbrengst t/m de laatste dag van de maand.
+ * Business Central verwacht Posting_Date_Filter als string tussen quotes, met '..' vóór de datum.
+ * Een le-filter op de boekingsdatum wijst BC af.
+ */
+function finance_posting_date_through_filter(string $yearMonth): string
+{
+    $end = finance_month_end_date($yearMonth);
+    if ($end === null || preg_match('/^\d{4}-\d{2}-\d{2}$/', $end) !== 1) {
+        return '';
+    }
+
+    return "Posting_Date_Filter eq '.." . $end . "'";
+}
+
+/**
+ * Sommeert Contract_Invoiced_Price van de aangeleverde taken.
+ * De aanroeper houdt alleen Boeking-taken over. Kop- en totaaltaken herhalen
+ * die bedragen en mogen niet nog eens meetellen.
+ * Nulregels komen niet in de specificatie; het totaal blijft dan 0.
+ *
+ * @param array<int,mixed> $rows
+ * @return array{amount:float,lines:array<int,array<string,mixed>>}
+ */
+function finance_invoiced_through_from_task_rows(array $rows): array
+{
+    $amount = 0.0;
+    $lines = [];
+
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+
+        if (!array_key_exists(FINANCE_INVOICED_PRICE_FIELD, $row)) {
+            continue;
+        }
+
+        $lineAmount = finance_to_float($row[FINANCE_INVOICED_PRICE_FIELD]);
+        $amount = finance_add_amount($amount, $lineAmount);
+        if ($lineAmount === 0.0) {
+            continue;
+        }
+
+        $lines[] = [
+            'Job_Task_No' => trim((string) ($row['Job_Task_No'] ?? '')),
+            'Line_No' => 0,
+            'Type' => (string) ($row['Job_Task_Type'] ?? FINANCE_BOOKING_TASK_TYPE),
+            'No' => '',
+            'Description' => (string) ($row['Description'] ?? ''),
+            'Line_Amount' => $lineAmount,
+            'Line_Type' => FINANCE_INVOICED_PRICE_FIELD,
+        ];
+    }
+
+    return [
+        'amount' => $amount,
+        'lines' => $lines,
+    ];
 }
 
 /**
