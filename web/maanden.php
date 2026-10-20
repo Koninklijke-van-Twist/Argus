@@ -935,16 +935,16 @@ function build_month_rows(
             'Cost_Center' => (string) ($proj['LVS_Global_Dimension_1_Code'] ?? ''),
             'Project_Actual_Costs' => (float) ($projectTotals['costs'] ?? 0.0),
             'Project_Actual_Costs_To_Date' => 0.0,
-            // Som van planningsregels met No 800000, niet het contracttotaal en niet OHW.
-            'Project_Total_Revenue' => (float) ($planningTotals['aanneemsom'] ?? 0.0),
+            // Gefactureerd t/m einde van de gekozen maand (Boeking-taken), niet de 800000-som.
+            'Project_Total_Revenue' => finance_to_float($planningTotals['invoiced_through'] ?? 0.0),
             'Expected_Revenue' => (float) ($planningTotals['expected_revenue'] ?? 0),
             'Expected_Costs_VC' => (float) ($planningTotals['expected_costs'] ?? 0),
             'Extra_Work' => (float) ($planningTotals['extra_work'] ?? 0),
             'Aanneemsom' => (float) ($planningTotals['aanneemsom'] ?? 0),
             'Breakdown' => [
                 'total_costs_lines' => [],
-                'total_revenue_lines' => is_array($planningBreakdown['aanneemsom_lines'] ?? null)
-                    ? $planningBreakdown['aanneemsom_lines']
+                'total_revenue_lines' => is_array($planningBreakdown['invoiced_through_lines'] ?? null)
+                    ? $planningBreakdown['invoiced_through_lines']
                     : [],
                 'expected_revenue_lines' => is_array($planningBreakdown['expected_revenue_lines'] ?? null) ? $planningBreakdown['expected_revenue_lines'] : [],
                 'expected_costs_lines' => is_array($planningBreakdown['expected_costs_lines'] ?? null) ? $planningBreakdown['expected_costs_lines'] : [],
@@ -1077,18 +1077,21 @@ function fetch_month_data(string $company, string $yearMonth, array $auth): arra
     $planningTotalsByJob = [];
     $planningBreakdownByJob = [];
     if ($projectNumbers !== []) {
-        try {
-            $projectForecast = $financeService->collectProjectForecastForProjects($projectNumbers, odata_ttl_for_month($yearMonth));
-            $planningTotalsByJob = is_array($projectForecast['forecast_totals_by_job'] ?? null)
-                ? $projectForecast['forecast_totals_by_job']
-                : [];
-            $planningBreakdownByJob = is_array($projectForecast['forecast_breakdown_by_job'] ?? null)
-                ? $projectForecast['forecast_breakdown_by_job']
-                : [];
-        } catch (Throwable $forecastError) {
-            $planningTotalsByJob = [];
-            $planningBreakdownByJob = [];
+        $projectForecast = $financeService->collectProjectForecastForProjects(
+            $projectNumbers,
+            odata_ttl_for_month($yearMonth),
+            $yearMonth
+        );
+        $blockingForecast = finance_forecast_blocks_snapshot($projectForecast);
+        if (is_string($blockingForecast) && $blockingForecast !== '') {
+            throw new RuntimeException($blockingForecast);
         }
+        $planningTotalsByJob = is_array($projectForecast['forecast_totals_by_job'] ?? null)
+            ? $projectForecast['forecast_totals_by_job']
+            : [];
+        $planningBreakdownByJob = is_array($projectForecast['forecast_breakdown_by_job'] ?? null)
+            ? $projectForecast['forecast_breakdown_by_job']
+            : [];
     }
 
     $result = build_month_rows(
@@ -1217,8 +1220,8 @@ function build_snapshot_from_column_wip(string $company, string $targetYm, array
         $planningForProject = is_array($planningBreakdownByJob[$normProjectNo] ?? null)
             ? $planningBreakdownByJob[$normProjectNo]
             : [];
-        $breakdown['total_revenue_lines'] = is_array($planningForProject['aanneemsom_lines'] ?? null)
-            ? $planningForProject['aanneemsom_lines']
+        $breakdown['total_revenue_lines'] = is_array($planningForProject['invoiced_through_lines'] ?? null)
+            ? $planningForProject['invoiced_through_lines']
             : [];
 
         $projectBreakdowns[$normProjectNo] = $breakdown;
@@ -1820,7 +1823,7 @@ if (($_GET['action'] ?? '') === 'fetch_sub_planning') {
             try {
                 $environmentForCompany = auth_get_environment_for_company($company, AUTH_COMPANY_DISCOVERY_TTL_SECONDS);
                 $financeService = new ProjectFinanceService($company, $environmentForCompany);
-                $projectForecast = $financeService->collectProjectForecastForProjects($plan['chunk_projects'], $ttl);
+                $projectForecast = $financeService->collectProjectForecastForProjects($plan['chunk_projects'], $ttl, $targetYm);
                 $blockingError = finance_forecast_blocks_snapshot($projectForecast);
                 if (!is_string($blockingError) || $blockingError === '') {
                     $chunkTotals = is_array($projectForecast['forecast_totals_by_job'] ?? null)

@@ -138,7 +138,10 @@ class ProjectFinanceService
             // - opbrengst VC: ProjectTaken.LVS_Contract_Total_Price_2. Taak 000, anders
             //   000-000-000, anders de som van Boeking-taken. Dat totaal bevat het
             //   meerwerk; het hoofdproject is dit bedrag minus de opbrengst meerwerk.
-            // - opbrengst: FactureerbareProjectPlanningsRegels, G/L-type en No 800000, geen prognose.
+            // - opbrengst t/m: ProjectTaken.Contract_Invoiced_Price, flowfilter
+            //   Posting_Date_Filter eq '..YYYY-MM-DD' (laatste dag van de gekozen maand),
+            //   alleen taken met Job_Task_Type Boeking uit JobTaskLines.
+            // - aanneemsom: FactureerbareProjectPlanningsRegels, G/L-type en No 800000, geen prognose.
             //   Niet LVS_Contract_Total_Price_2 en niet het factureerbaar-vlaggetje.
             //   Leeg én gevuld subordernr. tellen mee; meerwerk is alleen het gevulde deel.
             'project_forecast' => [
@@ -550,17 +553,20 @@ class ProjectFinanceService
     }
 
     /**
-     * Haalt voorcalculatie op per project (huidige BC-stand, geen historie).
+     * Haalt voorcalculatie op per project.
+     * Opbrengst t/m is de gefactureerde stand t/m de gekozen maand.
+     * De overige kolommen blijven de huidige BC-stand.
      *
      * Kosten: ProjectTaken.LVS_Baseline_Total_Cost (taak 000, anders 000-000-000, anders som Boeking-taken).
      * Opbrengst VC: ProjectTaken.LVS_Contract_Total_Price_2, dezelfde taakkeuze als de kosten.
      * Het contracttotaal bevat het meerwerk. Het hoofdproject is dat totaal minus de
      * opbrengst meerwerk die hieronder al apart wordt opgehaald.
-     * Opbrengst/aanneemsom en opbrengst meerwerk: FactureerbareProjectPlanningsRegels, G/L 800000, geen prognose.
-     * Opbrengst telt regels met leeg én gevuld LVS_Job_Change_Order_No.
-     * Meerwerk is alleen het deel met gevuld subordernr. en blijft in de opbrengst zitten.
+     * Opbrengst t/m: Contract_Invoiced_Price t/m de laatste dag van $yearMonth, alleen Boeking-taken.
+     * Aanneemsom en opbrengst meerwerk: FactureerbareProjectPlanningsRegels, G/L 800000, geen prognose.
+     * Aanneemsom telt regels met leeg én gevuld LVS_Job_Change_Order_No.
+     * Meerwerk is alleen het deel met gevuld subordernr. en blijft in de aanneemsom zitten.
      */
-    public function collectProjectForecastForProjects(array $projectNumbers, int $ttl = 3600): array
+    public function collectProjectForecastForProjects(array $projectNumbers, int $ttl = 3600, string $yearMonth = ''): array
     {
         $totalsByProject = [];
         $breakdownByProject = [];
@@ -591,10 +597,12 @@ class ProjectFinanceService
         $costData = $this->fetchVoorcalculatieCostsForProjects($projectNumbers, $ttl);
         $revenueData = $this->fetchVoorcalculatieRevenueForProjects($projectNumbers, $ttl);
         $contractRevenueData = $this->fetchContractRevenueForProjects($projectNumbers, $ttl);
+        $invoicedData = $this->fetchInvoicedThroughForProjects($projectNumbers, $yearMonth, $ttl);
         $forecastWarning = self::joinForecastWarnings([
             $costData['warning'] ?? null,
             $revenueData['warning'] ?? null,
             $contractRevenueData['warning'] ?? null,
+            $invoicedData['warning'] ?? null,
         ]);
 
         foreach ($costData['totals'] as $normalizedProject => $amount) {
@@ -782,11 +790,47 @@ class ProjectFinanceService
             $breakdownByProject[$normalizedProject]['expected_revenue_lines'] = $split['lines'];
         }
 
+        $invoicedTotals = is_array($invoicedData['totals'] ?? null) ? $invoicedData['totals'] : [];
+        foreach ($invoicedTotals as $normalizedProject => $amount) {
+            if (!isset($totalsByProject[$normalizedProject])) {
+                $totalsByProject[$normalizedProject] = [
+                    'expected_revenue' => 0.0,
+                    'expected_costs' => 0.0,
+                    'extra_work' => 0.0,
+                    'aanneemsom' => 0.0,
+                ];
+                $breakdownByProject[$normalizedProject] = [
+                    'expected_revenue_lines' => [],
+                    'expected_costs_lines' => [],
+                    'extra_work_lines' => [],
+                    'aanneemsom_lines' => [],
+                ];
+            }
+
+            $totalsByProject[$normalizedProject]['invoiced_through'] = finance_to_float($amount);
+        }
+
+        $invoicedLinesByProject = is_array($invoicedData['breakdown'] ?? null) ? $invoicedData['breakdown'] : [];
+        foreach ($invoicedLinesByProject as $normalizedProject => $lines) {
+            if (!isset($breakdownByProject[$normalizedProject])) {
+                $breakdownByProject[$normalizedProject] = [
+                    'expected_revenue_lines' => [],
+                    'expected_costs_lines' => [],
+                    'extra_work_lines' => [],
+                    'aanneemsom_lines' => [],
+                ];
+            }
+
+            $breakdownByProject[$normalizedProject]['invoiced_through_lines'] = is_array($lines) ? $lines : [];
+        }
+
         return [
             'forecast_totals_by_job' => $totalsByProject,
             'forecast_breakdown_by_job' => $breakdownByProject,
             'warning' => $forecastWarning,
-            'task_type_error' => !empty($costData['task_type_error']) || !empty($revenueData['task_type_error']),
+            'task_type_error' => !empty($costData['task_type_error'])
+                || !empty($revenueData['task_type_error'])
+                || !empty($invoicedData['task_type_error']),
         ];
     }
 
@@ -947,9 +991,12 @@ class ProjectFinanceService
      * @param list<string> $projectNumbers
      * @return array<string,true> sleutel "project\ntaak", beide genormaliseerd
      */
-    private function fetchBookingTaskKeys(array $projectNumbers, int $ttl): array
+    private function fetchBookingTaskKeys(array $projectNumbers, int $ttl, bool $requireExplicitBookingType = false): array
     {
         $cacheKey = $this->bookingTaskKeyCacheKey($projectNumbers);
+        if ($cacheKey !== '' && $requireExplicitBookingType) {
+            $cacheKey .= "\0explicit";
+        }
         if ($cacheKey !== '' && isset($this->bookingTaskKeyCache[$cacheKey])) {
             return $this->bookingTaskKeyCache[$cacheKey];
         }
@@ -978,7 +1025,10 @@ class ProjectFinanceService
                 '$select' => 'Job_No,Job_Task_No,Job_Task_Type',
                 '$filter' => $filter,
             ]);
-            $keys += $this->bookingKeysFromJobTaskRows(odata_get_all($url, $this->auth, $ttl));
+            $keys += $this->bookingKeysFromJobTaskRows(
+                odata_get_all($url, $this->auth, $ttl),
+                $requireExplicitBookingType
+            );
         }
 
         if ($cacheKey !== '') {
@@ -1020,11 +1070,12 @@ class ProjectFinanceService
      * @param array<int,mixed> $rows
      * @return array<string,true>
      */
-    private function bookingKeysFromJobTaskRows(array $rows): array
+    private function bookingKeysFromJobTaskRows(array $rows, bool $requireExplicitBookingType = false): array
     {
         $keys = [];
         $sawRow = false;
         $readable = false;
+        $missingType = false;
         foreach ($rows as $row) {
             if (!is_array($row)) {
                 continue;
@@ -1038,11 +1089,24 @@ class ProjectFinanceService
             }
 
             $readable = true;
-            if (array_key_exists('Job_Task_Type', $row) && !finance_task_type_is_booking((string) $row['Job_Task_Type'])) {
+            $hasType = array_key_exists('Job_Task_Type', $row);
+            if ($requireExplicitBookingType) {
+                if (!$hasType) {
+                    $missingType = true;
+                    continue;
+                }
+                if (!finance_task_type_is_booking((string) $row['Job_Task_Type'])) {
+                    continue;
+                }
+            } elseif ($hasType && !finance_task_type_is_booking((string) $row['Job_Task_Type'])) {
                 continue;
             }
 
             $keys[$projectNo . "\n" . $taskNo] = true;
+        }
+
+        if ($requireExplicitBookingType && $missingType && $keys === []) {
+            throw new RuntimeException('JobTaskLines gaf geen Job_Task_Type.');
         }
 
         if ($sawRow && !$readable) {
@@ -1098,8 +1162,8 @@ class ProjectFinanceService
      * planningsregels.
      *
      * LVS_Contract_Total_Price_2 van taak 000 wordt daarnaast als contracttotaal
-     * bewaard. De kolom Opbrengst/aanneemsom en Opbrengst t/m gebruiken dat niet:
-     * die sommen planningsregels met No 800000. Nulbedragen worden overgeslagen.
+     * bewaard. De aanneemsom somt planningsregels met No 800000. Opbrengst t/m
+     * leest Contract_Invoiced_Price. Nulbedragen worden overgeslagen.
      *
      * Een schemafout op het prijsveld leegt Opbrengst VC met één melding.
      * Een timeout of andere queryfout op JobTaskLines zet task_type_error, zodat
@@ -1239,7 +1303,130 @@ class ProjectFinanceService
     }
 
     /**
-     * Opbrengst/aanneemsom en opbrengst meerwerk uit FactureerbareProjectPlanningsRegels.
+     * Opbrengst t/m: Contract_Invoiced_Price op ProjectTaken, t/m de laatste dag van de maand.
+     *
+     * Filter: Posting_Date_Filter eq '..YYYY-MM-DD' (string tussen quotes, '..' vóór de datum).
+     * Een le-filter wijst BC af. Alleen taken waarvan JobTaskLines het type Boeking gaf
+     * tellen mee; kop- en totaaltaken herhalen hetzelfde bedrag.
+     * Een timeout of HTTP-fout op JobTaskLines zet task_type_error, zodat de maand niet
+     * met een dubbeltelling of een stille 0 wordt gepubliceerd.
+     * Ontbreekt Contract_Invoiced_Price, dan blijft de kolom leeg en gaan de andere kolommen door.
+     *
+     * @return array{totals:array<string,float>,breakdown:array<string,array<int,array<string,mixed>>>,warning:?string,task_type_error:bool}
+     */
+    private function fetchInvoicedThroughForProjects(array $projectNumbers, string $yearMonth, int $ttl): array
+    {
+        $dateFilter = finance_posting_date_through_filter($yearMonth);
+        if ($dateFilter === '') {
+            return [
+                'totals' => [],
+                'breakdown' => [],
+                'warning' => null,
+                'task_type_error' => false,
+            ];
+        }
+
+        $loaded = $this->fetchRowsForJobChunks(
+            $projectNumbers,
+            $ttl,
+            8,
+            function (string $projectFilter) use ($dateFilter): string {
+                return $this->companyEntityUrlWithQuery('ProjectTaken', [
+                    '$select' => 'Job_No,Job_Task_No,Description,' . FINANCE_INVOICED_PRICE_FIELD,
+                    '$filter' => $projectFilter . ' and ' . $dateFilter,
+                ]);
+            },
+            'Opbrengst t/m ophalen mislukt (ProjectTaken)'
+        );
+
+        if (!empty($loaded['fatal'])) {
+            $missing = finance_odata_missing_property((string) ($loaded['warning'] ?? ''));
+            $warning = $loaded['warning'];
+            if ($missing === FINANCE_INVOICED_PRICE_FIELD) {
+                $warning = 'Veld ' . FINANCE_INVOICED_PRICE_FIELD . ' bestaat niet op ProjectTaken in ' . $this->environment
+                    . '; kolom Opbrengst t/m blijft leeg.';
+            }
+
+            return [
+                'totals' => [],
+                'breakdown' => [],
+                'warning' => $warning,
+                'task_type_error' => false,
+            ];
+        }
+
+        $rowsByProject = [];
+        $projectsForTypes = [];
+        $seenProjects = [];
+        foreach ($loaded['rows'] as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $projectNo = trim((string) ($row['Job_No'] ?? ''));
+            if ($projectNo === '') {
+                continue;
+            }
+
+            $normalizedProject = self::normalizeMatchValue($projectNo);
+            $rowsByProject[$normalizedProject][] = $row;
+            if (!isset($seenProjects[$normalizedProject])) {
+                $seenProjects[$normalizedProject] = true;
+                $projectsForTypes[] = $projectNo;
+            }
+        }
+
+        if ($rowsByProject === []) {
+            return [
+                'totals' => [],
+                'breakdown' => [],
+                'warning' => $loaded['warning'] ?? null,
+                'task_type_error' => false,
+            ];
+        }
+
+        try {
+            $bookingKeys = $this->fetchBookingTaskKeys($projectsForTypes, $ttl, true);
+        } catch (Throwable $taskTypeLoadError) {
+            $summary = self::summarizeOdataThrowable($taskTypeLoadError);
+
+            return [
+                'totals' => [],
+                'breakdown' => [],
+                'warning' => self::joinForecastWarnings([
+                    'JobTaskLines ophalen mislukt: ' . ($summary !== ''
+                        ? $summary
+                        : 'geen antwoord van Business Central'),
+                    $loaded['warning'] ?? null,
+                ]),
+                'task_type_error' => true,
+            ];
+        }
+
+        $totals = [];
+        $breakdown = [];
+        foreach ($rowsByProject as $normalizedProject => $projectRows) {
+            $kept = $this->keepBookingBaselineRows($projectRows, $bookingKeys, $normalizedProject);
+            $resolved = finance_invoiced_through_from_task_rows($kept);
+            if ($resolved['amount'] === 0.0 && $resolved['lines'] === []) {
+                continue;
+            }
+
+            $totals[$normalizedProject] = $resolved['amount'];
+            $breakdown[$normalizedProject] = $resolved['lines'];
+        }
+
+        return [
+            'totals' => $totals,
+            'breakdown' => $breakdown,
+            'warning' => $loaded['warning'] ?? null,
+            'task_type_error' => false,
+        ];
+    }
+
+    /**
+     * Aanneemsom en opbrengst meerwerk uit FactureerbareProjectPlanningsRegels.
+     * De kolom Opbrengst t/m leest deze regels niet.
      *
      * Beide gebruiken Type G/L (GB-rekening / Grootboekrekening / GLAccount / G/L Account), No 800000,
      * geen prognose/forecast, en Line_Amount_LCY. Factureerbaar is geen extra eis.

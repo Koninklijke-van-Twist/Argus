@@ -870,7 +870,7 @@
             case 'costs_to_date':
                 return { type: 'bc-field', name: 'WIP_Entry_Amount', source: 'Grootboekposten_OHW', filters: baseFilter + ',G_L_Account_No=899900,as_of=today' };
             case 'total_revenue':
-                return { type: 'bc-field', name: 'Line_Amount_LCY', source: 'FactureerbareProjectPlanningsRegels', filters: baseFilter + ',Type=GB-rekening|Grootboekrekening|GLAccount,No=800000,Line_Type!=Prognose' };
+                return { type: 'bc-field', name: 'Contract_Invoiced_Price', source: 'ProjectTaken', filters: baseFilter + ",Posting_Date_Filter eq '..einde-maand',Job_Task_Type=Boeking (JobTaskLines)" };
             case 'customer':
                 return { type: 'bc-field', name: 'Bill_to_Customer_No,Bill_to_Name', source: 'Projecten', filters: baseFilter.replace('Job_No=', 'No=') };
             case 'description':
