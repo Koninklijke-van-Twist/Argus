@@ -1368,9 +1368,61 @@ function argus_month_rebuild_claim_response(bool $ok, string $refreshId, string 
 }
 
 /**
+ * Een lock is vers alleen bij een unix-tijd in seconden die nog binnen de TTL valt.
+ * Een tijdstip in de toekomst of in milliseconden gaf een negatieve leeftijd en verliep nooit.
+ */
+function argus_month_rebuild_lock_is_fresh(int $updatedAt, int $now, int $ttlSeconds): bool
+{
+    if ($updatedAt <= 0 || $ttlSeconds < 1 || $updatedAt >= 100000000000) {
+        return false;
+    }
+
+    $age = $now - $updatedAt;
+
+    return $age >= 0 && $age < $ttlSeconds;
+}
+
+/**
+ * Verwijdert WIP van vóór de refresh-id. De lopende `{id}.v3.json`, locks en snapshots blijven.
+ */
+function argus_delete_legacy_month_wip(string $dir, string $company, string $yearMonth): void
+{
+    $slug = argus_month_company_slug($company);
+    $safeYearMonth = preg_replace('/[^0-9-]/', '', $yearMonth);
+    if ($slug === '' || !is_string($safeYearMonth) || preg_match('/^\d{4}-\d{2}$/', $safeYearMonth) !== 1 || !is_dir($dir)) {
+        return;
+    }
+
+    $prefix = $slug . '_wip_' . $safeYearMonth;
+    $suffix = argus_month_cache_suffix();
+    $entries = @scandir($dir);
+    if (!is_array($entries)) {
+        return;
+    }
+
+    foreach ($entries as $entry) {
+        if (!is_string($entry) || !str_starts_with($entry, $prefix) || !str_ends_with($entry, $suffix)) {
+            continue;
+        }
+
+        $middle = substr($entry, strlen($prefix), -strlen($suffix));
+        if (preg_match('/^_[a-f0-9]{16}$/', $middle) === 1) {
+            continue;
+        }
+
+        $path = $dir . DIRECTORY_SEPARATOR . $entry;
+        if (is_file($path)) {
+            @unlink($path);
+        }
+    }
+}
+
+/**
  * Claimt de enige herbouw voor dit bedrijf en deze maand.
- * Een verse lock van een andere tab blijft staan: die aanroep wordt toeschouwer.
- * Dezelfde tab of een verlopen lock hervat de bestaande WIP. Er wordt niets gewist.
+ * Alleen een verse lock waarvan een stap echt bezig is (hartslag) blijft toeschouwer.
+ * Een claim zonder stap zet de lock nog niet op bezet, zodat een herlaadbeurt meteen verdergaat.
+ * Een lock zonder generatie, of met een tijdstip dat niet verloopt, wordt overgenomen.
+ * Legacy-WIP zonder refresh-id wordt opgeruimd. Snapshots en de geldige WIP blijven staan.
  * Zonder WIP en met een actuele v3 stopt een automatische herbouw (stopWhenPublished).
  *
  * @return array{ok:bool,refresh_id:string,role:string,resumed:bool,owner:string,published:bool,error?:string}
@@ -1400,6 +1452,7 @@ function argus_claim_running_month_rebuild(string $dir, string $company, string 
         $now = $now ?? time();
         $ttlSeconds = max(1, $ttlSeconds);
         $requestedOwner = argus_month_rebuild_owner($owner);
+        argus_delete_legacy_month_wip($dir, $company, $yearMonth);
         rewind($handle);
         $raw = stream_get_contents($handle);
         $state = is_string($raw) && $raw !== '' ? json_decode($raw, true) : null;
@@ -1421,31 +1474,36 @@ function argus_claim_running_month_rebuild(string $dir, string $company, string 
                 return argus_month_rebuild_claim_response(false, '', '', false, '', false, 'WIP kon niet worden aangemaakt.');
             }
 
-            argus_month_rebuild_write_state($handle, $refreshId, $workerOwner, $now, true, 1);
+            argus_month_rebuild_write_state($handle, $refreshId, $workerOwner, $now, false, 1);
 
             return argus_month_rebuild_claim_response(true, $refreshId, 'worker', false, $workerOwner, false, '', 1);
         }
 
         $storedId = is_array($state) ? argus_month_refresh_id((string) ($state['refresh_id'] ?? '')) : '';
         $storedOwner = is_array($state) ? argus_month_rebuild_owner((string) ($state['owner'] ?? '')) : '';
-        $age = $now - (int) (is_array($state) ? ($state['updated_at'] ?? 0) : 0);
-        $lockMatchesWip = $storedId === $existingId && $storedOwner !== '';
-        $sameOwner = $lockMatchesWip && $requestedOwner !== '' && hash_equals($storedOwner, $requestedOwner);
-        $fresh = $lockMatchesWip && $age < $ttlSeconds;
-        $busy = $lockMatchesWip && !empty($state['busy']);
-        $storedGeneration = is_array($state) ? (int) ($state['generation'] ?? 0) : 0;
-        if ($storedGeneration < 1) {
-            $storedGeneration = 1;
+        $updatedAt = 0;
+        if (is_array($state) && isset($state['updated_at']) && is_numeric($state['updated_at'])) {
+            $updatedAt = (int) $state['updated_at'];
         }
-        // Een verse stap, ook van hetzelfde tabblad, mag niet opnieuw starten.
-        // Die schrijft de hele WIP terug en zou nieuwere details of voorcalculatie wissen.
+        $generationPresent = is_array($state)
+            && isset($state['generation'])
+            && is_numeric($state['generation'])
+            && (int) $state['generation'] >= 1;
+        $lockMatchesWip = $storedId === $existingId && $storedOwner !== '';
+        $sameOwner = $lockMatchesWip && $generationPresent && $requestedOwner !== '' && hash_equals($storedOwner, $requestedOwner);
+        $fresh = $lockMatchesWip && $generationPresent && argus_month_rebuild_lock_is_fresh($updatedAt, $now, $ttlSeconds);
+        $busy = $fresh && !empty($state['busy']);
+        $storedGeneration = $generationPresent ? (int) $state['generation'] : 1;
+        // Alleen een stap die al een hartslag heeft gestuurd blokkeert een nieuwe claim.
+        // Een ander tabblad wacht tot die stap klaar is of de lock verloopt.
+        // Zonder hartslag, zonder generatie, of met een tijdstip dat niet verloopt, wordt de WIP overgenomen.
         if ($fresh && ($busy || !$sameOwner)) {
             return argus_month_rebuild_claim_response(true, $existingId, 'watcher', true, $storedOwner, false, '', $storedGeneration);
         }
 
         $workerOwner = $requestedOwner !== '' ? $requestedOwner : ($storedOwner !== '' ? $storedOwner : bin2hex(random_bytes(8)));
         $generation = $storedGeneration + 1;
-        argus_month_rebuild_write_state($handle, $existingId, $workerOwner, $now, true, $generation);
+        argus_month_rebuild_write_state($handle, $existingId, $workerOwner, $now, false, $generation);
 
         return argus_month_rebuild_claim_response(true, $existingId, 'worker', true, $workerOwner, false, '', $generation);
     } finally {
@@ -1495,6 +1553,28 @@ function argus_month_rebuild_heartbeat(string $dir, string $company, string $yea
         flock($handle, LOCK_UN);
         fclose($handle);
     }
+}
+
+/**
+ * Houdt de lock vers tijdens een lopende server-herbouw.
+ * Elke uitgaande OData-aanroep roept dit aan, zodat één lange stap de lock
+ * niet laat verlopen terwijl een tweede hourly dezelfde maand start.
+ */
+function argus_month_rebuild_note_fetch(?int $now = null): bool
+{
+    $active = $GLOBALS['argus_active_month_rebuild'] ?? null;
+    if (!is_array($active)) {
+        return false;
+    }
+
+    return argus_month_rebuild_heartbeat(
+        (string) ($active['dir'] ?? ''),
+        (string) ($active['company'] ?? ''),
+        (string) ($active['year_month'] ?? ''),
+        (string) ($active['refresh_id'] ?? ''),
+        (int) ($active['generation'] ?? 0),
+        $now
+    );
 }
 
 /**

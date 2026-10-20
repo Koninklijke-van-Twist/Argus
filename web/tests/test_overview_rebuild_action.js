@@ -34,6 +34,20 @@ assertSame('run', action({ ok: true, role: 'worker', published: false, refresh_i
 assertSame('reload', action({ ok: true, role: 'watcher', published: true, refresh_id: '', generation: 0 }), 'een afgeronde herbouw herlaadt het overzicht');
 assertSame('error', action({ ok: true, role: 'worker', published: false, refresh_id: '', generation: 2 }), 'zonder refresh-id start er geen tweede opbouw');
 
+const statusMatch = source.match(/function argusOverviewRebuildStatusText \(action, monthLabel, errorText\)\r?\n\{[\s\S]*?\r?\n\}\r?\n/);
+if (!statusMatch) {
+    console.error('FAIL: argusOverviewRebuildStatusText staat niet in maanden.js');
+    process.exit(1);
+}
+const statusContext = {};
+vm.runInNewContext(statusMatch[0] + '\nthis.statusText = argusOverviewRebuildStatusText;', statusContext);
+const statusText = statusContext.statusText;
+const waiting = statusText('poll', 'september 2026', '');
+assertSame(true, waiting.indexOf('wacht') !== -1, 'een bezette herbouw toont op de kaart dat er gewacht wordt');
+assertSame(true, waiting.indexOf('september 2026') !== -1, 'de wachttekst noemt de maand');
+assertSame(true, statusText('run', 'september 2026', '').indexOf('opgebouwd') !== -1, 'een eigen stap toont dat de opbouw loopt');
+assertSame(true, statusText('error', 'september 2026', 'lock').indexOf('lock') !== -1, 'een fout blijft op de kaart zichtbaar');
+
 if (failures > 0) {
     console.error(failures + ' assertion(s) failed');
     process.exit(1);

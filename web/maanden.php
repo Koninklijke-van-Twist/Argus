@@ -7,7 +7,9 @@ argus_configure_error_display();
  * Includes/requires
  */
 require __DIR__ . '/auth.php';
-require_once __DIR__ . '/logincheck.php';
+if (!defined('ARGUS_MAANDEN_LIBRARY')) {
+    require_once __DIR__ . '/logincheck.php';
+}
 require_once __DIR__ . '/odata.php';
 require_once __DIR__ . '/finance_calculations.php';
 require_once __DIR__ . '/project_finance.php';
@@ -595,47 +597,67 @@ function maanden_rebuild_generation(): int
     return max(0, (int) ($_POST['wip_generation'] ?? 0));
 }
 
-function maanden_rebuild_heartbeat(string $company, string $yearMonth, string $refreshId): void
+function maanden_rebuild_heartbeat(string $company, string $yearMonth, string $refreshId, ?int $generation = null): void
 {
     if ($refreshId === '') {
         return;
     }
 
-    argus_month_rebuild_heartbeat(maanden_cache_dir(), $company, $yearMonth, $refreshId, maanden_rebuild_generation());
+    argus_month_rebuild_heartbeat(
+        maanden_cache_dir(),
+        $company,
+        $yearMonth,
+        $refreshId,
+        $generation ?? maanden_rebuild_generation()
+    );
 }
 
 /**
  * De lopende stap heeft de WIP weggeschreven. Een herlaadbeurt mag daarna verder.
  * Een oudere generatie laat de lock van de nieuwe run met rust.
  */
-function maanden_rebuild_release(string $company, string $yearMonth, string $refreshId): void
+function maanden_rebuild_release(string $company, string $yearMonth, string $refreshId, ?int $generation = null): void
 {
     if ($refreshId === '') {
         return;
     }
 
-    argus_month_rebuild_release(maanden_cache_dir(), $company, $yearMonth, $refreshId, maanden_rebuild_generation());
+    argus_month_rebuild_release(
+        maanden_cache_dir(),
+        $company,
+        $yearMonth,
+        $refreshId,
+        $generation ?? maanden_rebuild_generation()
+    );
 }
 
-function maanden_rebuild_save_wip(string $company, string $yearMonth, array $data, string $refreshId): bool
+function maanden_rebuild_save_wip(string $company, string $yearMonth, array $data, string $refreshId, ?int $generation = null): bool
 {
     return argus_save_month_wip_if_current(
         maanden_cache_dir(),
         $company,
         $yearMonth,
         $refreshId,
-        maanden_rebuild_generation(),
+        $generation ?? maanden_rebuild_generation(),
         $data
     );
 }
 
-function maanden_rebuild_stale_response(): void
+/**
+ * @return array{ok:false,stale:true,error:string}
+ */
+function maanden_rebuild_stale_result(): array
 {
-    echo json_encode([
+    return [
         'ok' => false,
         'stale' => true,
         'error' => 'Deze herbouw is vervangen door een nieuwere poging.',
-    ], JSON_UNESCAPED_UNICODE);
+    ];
+}
+
+function maanden_rebuild_stale_response(): void
+{
+    echo json_encode(maanden_rebuild_stale_result(), JSON_UNESCAPED_UNICODE);
 }
 
 /**
@@ -1338,6 +1360,10 @@ function save_user_settings_m(string $email, array $patch): bool
     return file_put_contents($path, $json, LOCK_EX) !== false;
 }
 
+require_once __DIR__ . '/month_rebuild_schedule.php';
+require_once __DIR__ . '/month_rebuild_steps.php';
+
+if (!defined('ARGUS_MAANDEN_LIBRARY')) {
 /**
  * Page load
  */
@@ -1460,105 +1486,20 @@ if (($_GET['action'] ?? '') === 'fetch_column_batch') {
     if (!in_array($company, $companies, true)) {
         $company = $companies[0];
     }
-    $auth = auth_get_auth_for_company($company, 300);
 
-    $refreshId = '';
-    try {
-        if (!$isTargetScoped) {
-            throw new RuntimeException('Kolom ' . $columnKey . ' wordt alleen nog per snapshot opgehaald.');
-        }
-
-        $refreshId = batch_wip_refresh_id_from_request();
-        maanden_rebuild_heartbeat($company, $targetYm, $refreshId);
-        if (!argus_month_rebuild_generation_is_current(maanden_cache_dir(), $company, $targetYm, $refreshId, maanden_rebuild_generation())) {
-            maanden_rebuild_stale_response();
-            exit;
-        }
-        $wip = batch_wip_load($company, $targetYm, $refreshId);
-        $ttl = odata_ttl_for_month($targetYm);
-        $columnDataTarget = is_array($wip['column_data_target'] ?? null) ? $wip['column_data_target'] : [];
-        $chunkIndex = max(0, (int) ($_POST['chunk_index'] ?? 0));
-        $response = [
-            'ok' => true,
-            'batch_month' => $targetYm,
-            'column_key' => $columnKey,
-            'target_scoped' => true,
-            'chunk_index' => $chunkIndex,
-            'total_chunks' => 1,
-            'chunks_complete' => true,
-            'warning' => null,
-            'project_count' => count(wip_project_numbers($wip)),
-        ];
-
-        if ($columnKey === 'grootboekposten_ohw') {
-            $existingOhw = $columnDataTarget['grootboekposten_ohw'] ?? null;
-            if (is_array($existingOhw) && array_key_exists('by_project', $existingOhw)) {
-                echo json_encode($response, JSON_UNESCAPED_UNICODE);
-                exit;
-            }
-
-            $columnResult = bc_fetch_run_column($columnKey, $company, $targetYm, [], $auth, $ttl);
-            $columnDataTarget[$columnKey] = $columnResult;
-            $wip['column_data_target'] = $columnDataTarget;
-            $openProjects = bc_fetch_open_projects($company, $auth, $ttl);
-            $wip['open_project_numbers'] = $openProjects['numbers'];
-            $wip['open_project_rows'] = $openProjects['rows_by_norm'];
-            maanden_wip_sync_project_numbers_from_ohw($wip);
-            $response['project_count'] = count(wip_project_numbers($wip));
-            $response['open_project_count'] = count($openProjects['numbers']);
-            $response['warning'] = maanden_join_warnings([
-                $columnResult['warning'] ?? null,
-                $openProjects['warning'] ?? null,
-            ]);
-        } elseif ($columnKey === 'project_details') {
-            $allProjectNumbers = wip_project_numbers($wip);
-            if ($allProjectNumbers === []) {
-                maanden_wip_sync_project_numbers_from_ohw($wip);
-                $allProjectNumbers = wip_project_numbers($wip);
-            }
-
-            maanden_seed_open_project_details($columnDataTarget, $wip);
-            if (!isset($columnDataTarget[$columnKey]) || !is_array($columnDataTarget[$columnKey])) {
-                $columnDataTarget[$columnKey] = [
-                    'column' => 'project_details',
-                    'by_project' => [],
-                ];
-            }
-            // Chunks op de volledige projectlijst, niet op wat er nog mist.
-            // Een krimpende lijst liet chunk-index 5 voorbij de nieuwe total vallen,
-            // waardoor delen 6-8 nooit werden opgehaald.
-            $plan = bc_fetch_project_detail_chunk_at($allProjectNumbers, $chunkIndex, PROJECT_DETAILS_FETCH_CHUNK_SIZE);
-            $response['total_chunks'] = $plan['total_chunks'];
-            $response['chunks_complete'] = $plan['chunks_complete'];
-            $toFetch = maanden_project_numbers_missing_details($plan['chunk_projects'], $columnDataTarget);
-            if ($toFetch !== []) {
-                $columnResult = bc_fetch_run_column($columnKey, $company, $targetYm, $toFetch, $auth, $ttl);
-                $existing = is_array($columnDataTarget[$columnKey] ?? null) ? $columnDataTarget[$columnKey] : [];
-                $columnDataTarget[$columnKey] = maanden_merge_project_details_column($existing, $columnResult);
-                $response['warning'] = $columnResult['warning'] ?? null;
-            }
-
-            $wip['column_data_target'] = $columnDataTarget;
-        } else {
-            $allProjectNumbers = wip_project_numbers($wip);
-            $columnResult = bc_fetch_run_column($columnKey, $company, $targetYm, $allProjectNumbers, $auth, $ttl);
-            $columnDataTarget[$columnKey] = $columnResult;
-            $wip['column_data_target'] = $columnDataTarget;
-            $response['warning'] = $columnResult['warning'] ?? null;
-        }
-
-        if (!maanden_rebuild_save_wip($company, $targetYm, $wip, $refreshId)) {
-            maanden_rebuild_stale_response();
-            exit;
-        }
-
-        echo json_encode($response, JSON_UNESCAPED_UNICODE);
-    } catch (Throwable $e) {
+    $result = maanden_rebuild_column_step(
+        $company,
+        $targetYm,
+        $columnKey,
+        max(0, (int) ($_POST['chunk_index'] ?? 0)),
+        batch_wip_refresh_id_from_request(),
+        maanden_rebuild_generation(),
+        odata_ttl_for_month($targetYm)
+    );
+    if (empty($result['ok']) && empty($result['stale'])) {
         http_response_code(500);
-        echo json_encode(['ok' => false, 'error' => $e->getMessage()], JSON_UNESCAPED_UNICODE);
-    } finally {
-        maanden_rebuild_release($company, $targetYm, $refreshId);
     }
+    echo json_encode($result, JSON_UNESCAPED_UNICODE);
     exit;
 }
 
@@ -1769,119 +1710,20 @@ if (($_GET['action'] ?? '') === 'fetch_sub_planning') {
         $company = $companies[0];
     }
 
-    $refreshId = '';
-    try {
-        $ttl = odata_ttl_for_month($targetYm);
-        $refreshId = batch_wip_refresh_id_from_request();
-        maanden_rebuild_heartbeat($company, $targetYm, $refreshId);
-        if (!argus_month_rebuild_generation_is_current(maanden_cache_dir(), $company, $targetYm, $refreshId, maanden_rebuild_generation())) {
-            maanden_rebuild_stale_response();
-            exit;
-        }
-        $wip = batch_wip_load($company, $targetYm, $refreshId);
-        maanden_wip_sync_project_numbers_from_ohw($wip);
-        $projectNumbers = wip_project_numbers($wip);
-        $hasChunkIndex = array_key_exists('chunk_index', $_POST);
-        $chunkIndex = $hasChunkIndex ? max(0, (int) $_POST['chunk_index']) : 0;
-        if (!$hasChunkIndex) {
-            // Oude client zonder chunk_index: nog steeds de hele lijst, in één request.
-            $plan = [
-                'total_chunks' => 1,
-                'chunk_projects' => $projectNumbers,
-                'chunks_complete' => true,
-            ];
-        } else {
-            $plan = bc_fetch_voorcalculatie_chunk_at($projectNumbers, $chunkIndex);
-        }
-
-        $planningTotalsByJob = is_array($wip['planning_totals_by_job'] ?? null)
-            ? $wip['planning_totals_by_job']
-            : [];
-        $planningBreakdownByJob = is_array($wip['planning_breakdown_by_job'] ?? null)
-            ? $wip['planning_breakdown_by_job']
-            : [];
-        $storedWarning = $wip['planning_warning'] ?? null;
-        $planningWarning = is_string($storedWarning) && trim($storedWarning) !== ''
-            ? trim($storedWarning)
-            : null;
-        $chunkWarning = null;
-        $blockingError = null;
-
-        if ($plan['chunk_projects'] === [] || bc_fetch_forecast_covers_projects($plan['chunk_projects'], $planningTotalsByJob)) {
-            echo json_encode([
-                'ok' => true,
-                'warning' => null,
-                'project_count' => count($plan['chunk_projects']),
-                'chunk_index' => $chunkIndex,
-                'total_chunks' => $plan['total_chunks'],
-                'chunks_complete' => $plan['chunks_complete'],
-            ], JSON_UNESCAPED_UNICODE);
-            exit;
-        }
-
-        if ($plan['chunk_projects'] !== []) {
-            try {
-                $environmentForCompany = auth_get_environment_for_company($company, AUTH_COMPANY_DISCOVERY_TTL_SECONDS);
-                $financeService = new ProjectFinanceService($company, $environmentForCompany);
-                $projectForecast = $financeService->collectProjectForecastForProjects($plan['chunk_projects'], $ttl, $targetYm);
-                $blockingError = finance_forecast_blocks_snapshot($projectForecast);
-                if (!is_string($blockingError) || $blockingError === '') {
-                    $chunkTotals = is_array($projectForecast['forecast_totals_by_job'] ?? null)
-                        ? $projectForecast['forecast_totals_by_job']
-                        : [];
-                    $chunkBreakdown = is_array($projectForecast['forecast_breakdown_by_job'] ?? null)
-                        ? $projectForecast['forecast_breakdown_by_job']
-                        : [];
-                    $merged = bc_fetch_merge_forecast_chunk(
-                        $planningTotalsByJob,
-                        $planningBreakdownByJob,
-                        $chunkTotals,
-                        $chunkBreakdown,
-                        $plan['chunk_projects']
-                    );
-                    $planningTotalsByJob = $merged['totals'];
-                    $planningBreakdownByJob = $merged['breakdown'];
-                    $forecastWarning = $projectForecast['warning'] ?? null;
-                    $chunkWarning = is_string($forecastWarning) && trim($forecastWarning) !== ''
-                        ? trim($forecastWarning)
-                        : null;
-                    $planningWarning = maanden_join_warnings([$planningWarning, $chunkWarning]);
-                }
-            } catch (Throwable $forecastLoadError) {
-                // Een echte fout (timeout, te lange filter) blokkeert de publicatie.
-                // De vorige snapshot blijft staan. Alleen een lege waarschuwing deed dat niet.
-                $blockingError = $forecastLoadError->getMessage();
-            }
-        }
-
-        if (is_string($blockingError) && $blockingError !== '') {
-            http_response_code(500);
-            echo json_encode(['ok' => false, 'error' => $blockingError], JSON_UNESCAPED_UNICODE);
-            exit;
-        }
-
-        $wip['planning_totals_by_job'] = $planningTotalsByJob;
-        $wip['planning_breakdown_by_job'] = $planningBreakdownByJob;
-        $wip['planning_warning'] = $planningWarning;
-        if (!maanden_rebuild_save_wip($company, $targetYm, $wip, $refreshId)) {
-            maanden_rebuild_stale_response();
-            exit;
-        }
-
-        echo json_encode([
-            'ok' => true,
-            'warning' => $chunkWarning,
-            'project_count' => count($plan['chunk_projects']),
-            'chunk_index' => $chunkIndex,
-            'total_chunks' => $plan['total_chunks'],
-            'chunks_complete' => $plan['chunks_complete'],
-        ], JSON_UNESCAPED_UNICODE);
-    } catch (Throwable $e) {
+    $hasChunkIndex = array_key_exists('chunk_index', $_POST);
+    $result = maanden_rebuild_planning_step(
+        $company,
+        $targetYm,
+        $hasChunkIndex ? max(0, (int) $_POST['chunk_index']) : 0,
+        $hasChunkIndex,
+        batch_wip_refresh_id_from_request(),
+        maanden_rebuild_generation(),
+        odata_ttl_for_month($targetYm)
+    );
+    if (empty($result['ok']) && empty($result['stale'])) {
         http_response_code(500);
-        echo json_encode(['ok' => false, 'error' => $e->getMessage()], JSON_UNESCAPED_UNICODE);
-    } finally {
-        maanden_rebuild_release($company, $targetYm, $refreshId);
     }
+    echo json_encode($result, JSON_UNESCAPED_UNICODE);
     exit;
 }
 
@@ -1903,76 +1745,21 @@ if (($_GET['action'] ?? '') === 'build_month_snapshot') {
         $company = $companies[0];
     }
 
-    $refreshId = '';
-    try {
-        $refreshId = batch_wip_refresh_id_from_request();
-        maanden_rebuild_heartbeat($company, $targetYm, $refreshId);
-        if (!argus_month_rebuild_generation_is_current(maanden_cache_dir(), $company, $targetYm, $refreshId, maanden_rebuild_generation())) {
-            maanden_rebuild_stale_response();
-            exit;
-        }
-        $wip = batch_wip_load($company, $targetYm, $refreshId);
-
-        $columnDataTarget = is_array($wip['column_data_target'] ?? null) ? $wip['column_data_target'] : [];
-        $hasOhwColumn = is_array($columnDataTarget['grootboekposten_ohw'] ?? null);
-        $hasLegacyFinance = is_array($wip['project_finance'] ?? null) && $wip['project_finance'] !== [];
-        if (!$hasOhwColumn && !$hasLegacyFinance) {
-            throw new RuntimeException('Geen opgebouwde gegevens om te publiceren. De vorige snapshot blijft beschikbaar.');
-        }
-
-        $planningTotalsForPublish = is_array($wip['planning_totals_by_job'] ?? null) ? $wip['planning_totals_by_job'] : [];
-        $planningProjects = maanden_wip_sync_project_numbers_from_ohw($wip);
-        if (!bc_fetch_forecast_covers_projects($planningProjects, $planningTotalsForPublish)) {
-            throw new RuntimeException('Voorcalculatie is nog niet compleet. De vorige snapshot blijft beschikbaar.');
-        }
-
-        if (is_array($columnDataTarget['grootboekposten_ohw'] ?? null)) {
-            $data = build_snapshot_from_column_wip($company, $targetYm, $wip);
-            if (!argus_month_rebuild_generation_is_current(maanden_cache_dir(), $company, $targetYm, $refreshId, maanden_rebuild_generation())) {
-                maanden_rebuild_stale_response();
-                exit;
-            }
-            if (!maand_save($company, $targetYm, $data)) {
-                throw new RuntimeException('De nieuwe snapshot kon niet worden opgeslagen. De vorige snapshot blijft beschikbaar.');
-            }
-            batch_wip_delete($company, $targetYm, $refreshId);
-
-            echo json_encode(['ok' => true, 'data' => $data], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-            exit;
-        }
-
-        $projectFinance = is_array($wip['project_finance'] ?? null) ? $wip['project_finance'] : [];
-        $projectDetails = is_array($wip['project_details'] ?? null) ? $wip['project_details'] : [];
-        $planningTotalsByJob = is_array($wip['planning_totals_by_job'] ?? null) ? $wip['planning_totals_by_job'] : [];
-        $planningBreakdownByJob = is_array($wip['planning_breakdown_by_job'] ?? null) ? $wip['planning_breakdown_by_job'] : [];
-
-        $projectTotalsByJob = is_array($projectFinance['project_totals_by_job'] ?? null) ? $projectFinance['project_totals_by_job'] : [];
-
-        $data = build_month_rows(
-            $company,
-            $targetYm,
-            $projectTotalsByJob,
-            $projectDetails,
-            $planningTotalsByJob,
-            $planningBreakdownByJob
-        );
-
-        if (!argus_month_rebuild_generation_is_current(maanden_cache_dir(), $company, $targetYm, $refreshId, maanden_rebuild_generation())) {
-            maanden_rebuild_stale_response();
-            exit;
-        }
-        if (!maand_save($company, $targetYm, $data)) {
-            throw new RuntimeException('De nieuwe snapshot kon niet worden opgeslagen. De vorige snapshot blijft beschikbaar.');
-        }
-        batch_wip_delete($company, $targetYm, $refreshId);
-
-        echo json_encode(['ok' => true, 'data' => $data], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    } catch (Throwable $e) {
-        http_response_code(500);
-        echo json_encode(['ok' => false, 'error' => $e->getMessage()], JSON_UNESCAPED_UNICODE);
-    } finally {
-        maanden_rebuild_release($company, $targetYm, $refreshId);
+    $result = maanden_rebuild_build_step(
+        $company,
+        $targetYm,
+        batch_wip_refresh_id_from_request(),
+        maanden_rebuild_generation(),
+        odata_ttl_for_month($targetYm)
+    );
+    $flags = JSON_UNESCAPED_UNICODE;
+    if (!empty($result['ok'])) {
+        $flags |= JSON_UNESCAPED_SLASHES;
     }
+    if (empty($result['ok']) && empty($result['stale'])) {
+        http_response_code(500);
+    }
+    echo json_encode($result, $flags);
     exit;
 }
 
@@ -2855,3 +2642,5 @@ function format_month_nl(string $yearMonth): string
 </body>
 
 </html>
+<?php
+}

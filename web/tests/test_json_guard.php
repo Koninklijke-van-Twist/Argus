@@ -48,6 +48,22 @@ check(($_SESSION['user']['email'] ?? '') === 'test@kvt.nl', 'sessie blijft leesb
 argus_release_request_session();
 check(session_status() !== PHP_SESSION_ACTIVE, 'tweede vrijgave is een no-op');
 
+$previousScript = $_SERVER['SCRIPT_FILENAME'] ?? null;
+$previousAction = $_GET['action'] ?? null;
+unset($_GET['action']);
+$_SERVER['SCRIPT_FILENAME'] = '/var/www/nightly.php';
+check(argus_is_json_request(), 'nightly.php is een JSON-runner');
+$_SERVER['SCRIPT_FILENAME'] = '/var/www/hourly.php';
+check(argus_is_json_request(), 'hourly.php is een JSON-runner');
+$_SERVER['SCRIPT_FILENAME'] = '/var/www/maanden.php';
+check(!argus_is_json_request(), 'een pagina zonder action blijft HTML');
+if (is_string($previousScript)) {
+    $_SERVER['SCRIPT_FILENAME'] = $previousScript;
+}
+if (is_string($previousAction)) {
+    $_GET['action'] = $previousAction;
+}
+
 if ($failures > 0) {
     fwrite(STDERR, "{$failures} test(s) gefaald\n");
     exit(1);

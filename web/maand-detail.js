@@ -1,3 +1,68 @@
+function argusDetailRebuildPhase (claim)
+{
+    if (!claim || claim.ok !== true)
+    {
+        return 'error';
+    }
+    if (claim.published === true)
+    {
+        return 'reload';
+    }
+    if (claim.role === 'watcher')
+    {
+        return 'wait';
+    }
+    if (!claim.refresh_id || !claim.generation)
+    {
+        return 'error';
+    }
+
+    return 'run';
+}
+
+function argusDetailRebuildNotice (phase, request)
+{
+    if (phase === 'wait')
+    {
+        return 'Deze maand wordt opnieuw opgebouwd. Er loopt al een herbouw; deze pagina wacht en probeert het zo opnieuw. Lukt de herbouw niet, dan blijft de vorige snapshot zichtbaar.';
+    }
+    if (phase === 'error')
+    {
+        const base = request && request.failure_notice ? String(request.failure_notice) : '';
+        return base !== ''
+            ? base
+            : 'Deze maand kon niet opnieuw worden opgebouwd met de nieuwe Opbrengst VC-berekening. U ziet de eerder opgeslagen snapshot.';
+    }
+    if (phase === 'run')
+    {
+        return 'Deze maand wordt opnieuw opgebouwd. OHW ophalen...';
+    }
+
+    return '';
+}
+
+function argusDetailRebuildStepNotice (stepKey)
+{
+    if (stepKey === 'grootboekposten_ohw')
+    {
+        return 'OHW ophalen...';
+    }
+    if (stepKey === 'project_details')
+    {
+        return 'Projectdetails ophalen...';
+    }
+    if (stepKey === 'planning')
+    {
+        return 'Voorcalculatie ophalen...';
+    }
+    if (stepKey === 'build')
+    {
+        return 'Snapshot opslaan...';
+    }
+
+    return 'Bezig met opnieuw opbouwen...';
+}
+
 (function ()
 {
     /**
@@ -2233,6 +2298,17 @@
             });
     }
 
+    function showRebuildProgress (text)
+    {
+        const notice = document.getElementById('snapshotNotice');
+        if (!notice)
+        {
+            return;
+        }
+        notice.className = 'notice-box';
+        notice.textContent = text;
+    }
+
     function showRebuildFailure (request, reason)
     {
         const notice = document.getElementById('snapshotNotice');
@@ -2254,6 +2330,7 @@
 
         function step (chunkIndex)
         {
+            showRebuildProgress('Deze maand wordt opnieuw opgebouwd. ' + argusDetailRebuildStepNotice(columnKey));
             const body = {
                 target_month: period,
                 batch_month: period,
@@ -2295,6 +2372,7 @@
 
         function step (chunkIndex)
         {
+            showRebuildProgress('Deze maand wordt opnieuw opgebouwd. ' + argusDetailRebuildStepNotice('planning'));
             return postSnapshotForm(request.planning_url, {
                 target_month: period,
                 company: String(request.company || ''),
@@ -2373,6 +2451,7 @@
             return runPlanningChunks(request, refreshId, generation);
         }).then(function ()
         {
+            showRebuildProgress('Deze maand wordt opnieuw opgebouwd. ' + argusDetailRebuildStepNotice('build'));
             return postSnapshotForm(request.build_url, {
                 target_month: period,
                 company: String(request.company || ''),
@@ -2410,17 +2489,19 @@
 
         function handleClaim (started)
         {
-            if (!started || !started.ok)
+            const phase = argusDetailRebuildPhase(started);
+            if (phase === 'error')
             {
                 throw new Error((started && started.error) || 'Herbouw starten mislukt.');
             }
-            if (started.published)
+            if (phase === 'reload')
             {
                 window.location.reload();
                 return;
             }
-            if (started.role === 'watcher')
+            if (phase === 'wait')
             {
+                showRebuildProgress(argusDetailRebuildNotice('wait', request));
                 window.setTimeout(function ()
                 {
                     claim().then(handleClaim).catch(function (error)
@@ -2431,10 +2512,7 @@
                 }, 3000);
                 return;
             }
-            if (!started.refresh_id || !started.generation)
-            {
-                throw new Error('Herbouw starten mislukt.');
-            }
+            showRebuildProgress(argusDetailRebuildNotice('run', request));
             return runRebuildSteps(request, String(started.refresh_id), Number(started.generation));
         }
 
@@ -2447,24 +2525,37 @@
             });
     }
 
-    // Initial render
-    const hasRenderableProjects = Object.keys(projectMap).length > 0;
-    if (appEl && hasRenderableProjects)
-    {
-        renderDepartmentFilterBar();
-        renderTable();
-        updateSummary();
-    }
-    else if (appEl && !appEl.querySelector('.error-box'))
-    {
-        const empty = document.createElement('div');
-        empty.className = 'empty';
-        empty.textContent = monthData ? 'Geen projecten gevonden voor deze maand.' : 'Geen maanddata geladen.';
-        appEl.appendChild(empty);
-        if (summaryBar) { summaryBar.style.display = 'none'; }
-    }
-
+    // Initial render. Een fout in de tabel mag de herbouw niet overslaan:
+    // anders blijft de banner staan zonder dat er een stap wordt geclaimd.
     const rebuildRequest = payload.rebuild && typeof payload.rebuild === 'object' ? payload.rebuild : null;
+    try
+    {
+        const hasRenderableProjects = Object.keys(projectMap).length > 0;
+        if (appEl && hasRenderableProjects)
+        {
+            renderDepartmentFilterBar();
+            renderTable();
+            updateSummary();
+        }
+        else if (appEl && !appEl.querySelector('.error-box'))
+        {
+            const empty = document.createElement('div');
+            empty.className = 'empty';
+            empty.textContent = monthData ? 'Geen projecten gevonden voor deze maand.' : 'Geen maanddata geladen.';
+            appEl.appendChild(empty);
+            if (summaryBar) { summaryBar.style.display = 'none'; }
+        }
+    }
+    catch (renderError)
+    {
+        if (!(rebuildRequest && monthData))
+        {
+            showRebuildFailure(
+                { failure_notice: 'De maandweergave stopte door een fout.' },
+                renderError && renderError.message ? renderError.message : ''
+            );
+        }
+    }
     if (rebuildRequest && monthData)
     {
         rebuildLegacyMonth(rebuildRequest);
