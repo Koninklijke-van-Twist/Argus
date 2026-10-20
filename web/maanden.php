@@ -46,20 +46,9 @@ function maand_cache_path(string $company, string $yearMonth): string
 
 function maand_load(string $company, string $yearMonth): ?array
 {
-    $path = maand_cache_path($company, $yearMonth);
-    if (!is_file($path)) {
-        return null;
-    }
-    $raw = @file_get_contents($path);
-    if (!is_string($raw) || $raw === '') {
-        return null;
-    }
-    $data = json_decode($raw, true);
-    if (!is_array($data) || !argus_month_cache_is_current($data)) {
-        return null;
-    }
+    $loaded = argus_load_best_month_snapshot(maanden_cache_dir(), $company, $yearMonth);
 
-    return $data;
+    return is_array($loaded['data']) ? $loaded['data'] : null;
 }
 
 function maand_save(string $company, string $yearMonth, array $data): bool
@@ -86,36 +75,7 @@ function maand_delete(string $company, string $yearMonth): bool
 
 function list_saved_months(string $company): array
 {
-    $dir = maanden_cache_dir();
-    if (!is_dir($dir)) {
-        return [];
-    }
-    $safeCompany = preg_replace('/[^a-z0-9_-]/i', '_', strtolower(trim($company)));
-    $prefix = $safeCompany . '_';
-    $entries = @scandir($dir);
-    if (!is_array($entries)) {
-        return [];
-    }
-    $months = [];
-    foreach ($entries as $entry) {
-        if (!str_starts_with($entry, $prefix)) {
-            continue;
-        }
-        $suffix = argus_month_cache_suffix();
-        if (!str_ends_with($entry, $suffix)) {
-            continue;
-        }
-        $ym = substr($entry, strlen($prefix), -strlen($suffix));
-        if (!preg_match('/^\d{4}-\d{2}$/', $ym)) {
-            continue;
-        }
-        if (!is_array(maand_load($company, $ym))) {
-            continue;
-        }
-        $months[] = $ym;
-    }
-    rsort($months); // newest first
-    return $months;
+    return argus_list_saved_months(maanden_cache_dir(), $company);
 }
 
 function company_entity_url_with_query(string $baseUrl, string $environment, string $company, string $entitySet, array $query): string
@@ -2007,15 +1967,14 @@ $savedMonths = list_saved_months($selectedCompany);
 $monthSummaries = [];
 foreach ($savedMonths as $ym) {
     $data = maand_load($selectedCompany, $ym);
-    if (!is_array($data)) {
-        continue;
-    }
     $monthSummaries[] = [
         'year_month' => $ym,
-        'data_start_month' => (string) ($data['data_start_month'] ?? data_start_month_for_target($ym)),
-        'total_revenue' => (float) ($data['total_revenue'] ?? 0),
-        'total_costs' => (float) ($data['total_costs'] ?? 0),
-        'fetched_at' => (string) ($data['fetched_at'] ?? ''),
+        'data_start_month' => is_array($data)
+            ? (string) ($data['data_start_month'] ?? data_start_month_for_target($ym))
+            : data_start_month_for_target($ym),
+        'total_revenue' => is_array($data) ? (float) ($data['total_revenue'] ?? 0) : 0.0,
+        'total_costs' => is_array($data) ? (float) ($data['total_costs'] ?? 0) : 0.0,
+        'fetched_at' => is_array($data) ? (string) ($data['fetched_at'] ?? '') : '',
     ];
 }
 

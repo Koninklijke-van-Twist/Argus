@@ -2204,6 +2204,172 @@
         if (tableScrollWrap) { syncTableHeight(tableScrollWrap); }
     }, { passive: true });
 
+    function postSnapshotForm (url, params)
+    {
+        return fetch(url, { method: 'POST', body: new URLSearchParams(params) })
+            .then(function (res)
+            {
+                return res.text();
+            })
+            .then(function (rawText)
+            {
+                let json = null;
+                if (rawText !== '')
+                {
+                    try
+                    {
+                        json = JSON.parse(rawText);
+                    }
+                    catch (parseError)
+                    {
+                        json = null;
+                    }
+                }
+                if (!json || typeof json !== 'object')
+                {
+                    throw new Error('Server gaf geen geldige JSON terug.');
+                }
+                return json;
+            });
+    }
+
+    function showRebuildFailure (request, reason)
+    {
+        const notice = document.getElementById('snapshotNotice');
+        if (!notice)
+        {
+            return;
+        }
+        notice.className = 'error-box';
+        const base = String(request.failure_notice || '');
+        const extra = String(reason || '').trim();
+        notice.textContent = extra !== '' && base.indexOf(extra) === -1
+            ? (base + ' ' + extra)
+            : (base || extra);
+    }
+
+    function runColumnChunks (request, refreshId, columnKey)
+    {
+        const period = String(request.period || request.year_month || '');
+
+        function step (chunkIndex)
+        {
+            const body = {
+                target_month: period,
+                batch_month: period,
+                company: String(request.company || ''),
+                column_key: columnKey,
+                refresh_id: refreshId,
+            };
+            if (columnKey === 'project_details')
+            {
+                body.chunk_index = String(chunkIndex);
+            }
+
+            return postSnapshotForm(request.column_url, body).then(function (json)
+            {
+                if (!json.ok)
+                {
+                    throw new Error(json.error || 'Kolom ophalen mislukt.');
+                }
+                if (columnKey !== 'project_details')
+                {
+                    return json;
+                }
+                const total = Math.max(1, Number(json.total_chunks || 1));
+                if (json.chunks_complete || (chunkIndex + 1) >= total || chunkIndex >= 99)
+                {
+                    return json;
+                }
+                return step(chunkIndex + 1);
+            });
+        }
+
+        return step(0);
+    }
+
+    function runPlanningChunks (request, refreshId)
+    {
+        const period = String(request.period || request.year_month || '');
+
+        function step (chunkIndex)
+        {
+            return postSnapshotForm(request.planning_url, {
+                target_month: period,
+                company: String(request.company || ''),
+                refresh_id: refreshId,
+                chunk_index: String(chunkIndex),
+            }).then(function (json)
+            {
+                if (!json.ok)
+                {
+                    throw new Error(json.error || 'Voorcalculatie mislukt.');
+                }
+                const total = Math.max(1, Number(json.total_chunks || 1));
+                if (json.chunks_complete || (chunkIndex + 1) >= total || chunkIndex >= 199)
+                {
+                    return json;
+                }
+                return step(chunkIndex + 1);
+            });
+        }
+
+        return step(0);
+    }
+
+    function rebuildLegacyMonth (request)
+    {
+        const period = String(request.period || request.year_month || '');
+        const columns = Array.isArray(request.columns) && request.columns.length > 0
+            ? request.columns
+            : ['grootboekposten_ohw', 'project_details'];
+
+        postSnapshotForm(request.begin_url, {
+            year_month: period,
+            company: String(request.company || ''),
+        })
+            .then(function (started)
+            {
+                if (!started.ok || !started.refresh_id)
+                {
+                    throw new Error(started.error || 'Herbouw starten mislukt.');
+                }
+                const refreshId = String(started.refresh_id);
+                let chain = Promise.resolve();
+                columns.forEach(function (columnKey)
+                {
+                    chain = chain.then(function ()
+                    {
+                        return runColumnChunks(request, refreshId, String(columnKey));
+                    });
+                });
+                return chain.then(function ()
+                {
+                    return runPlanningChunks(request, refreshId);
+                }).then(function ()
+                {
+                    return postSnapshotForm(request.build_url, {
+                        target_month: period,
+                        company: String(request.company || ''),
+                        refresh_id: refreshId,
+                    });
+                });
+            })
+            .then(function (built)
+            {
+                if (!built || !built.ok)
+                {
+                    throw new Error((built && built.error) || 'Snapshot opslaan mislukt.');
+                }
+                window.location.reload();
+            })
+            .catch(function (error)
+            {
+                const reason = error && error.message ? error.message : '';
+                showRebuildFailure(request, reason);
+            });
+    }
+
     // Initial render
     const hasRenderableProjects = Object.keys(projectMap).length > 0;
     if (appEl && hasRenderableProjects)
@@ -2219,5 +2385,11 @@
         empty.textContent = monthData ? 'Geen projecten gevonden voor deze maand.' : 'Geen maanddata geladen.';
         appEl.appendChild(empty);
         if (summaryBar) { summaryBar.style.display = 'none'; }
+    }
+
+    const rebuildRequest = payload.rebuild && typeof payload.rebuild === 'object' ? payload.rebuild : null;
+    if (rebuildRequest && monthData)
+    {
+        rebuildLegacyMonth(rebuildRequest);
     }
 })();
