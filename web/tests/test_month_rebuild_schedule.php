@@ -81,12 +81,14 @@ file_put_contents($publishDir . '/koninklijke_van_twist_2026-09.v2.json', $v2Byt
 file_put_contents($publishDir . '/koninklijke_van_twist_2026-08.json', $legacyBytes);
 $calls = [];
 $during = null;
+$serverDuring = null;
 $report = argus_run_scheduled_month_rebuilds(
     $publishDir,
     [$company],
     'nightly',
-    static function (string $company, string $yearMonth, string $refreshId, int $generation, int $maxAge) use (&$calls, &$during, $publishDir): array {
+    static function (string $company, string $yearMonth, string $refreshId, int $generation, int $maxAge) use (&$calls, &$during, &$serverDuring, $publishDir): array {
         $calls[] = [$yearMonth, $generation, $maxAge];
+        $serverDuring = argus_claim_running_month_rebuild($publishDir, $company, $yearMonth, argus_server_month_rebuild_owner(), true, 5000);
         $during = argus_claim_running_month_rebuild($publishDir, $company, $yearMonth, 'bbbbbbbbbbbbbbbb', true, 5000);
         if ($yearMonth === '2026-09') {
             $v3 = argus_month_snapshot_basename($company, $yearMonth, 3);
@@ -108,6 +110,8 @@ assert_same(1, $calls[0][1], 'een nieuwe server-herbouw begint bij generatie 1')
 assert_same(14400, $calls[0][2], 'de stap krijgt max_age 4 uur');
 assert_same('watcher', is_array($during) ? ($during['role'] ?? '') : '', 'tijdens de serverstap blijft een browser toeschouwer');
 assert_same(1, is_array($during) ? ($during['generation'] ?? 0) : 0, 'de browser krijgt geen nieuwe generatie');
+assert_same('watcher', is_array($serverDuring) ? ($serverDuring['role'] ?? '') : '', 'een tweede server-run pikt de lock niet af vóór de stap');
+assert_same(1, is_array($serverDuring) ? ($serverDuring['generation'] ?? 0) : 0, 'een tweede server-run verhoogt de generatie niet');
 assert_same($v2Bytes, (string) file_get_contents($publishDir . '/koninklijke_van_twist_2026-09.v2.json'), 'publicatie laat het v2-bestand staan');
 assert_same($legacyBytes, (string) file_get_contents($publishDir . '/koninklijke_van_twist_2026-08.json'), 'publicatie laat het legacy-bestand staan');
 assert_true(is_file($publishDir . '/koninklijke_van_twist_2026-09.v3.json'), 'de herbouw schrijft een v3 naast de v2');

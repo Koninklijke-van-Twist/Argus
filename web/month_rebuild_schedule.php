@@ -272,6 +272,18 @@ function argus_run_scheduled_month_rebuilds(
             continue;
         }
 
+        // De claim zelf is nog niet bezet. Zonder deze hartslag pakt een tweede
+        // nightly of hourly, met dezelfde server-eigenaar, de lock over terwijl
+        // de eerste run nog in de login zit, en die run faalt daarna op de generatie.
+        if (!argus_month_rebuild_heartbeat($dir, $company, $yearMonth, $refreshId, $generation, $now)) {
+            $failed++;
+            $results[] = $base + [
+                'status' => 'error',
+                'error' => 'Herbouw-lock was niet meer van deze run.',
+            ];
+            continue;
+        }
+
         try {
             $stepResult = $steps($company, $yearMonth, $refreshId, $generation, $maxAge);
         } catch (Throwable $error) {
