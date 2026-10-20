@@ -77,4 +77,5 @@ php web/tests/test_open_projects.php
 php web/tests/test_json_guard.php
 php web/tests/test_month_snapshot_fallback.php
 php web/tests/test_month_rebuild_lock.php
+node web/tests/test_overview_rebuild_action.js
 ```

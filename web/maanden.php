@@ -2004,7 +2004,7 @@ if (($_GET['action'] ?? '') === 'refresh_month') {
 
 // Start of hervat een verversing zonder de gepubliceerde snapshot te verwijderen.
 // Per bedrijf en maand loopt hoogstens één herbouw. Een tweede tabblad volgt die.
-// resume=1 stopt zodra een actuele v3 er is en er geen WIP meer loopt.
+// resume=1 of join=1 stopt zodra een actuele v3 er is en er geen WIP meer loopt.
 if (($_GET['action'] ?? '') === 'begin_month_refresh') {
     header('Content-Type: application/json; charset=utf-8');
 
@@ -2025,7 +2025,7 @@ if (($_GET['action'] ?? '') === 'begin_month_refresh') {
         $company,
         $ym,
         (string) ($_POST['owner'] ?? ''),
-        (string) ($_POST['resume'] ?? '') === '1'
+        (string) ($_POST['resume'] ?? '') === '1' || (string) ($_POST['join'] ?? '') === '1'
     );
     if (empty($claim['ok'])) {
         http_response_code(500);

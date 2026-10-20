@@ -1468,12 +1468,9 @@ function argus_merge_month_wip(array $base, array $overlay): array
                 continue;
             }
             if (array_is_list($value) && array_is_list($current)) {
-                foreach ($value as $item) {
-                    if (!in_array($item, $current, true)) {
-                        $current[] = $item;
-                    }
-                }
-                $base[$key] = $current;
+                // OHW-rijen en voorcalculatieregels zijn de volledige stap.
+                // Samenvoegen liet oude regels staan en telde Opbrengst VC dubbel.
+                $base[$key] = $value;
                 continue;
             }
             $base[$key] = argus_merge_month_wip($current, $value);

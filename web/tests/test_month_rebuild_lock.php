@@ -156,17 +156,39 @@ assert_same(['2024-02'], argus_list_saved_months($dir, 'KVT Gas'), 'een lock van
 $mergePath = $dir . '/merge-wip.json';
 assert_true(argus_save_month_wip_merged($mergePath, [
     'column_data_target' => [
-        'grootboekposten_ohw' => ['by_project' => ['p1' => ['no' => 'p1']]],
+        'grootboekposten_ohw' => [
+            'by_project' => ['p1' => ['no' => 'p1']],
+            'rows' => [
+                ['entry' => 'a', 'amount' => 1],
+                ['entry' => 'b', 'amount' => 2],
+            ],
+        ],
         'project_details' => ['by_project' => ['p1' => ['name' => 'Een']]],
     ],
     'planning_totals_by_job' => ['p1' => 10],
+    'planning_breakdown_by_job' => [
+        'p1' => [
+            ['no' => '800000', 'amount' => 5],
+            ['no' => '800000', 'amount' => 4],
+        ],
+    ],
     'open_project_numbers' => ['p1'],
 ]), 'de eerste WIP-schrijfactie slaagt');
 assert_true(argus_save_month_wip_merged($mergePath, [
     'column_data_target' => [
-        'grootboekposten_ohw' => ['by_project' => ['p1' => ['no' => 'p1'], 'p2' => ['no' => 'p2']]],
+        'grootboekposten_ohw' => [
+            'by_project' => ['p1' => ['no' => 'p1'], 'p2' => ['no' => 'p2']],
+            'rows' => [
+                ['entry' => 'a', 'amount' => 3],
+            ],
+        ],
     ],
     'planning_totals_by_job' => [],
+    'planning_breakdown_by_job' => [
+        'p1' => [
+            ['no' => '800000', 'amount' => 5],
+        ],
+    ],
     'open_project_numbers' => ['p1', 'p2'],
 ]), 'een late OHW-schrijfactie slaagt');
 $merged = json_decode((string) file_get_contents($mergePath), true);
@@ -174,7 +196,17 @@ assert_true(is_array($merged), 'de samengevoegde WIP is JSON');
 assert_same('Een', $merged['column_data_target']['project_details']['by_project']['p1']['name'] ?? null, 'een late schrijfactie laat projectdetails staan');
 assert_same(10, $merged['planning_totals_by_job']['p1'] ?? null, 'een late schrijfactie laat voorcalculatie staan');
 assert_same('p2', $merged['column_data_target']['grootboekposten_ohw']['by_project']['p2']['no'] ?? null, 'een late schrijfactie houdt haar eigen OHW');
-assert_same(['p1', 'p2'], $merged['open_project_numbers'] ?? null, 'projectnummers worden samengevoegd');
+assert_same(['p1', 'p2'], $merged['open_project_numbers'] ?? null, 'een nieuwe projectlijst vervangt de vorige');
+assert_same(
+    [['entry' => 'a', 'amount' => 3]],
+    $merged['column_data_target']['grootboekposten_ohw']['rows'] ?? null,
+    'OHW-rijen worden vervangen en niet samengevoegd'
+);
+assert_same(
+    [['no' => '800000', 'amount' => 5]],
+    $merged['planning_breakdown_by_job']['p1'] ?? null,
+    'voorcalculatieregels worden vervangen en niet samengevoegd'
+);
 
 foreach ($original as $name => $bytes) {
     assert_same($bytes, (string) file_get_contents($dir . '/' . $name), 'herbouw laat ' . $name . ' bytegelijk');
