@@ -33,54 +33,14 @@ function maand_cache_path_d(string $company, string $yearMonth): string
 
 function maand_load_d(string $company, string $yearMonth): ?array
 {
-    $path = maand_cache_path_d($company, $yearMonth);
-    if (!is_file($path)) {
-        return null;
-    }
-    $raw = @file_get_contents($path);
-    if (!is_string($raw) || $raw === '') {
-        return null;
-    }
-    $data = json_decode($raw, true);
-    if (!is_array($data) || !argus_month_cache_is_current($data)) {
-        return null;
-    }
+    $loaded = argus_load_best_month_snapshot(maanden_cache_dir_d(), $company, $yearMonth);
 
-    return $data;
+    return is_array($loaded['data']) ? $loaded['data'] : null;
 }
 
 function list_saved_months_d(string $company): array
 {
-    $dir = maanden_cache_dir_d();
-    if (!is_dir($dir)) {
-        return [];
-    }
-    $safeCompany = preg_replace('/[^a-z0-9_-]/i', '_', strtolower(trim($company)));
-    $prefix = $safeCompany . '_';
-    $entries = @scandir($dir);
-    if (!is_array($entries)) {
-        return [];
-    }
-    $months = [];
-    foreach ($entries as $entry) {
-        if (!str_starts_with($entry, $prefix)) {
-            continue;
-        }
-        $suffix = argus_month_cache_suffix();
-        if (!str_ends_with($entry, $suffix)) {
-            continue;
-        }
-        $ym = substr($entry, strlen($prefix), -strlen($suffix));
-        if (!preg_match('/^\d{4}-\d{2}$/', $ym)) {
-            continue;
-        }
-        if (!is_array(maand_load_d($company, $ym))) {
-            continue;
-        }
-        $months[] = $ym;
-    }
-    rsort($months);
-    return $months;
+    return argus_list_saved_months(maanden_cache_dir_d(), $company);
 }
 
 function current_user_email_d(): string
@@ -243,14 +203,39 @@ if (($_GET['action'] ?? '') === 'save_user_settings') {
     exit;
 }
 
-// Load month data
+// Load month data. Zonder v3 blijft de oude snapshot zichtbaar en start de pagina
+// een herbouw met de peildatum uit dat bestand. Een lopende WIP wordt voortgezet
+// en niet gewist. Oude bestanden worden niet vervangen.
 $monthData = null;
 $errorMessage = null;
+$snapshotNotice = null;
+$rebuildRequest = null;
 
 if ($yearMonth !== '') {
-    $monthData = maand_load_d($selectedCompany, $yearMonth);
+    $openedMonth = argus_open_month_snapshot(maanden_cache_dir_d(), $selectedCompany, $yearMonth, null);
+    $monthData = is_array($openedMonth['data']) ? $openedMonth['data'] : null;
     if ($monthData === null) {
-        $errorMessage = 'Geen data gevonden voor ' . htmlspecialchars(format_month_nl_d($yearMonth)) . '. Laad de maand eerst via het overzicht.';
+        $openedNotice = trim((string) ($openedMonth['notice'] ?? ''));
+        $errorMessage = $openedNotice !== ''
+            ? $openedNotice
+            : ('Geen data gevonden voor ' . htmlspecialchars(format_month_nl_d($yearMonth)) . '. Laad de maand eerst via het overzicht.');
+    } elseif (!empty($openedMonth['needs_rebuild'])) {
+        $snapshotNotice = (string) ($openedMonth['notice'] ?? argus_month_rebuild_pending_notice());
+        require_once __DIR__ . '/bc_fetch/registry.php';
+        $rebuildRequest = [
+            'company' => $selectedCompany,
+            'year_month' => $yearMonth,
+            'period' => (string) ($openedMonth['period'] ?? $yearMonth),
+            'begin_url' => 'maanden.php?action=begin_month_refresh',
+            'column_url' => 'maanden.php?action=fetch_column_batch',
+            'planning_url' => 'maanden.php?action=fetch_sub_planning',
+            'build_url' => 'maanden.php?action=build_month_snapshot',
+            'failure_notice' => argus_month_rebuild_failure_notice(''),
+            'resume' => true,
+            'columns' => bc_fetch_target_scoped_column_keys(),
+        ];
+    } elseif (is_string($openedMonth['notice']) && $openedMonth['notice'] !== '') {
+        $snapshotNotice = $openedMonth['notice'];
     }
 }
 
@@ -401,6 +386,8 @@ $initialData = [
     'month_data' => $monthData,
     'project_column_values_by_job' => $projectColumnValuesByJob,
     'error' => $errorMessage,
+    'snapshot_notice' => $snapshotNotice,
+    'rebuild' => $rebuildRequest,
     'default_columns' => $defaultColumns,
     'column_order' => $orderedColumns,
     'hidden_columns' => $hiddenColumns,
@@ -1199,6 +1186,15 @@ $initialData = [
             margin-bottom: 14px;
         }
 
+        .notice-box {
+            background: #fff7ed;
+            border: 1px solid #fdba74;
+            border-radius: 8px;
+            padding: 10px 14px;
+            color: #9a3412;
+            margin-bottom: 14px;
+        }
+
         .empty {
             color: #475569;
             padding: 12px 0;
@@ -1301,6 +1297,10 @@ $initialData = [
     </div>
 
     <div id="summaryBar" class="summary-bar"></div>
+
+    <?php if (is_string($snapshotNotice) && $snapshotNotice !== ''): ?>
+        <div class="<?= !empty($rebuildRequest) ? 'notice-box' : 'error-box' ?>" id="snapshotNotice"><?= htmlspecialchars($snapshotNotice) ?></div>
+    <?php endif; ?>
 
     <div id="app">
         <?php if ($errorMessage): ?>

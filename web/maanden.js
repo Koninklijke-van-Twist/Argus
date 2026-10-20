@@ -1,3 +1,25 @@
+function argusOverviewRebuildAction (claim)
+{
+    if (!claim || claim.ok !== true)
+    {
+        return 'error';
+    }
+    if (claim.published === true)
+    {
+        return 'reload';
+    }
+    if (claim.role === 'watcher')
+    {
+        return 'poll';
+    }
+    if (!claim.refresh_id || !claim.generation)
+    {
+        return 'error';
+    }
+
+    return 'run';
+}
+
 (function ()
 {
     /**
@@ -881,7 +903,7 @@
         }).catch(function () {});
     }
 
-    function runMonthBuildFlow (ym, successMessage, refreshId)
+    function runMonthBuildFlow (ym, successMessage, refreshId, generation)
     {
         const effectiveTargetColumnSteps = targetColumnSteps.length > 0
             ? targetColumnSteps
@@ -1019,6 +1041,7 @@
                 target_month: ym,
                 company: selectedCompany,
                 refresh_id: refreshId,
+                wip_generation: String(generation),
                 chunk_index: String(chunkIndex),
             });
             const stepLabel = voorcalculatieTotalChunks > 1
@@ -1100,6 +1123,7 @@
                 company: selectedCompany,
                 column_key: step.key,
                 refresh_id: refreshId,
+                wip_generation: String(generation),
             });
             if (isProjectDetails)
             {
@@ -1165,7 +1189,12 @@
 
         function buildSnapshot ()
         {
-            const body = new URLSearchParams({ target_month: ym, company: selectedCompany, refresh_id: refreshId });
+            const body = new URLSearchParams({
+                target_month: ym,
+                company: selectedCompany,
+                refresh_id: refreshId,
+                wip_generation: String(generation),
+            });
             fetch('maanden.php?action=build_month_snapshot', { method: 'POST', body: body })
                 .then(parseFetchResponse)
                 .then(function (json)
@@ -1194,23 +1223,85 @@
         runTargetColumnStep();
     }
 
-    function beginMonthBuild (ym, successMessage)
+    function monthRebuildOwner ()
+    {
+        const key = 'argusMonthRebuildOwner';
+        try
+        {
+            const existing = window.sessionStorage.getItem(key);
+            if (existing && /^[a-f0-9]{16}$/.test(existing))
+            {
+                return existing;
+            }
+            const bytes = new Uint8Array(8);
+            if (window.crypto && window.crypto.getRandomValues)
+            {
+                window.crypto.getRandomValues(bytes);
+            }
+            else
+            {
+                for (let i = 0; i < bytes.length; i++)
+                {
+                    bytes[i] = Math.floor(Math.random() * 256);
+                }
+            }
+            const owner = Array.from(bytes).map(function (value)
+            {
+                return value.toString(16).padStart(2, '0');
+            }).join('');
+            window.sessionStorage.setItem(key, owner);
+            return owner;
+        }
+        catch (error)
+        {
+            return '';
+        }
+    }
+
+    function beginMonthBuild (ym, successMessage, joinRunning)
     {
         showLoader('Bezig met ophalen...');
 
-        const body = new URLSearchParams({ year_month: ym, company: selectedCompany });
+        const body = new URLSearchParams({
+            year_month: ym,
+            company: selectedCompany,
+            owner: monthRebuildOwner(),
+        });
+        if (joinRunning)
+        {
+            body.set('join', '1');
+        }
         fetch(beginRefreshUrl, { method: 'POST', body: body })
             .then(parseFetchResponse)
             .then(function (json)
             {
-                if (!json.ok || !json.refresh_id)
+                const action = argusOverviewRebuildAction(json);
+                if (action === 'error')
                 {
                     hideLoader();
-                    toast('Fout bij starten van ' + formatMonth(ym) + ': ' + (json.error || 'Onbekende fout'), true, errorContext(ym, 'Maand verversen'));
+                    toast('Fout bij starten van ' + formatMonth(ym) + ': ' + ((json && json.error) || 'Onbekende fout'), true, errorContext(ym, 'Maand verversen'));
+                    return;
+                }
+                if (action === 'reload')
+                {
+                    hideLoader();
+                    window.location.reload();
+                    return;
+                }
+                if (action === 'poll')
+                {
+                    if (pageLoaderText)
+                    {
+                        pageLoaderText.textContent = formatMonth(ym) + ' wordt opgebouwd...';
+                    }
+                    window.setTimeout(function ()
+                    {
+                        beginMonthBuild(ym, successMessage, true);
+                    }, 3000);
                     return;
                 }
 
-                runMonthBuildFlow(ym, successMessage, String(json.refresh_id));
+                runMonthBuildFlow(ym, successMessage, String(json.refresh_id), Number(json.generation));
             })
             .catch(function (err)
             {

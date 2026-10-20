@@ -46,20 +46,9 @@ function maand_cache_path(string $company, string $yearMonth): string
 
 function maand_load(string $company, string $yearMonth): ?array
 {
-    $path = maand_cache_path($company, $yearMonth);
-    if (!is_file($path)) {
-        return null;
-    }
-    $raw = @file_get_contents($path);
-    if (!is_string($raw) || $raw === '') {
-        return null;
-    }
-    $data = json_decode($raw, true);
-    if (!is_array($data) || !argus_month_cache_is_current($data)) {
-        return null;
-    }
+    $loaded = argus_load_best_month_snapshot(maanden_cache_dir(), $company, $yearMonth);
 
-    return $data;
+    return is_array($loaded['data']) ? $loaded['data'] : null;
 }
 
 function maand_save(string $company, string $yearMonth, array $data): bool
@@ -86,36 +75,7 @@ function maand_delete(string $company, string $yearMonth): bool
 
 function list_saved_months(string $company): array
 {
-    $dir = maanden_cache_dir();
-    if (!is_dir($dir)) {
-        return [];
-    }
-    $safeCompany = preg_replace('/[^a-z0-9_-]/i', '_', strtolower(trim($company)));
-    $prefix = $safeCompany . '_';
-    $entries = @scandir($dir);
-    if (!is_array($entries)) {
-        return [];
-    }
-    $months = [];
-    foreach ($entries as $entry) {
-        if (!str_starts_with($entry, $prefix)) {
-            continue;
-        }
-        $suffix = argus_month_cache_suffix();
-        if (!str_ends_with($entry, $suffix)) {
-            continue;
-        }
-        $ym = substr($entry, strlen($prefix), -strlen($suffix));
-        if (!preg_match('/^\d{4}-\d{2}$/', $ym)) {
-            continue;
-        }
-        if (!is_array(maand_load($company, $ym))) {
-            continue;
-        }
-        $months[] = $ym;
-    }
-    rsort($months); // newest first
-    return $months;
+    return argus_list_saved_months(maanden_cache_dir(), $company);
 }
 
 function company_entity_url_with_query(string $baseUrl, string $environment, string $company, string $entitySet, array $query): string
@@ -568,12 +528,7 @@ function batch_wip_load(string $company, string $targetYearMonth, string $refres
 
 function batch_wip_save(string $company, string $targetYearMonth, array $data, string $refreshId = ''): void
 {
-    $data['cache_version'] = ARGUS_MONTH_CACHE_VERSION;
-    $path = batch_wip_path($company, $targetYearMonth, $refreshId);
-    $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if (is_string($json)) {
-        argus_write_file_atomically($path, $json);
-    }
+    argus_save_month_wip_merged(batch_wip_path($company, $targetYearMonth, $refreshId), $data);
 }
 
 function batch_wip_delete(string $company, string $targetYearMonth, string $refreshId = ''): void
@@ -619,6 +574,68 @@ function batch_wip_delete_all(string $company, string $targetYearMonth): void
 function batch_wip_refresh_id_from_request(): string
 {
     return argus_month_refresh_id((string) ($_POST['refresh_id'] ?? ''));
+}
+
+/**
+ * Koppelt een herbouw aan de al lopende WIP.
+ * Bestaat die nog niet, dan wordt er één aangemaakt. Niets wordt gewist.
+ */
+function batch_wip_claim_refresh(string $company, string $targetYearMonth): string
+{
+    $claim = argus_claim_running_month_rebuild(maanden_cache_dir(), $company, $targetYearMonth, '', false);
+
+    return (string) ($claim['refresh_id'] ?? '');
+}
+
+/**
+ * Houdt de herbouw-lock vers aan het begin van een lange stap.
+ */
+function maanden_rebuild_generation(): int
+{
+    return max(0, (int) ($_POST['wip_generation'] ?? 0));
+}
+
+function maanden_rebuild_heartbeat(string $company, string $yearMonth, string $refreshId): void
+{
+    if ($refreshId === '') {
+        return;
+    }
+
+    argus_month_rebuild_heartbeat(maanden_cache_dir(), $company, $yearMonth, $refreshId, maanden_rebuild_generation());
+}
+
+/**
+ * De lopende stap heeft de WIP weggeschreven. Een herlaadbeurt mag daarna verder.
+ * Een oudere generatie laat de lock van de nieuwe run met rust.
+ */
+function maanden_rebuild_release(string $company, string $yearMonth, string $refreshId): void
+{
+    if ($refreshId === '') {
+        return;
+    }
+
+    argus_month_rebuild_release(maanden_cache_dir(), $company, $yearMonth, $refreshId, maanden_rebuild_generation());
+}
+
+function maanden_rebuild_save_wip(string $company, string $yearMonth, array $data, string $refreshId): bool
+{
+    return argus_save_month_wip_if_current(
+        maanden_cache_dir(),
+        $company,
+        $yearMonth,
+        $refreshId,
+        maanden_rebuild_generation(),
+        $data
+    );
+}
+
+function maanden_rebuild_stale_response(): void
+{
+    echo json_encode([
+        'ok' => false,
+        'stale' => true,
+        'error' => 'Deze herbouw is vervangen door een nieuwere poging.',
+    ], JSON_UNESCAPED_UNICODE);
 }
 
 /**
@@ -918,16 +935,16 @@ function build_month_rows(
             'Cost_Center' => (string) ($proj['LVS_Global_Dimension_1_Code'] ?? ''),
             'Project_Actual_Costs' => (float) ($projectTotals['costs'] ?? 0.0),
             'Project_Actual_Costs_To_Date' => 0.0,
-            // Som van planningsregels met No 800000, niet het contracttotaal en niet OHW.
-            'Project_Total_Revenue' => (float) ($planningTotals['aanneemsom'] ?? 0.0),
+            // Gefactureerd t/m einde van de gekozen maand (Boeking-taken), niet de 800000-som.
+            'Project_Total_Revenue' => finance_to_float($planningTotals['invoiced_through'] ?? 0.0),
             'Expected_Revenue' => (float) ($planningTotals['expected_revenue'] ?? 0),
             'Expected_Costs_VC' => (float) ($planningTotals['expected_costs'] ?? 0),
             'Extra_Work' => (float) ($planningTotals['extra_work'] ?? 0),
             'Aanneemsom' => (float) ($planningTotals['aanneemsom'] ?? 0),
             'Breakdown' => [
                 'total_costs_lines' => [],
-                'total_revenue_lines' => is_array($planningBreakdown['aanneemsom_lines'] ?? null)
-                    ? $planningBreakdown['aanneemsom_lines']
+                'total_revenue_lines' => is_array($planningBreakdown['invoiced_through_lines'] ?? null)
+                    ? $planningBreakdown['invoiced_through_lines']
                     : [],
                 'expected_revenue_lines' => is_array($planningBreakdown['expected_revenue_lines'] ?? null) ? $planningBreakdown['expected_revenue_lines'] : [],
                 'expected_costs_lines' => is_array($planningBreakdown['expected_costs_lines'] ?? null) ? $planningBreakdown['expected_costs_lines'] : [],
@@ -1060,18 +1077,21 @@ function fetch_month_data(string $company, string $yearMonth, array $auth): arra
     $planningTotalsByJob = [];
     $planningBreakdownByJob = [];
     if ($projectNumbers !== []) {
-        try {
-            $projectForecast = $financeService->collectProjectForecastForProjects($projectNumbers, odata_ttl_for_month($yearMonth));
-            $planningTotalsByJob = is_array($projectForecast['forecast_totals_by_job'] ?? null)
-                ? $projectForecast['forecast_totals_by_job']
-                : [];
-            $planningBreakdownByJob = is_array($projectForecast['forecast_breakdown_by_job'] ?? null)
-                ? $projectForecast['forecast_breakdown_by_job']
-                : [];
-        } catch (Throwable $forecastError) {
-            $planningTotalsByJob = [];
-            $planningBreakdownByJob = [];
+        $projectForecast = $financeService->collectProjectForecastForProjects(
+            $projectNumbers,
+            odata_ttl_for_month($yearMonth),
+            $yearMonth
+        );
+        $blockingForecast = finance_forecast_blocks_snapshot($projectForecast);
+        if (is_string($blockingForecast) && $blockingForecast !== '') {
+            throw new RuntimeException($blockingForecast);
         }
+        $planningTotalsByJob = is_array($projectForecast['forecast_totals_by_job'] ?? null)
+            ? $projectForecast['forecast_totals_by_job']
+            : [];
+        $planningBreakdownByJob = is_array($projectForecast['forecast_breakdown_by_job'] ?? null)
+            ? $projectForecast['forecast_breakdown_by_job']
+            : [];
     }
 
     $result = build_month_rows(
@@ -1200,8 +1220,8 @@ function build_snapshot_from_column_wip(string $company, string $targetYm, array
         $planningForProject = is_array($planningBreakdownByJob[$normProjectNo] ?? null)
             ? $planningBreakdownByJob[$normProjectNo]
             : [];
-        $breakdown['total_revenue_lines'] = is_array($planningForProject['aanneemsom_lines'] ?? null)
-            ? $planningForProject['aanneemsom_lines']
+        $breakdown['total_revenue_lines'] = is_array($planningForProject['invoiced_through_lines'] ?? null)
+            ? $planningForProject['invoiced_through_lines']
             : [];
 
         $projectBreakdowns[$normProjectNo] = $breakdown;
@@ -1442,12 +1462,18 @@ if (($_GET['action'] ?? '') === 'fetch_column_batch') {
     }
     $auth = auth_get_auth_for_company($company, 300);
 
+    $refreshId = '';
     try {
         if (!$isTargetScoped) {
             throw new RuntimeException('Kolom ' . $columnKey . ' wordt alleen nog per snapshot opgehaald.');
         }
 
         $refreshId = batch_wip_refresh_id_from_request();
+        maanden_rebuild_heartbeat($company, $targetYm, $refreshId);
+        if (!argus_month_rebuild_generation_is_current(maanden_cache_dir(), $company, $targetYm, $refreshId, maanden_rebuild_generation())) {
+            maanden_rebuild_stale_response();
+            exit;
+        }
         $wip = batch_wip_load($company, $targetYm, $refreshId);
         $ttl = odata_ttl_for_month($targetYm);
         $columnDataTarget = is_array($wip['column_data_target'] ?? null) ? $wip['column_data_target'] : [];
@@ -1465,6 +1491,12 @@ if (($_GET['action'] ?? '') === 'fetch_column_batch') {
         ];
 
         if ($columnKey === 'grootboekposten_ohw') {
+            $existingOhw = $columnDataTarget['grootboekposten_ohw'] ?? null;
+            if (is_array($existingOhw) && array_key_exists('by_project', $existingOhw)) {
+                echo json_encode($response, JSON_UNESCAPED_UNICODE);
+                exit;
+            }
+
             $columnResult = bc_fetch_run_column($columnKey, $company, $targetYm, [], $auth, $ttl);
             $columnDataTarget[$columnKey] = $columnResult;
             $wip['column_data_target'] = $columnDataTarget;
@@ -1515,12 +1547,17 @@ if (($_GET['action'] ?? '') === 'fetch_column_batch') {
             $response['warning'] = $columnResult['warning'] ?? null;
         }
 
-        batch_wip_save($company, $targetYm, $wip, $refreshId);
+        if (!maanden_rebuild_save_wip($company, $targetYm, $wip, $refreshId)) {
+            maanden_rebuild_stale_response();
+            exit;
+        }
 
         echo json_encode($response, JSON_UNESCAPED_UNICODE);
     } catch (Throwable $e) {
         http_response_code(500);
         echo json_encode(['ok' => false, 'error' => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+    } finally {
+        maanden_rebuild_release($company, $targetYm, $refreshId);
     }
     exit;
 }
@@ -1732,9 +1769,15 @@ if (($_GET['action'] ?? '') === 'fetch_sub_planning') {
         $company = $companies[0];
     }
 
+    $refreshId = '';
     try {
         $ttl = odata_ttl_for_month($targetYm);
         $refreshId = batch_wip_refresh_id_from_request();
+        maanden_rebuild_heartbeat($company, $targetYm, $refreshId);
+        if (!argus_month_rebuild_generation_is_current(maanden_cache_dir(), $company, $targetYm, $refreshId, maanden_rebuild_generation())) {
+            maanden_rebuild_stale_response();
+            exit;
+        }
         $wip = batch_wip_load($company, $targetYm, $refreshId);
         maanden_wip_sync_project_numbers_from_ohw($wip);
         $projectNumbers = wip_project_numbers($wip);
@@ -1764,11 +1807,23 @@ if (($_GET['action'] ?? '') === 'fetch_sub_planning') {
         $chunkWarning = null;
         $blockingError = null;
 
+        if ($plan['chunk_projects'] === [] || bc_fetch_forecast_covers_projects($plan['chunk_projects'], $planningTotalsByJob)) {
+            echo json_encode([
+                'ok' => true,
+                'warning' => null,
+                'project_count' => count($plan['chunk_projects']),
+                'chunk_index' => $chunkIndex,
+                'total_chunks' => $plan['total_chunks'],
+                'chunks_complete' => $plan['chunks_complete'],
+            ], JSON_UNESCAPED_UNICODE);
+            exit;
+        }
+
         if ($plan['chunk_projects'] !== []) {
             try {
                 $environmentForCompany = auth_get_environment_for_company($company, AUTH_COMPANY_DISCOVERY_TTL_SECONDS);
                 $financeService = new ProjectFinanceService($company, $environmentForCompany);
-                $projectForecast = $financeService->collectProjectForecastForProjects($plan['chunk_projects'], $ttl);
+                $projectForecast = $financeService->collectProjectForecastForProjects($plan['chunk_projects'], $ttl, $targetYm);
                 $blockingError = finance_forecast_blocks_snapshot($projectForecast);
                 if (!is_string($blockingError) || $blockingError === '') {
                     $chunkTotals = is_array($projectForecast['forecast_totals_by_job'] ?? null)
@@ -1808,7 +1863,10 @@ if (($_GET['action'] ?? '') === 'fetch_sub_planning') {
         $wip['planning_totals_by_job'] = $planningTotalsByJob;
         $wip['planning_breakdown_by_job'] = $planningBreakdownByJob;
         $wip['planning_warning'] = $planningWarning;
-        batch_wip_save($company, $targetYm, $wip, $refreshId);
+        if (!maanden_rebuild_save_wip($company, $targetYm, $wip, $refreshId)) {
+            maanden_rebuild_stale_response();
+            exit;
+        }
 
         echo json_encode([
             'ok' => true,
@@ -1821,6 +1879,8 @@ if (($_GET['action'] ?? '') === 'fetch_sub_planning') {
     } catch (Throwable $e) {
         http_response_code(500);
         echo json_encode(['ok' => false, 'error' => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+    } finally {
+        maanden_rebuild_release($company, $targetYm, $refreshId);
     }
     exit;
 }
@@ -1843,8 +1903,14 @@ if (($_GET['action'] ?? '') === 'build_month_snapshot') {
         $company = $companies[0];
     }
 
+    $refreshId = '';
     try {
         $refreshId = batch_wip_refresh_id_from_request();
+        maanden_rebuild_heartbeat($company, $targetYm, $refreshId);
+        if (!argus_month_rebuild_generation_is_current(maanden_cache_dir(), $company, $targetYm, $refreshId, maanden_rebuild_generation())) {
+            maanden_rebuild_stale_response();
+            exit;
+        }
         $wip = batch_wip_load($company, $targetYm, $refreshId);
 
         $columnDataTarget = is_array($wip['column_data_target'] ?? null) ? $wip['column_data_target'] : [];
@@ -1862,6 +1928,10 @@ if (($_GET['action'] ?? '') === 'build_month_snapshot') {
 
         if (is_array($columnDataTarget['grootboekposten_ohw'] ?? null)) {
             $data = build_snapshot_from_column_wip($company, $targetYm, $wip);
+            if (!argus_month_rebuild_generation_is_current(maanden_cache_dir(), $company, $targetYm, $refreshId, maanden_rebuild_generation())) {
+                maanden_rebuild_stale_response();
+                exit;
+            }
             if (!maand_save($company, $targetYm, $data)) {
                 throw new RuntimeException('De nieuwe snapshot kon niet worden opgeslagen. De vorige snapshot blijft beschikbaar.');
             }
@@ -1887,6 +1957,10 @@ if (($_GET['action'] ?? '') === 'build_month_snapshot') {
             $planningBreakdownByJob
         );
 
+        if (!argus_month_rebuild_generation_is_current(maanden_cache_dir(), $company, $targetYm, $refreshId, maanden_rebuild_generation())) {
+            maanden_rebuild_stale_response();
+            exit;
+        }
         if (!maand_save($company, $targetYm, $data)) {
             throw new RuntimeException('De nieuwe snapshot kon niet worden opgeslagen. De vorige snapshot blijft beschikbaar.');
         }
@@ -1896,6 +1970,8 @@ if (($_GET['action'] ?? '') === 'build_month_snapshot') {
     } catch (Throwable $e) {
         http_response_code(500);
         echo json_encode(['ok' => false, 'error' => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+    } finally {
+        maanden_rebuild_release($company, $targetYm, $refreshId);
     }
     exit;
 }
@@ -1929,8 +2005,9 @@ if (($_GET['action'] ?? '') === 'refresh_month') {
     exit;
 }
 
-// Start een verversing zonder de gepubliceerde snapshot te verwijderen.
-// De opbouw schrijft naar een eigen WIP-bestand; pas een complete snapshot vervangt de oude.
+// Start of hervat een verversing zonder de gepubliceerde snapshot te verwijderen.
+// Per bedrijf en maand loopt hoogstens één herbouw. Een tweede tabblad volgt die.
+// resume=1 of join=1 stopt zodra een actuele v3 er is en er geen WIP meer loopt.
 if (($_GET['action'] ?? '') === 'begin_month_refresh') {
     header('Content-Type: application/json; charset=utf-8');
 
@@ -1946,11 +2023,17 @@ if (($_GET['action'] ?? '') === 'begin_month_refresh') {
         $company = $companies[0];
     }
 
-    batch_wip_delete_all($company, $ym);
-    echo json_encode([
-        'ok' => true,
-        'refresh_id' => bin2hex(random_bytes(8)),
-    ], JSON_UNESCAPED_UNICODE);
+    $claim = argus_claim_running_month_rebuild(
+        maanden_cache_dir(),
+        $company,
+        $ym,
+        (string) ($_POST['owner'] ?? ''),
+        (string) ($_POST['resume'] ?? '') === '1' || (string) ($_POST['join'] ?? '') === '1'
+    );
+    if (empty($claim['ok'])) {
+        http_response_code(500);
+    }
+    echo json_encode($claim, JSON_UNESCAPED_UNICODE);
     exit;
 }
 
@@ -2007,15 +2090,14 @@ $savedMonths = list_saved_months($selectedCompany);
 $monthSummaries = [];
 foreach ($savedMonths as $ym) {
     $data = maand_load($selectedCompany, $ym);
-    if (!is_array($data)) {
-        continue;
-    }
     $monthSummaries[] = [
         'year_month' => $ym,
-        'data_start_month' => (string) ($data['data_start_month'] ?? data_start_month_for_target($ym)),
-        'total_revenue' => (float) ($data['total_revenue'] ?? 0),
-        'total_costs' => (float) ($data['total_costs'] ?? 0),
-        'fetched_at' => (string) ($data['fetched_at'] ?? ''),
+        'data_start_month' => is_array($data)
+            ? (string) ($data['data_start_month'] ?? data_start_month_for_target($ym))
+            : data_start_month_for_target($ym),
+        'total_revenue' => is_array($data) ? (float) ($data['total_revenue'] ?? 0) : 0.0,
+        'total_costs' => is_array($data) ? (float) ($data['total_costs'] ?? 0) : 0.0,
+        'fetched_at' => is_array($data) ? (string) ($data['fetched_at'] ?? '') : '',
     ];
 }
 

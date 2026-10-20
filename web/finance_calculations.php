@@ -30,17 +30,25 @@ const FINANCE_REVENUE_GL_ACCOUNT_TYPE_ALIASES = [
 const FINANCE_OPBRENGST_VC_FIELD = 'LVS_Contract_Total_Price_2';
 
 /**
- * Historisch veld op ProjectTaken. De kolom Opbrengst leest dit niet meer:
- * die somt planningsregels met No 800000. Niet Contract_Invoiced_Price en niet G/L 899901.
+ * Historisch veld op ProjectTaken. De kolom Opbrengst t/m leest dit niet:
+ * die somt Contract_Invoiced_Price van Boeking-taken. De 800000-planningsregels
+ * blijven de aanneemsom. Niet G/L 899901.
  *
  * ProjectTaken publiceert géén Contract_Total_Price (alleen JobTaskLines e.d. doen dat);
  * het contracttotaal staat op ProjectTaken als LVS_Contract_Total_Price_2. Live
  * kvtmdlive_aad (KVT/HVT): taak 000 LVS_Contract_Total_Price_2 == JobTaskLines.Contract_Total_Price
  * (bv. PRJ2602239: 24.297 vs basislijn 24.209). Niet LVS_Baseline_Total_Price: dat is
  * de bevroren basislijn, geen actueel contract (ticket #1170).
- * Opbrengst VC leest ditzelfde veld. De kolom Opbrengst/aanneemsom doet dat niet.
+ * Opbrengst VC leest ditzelfde veld. De kolom Opbrengst t/m en de aanneemsom doen dat niet.
  */
 const FINANCE_CONTRACT_TOTAL_PRICE_FIELD = 'LVS_Contract_Total_Price_2';
+
+/**
+ * Gefactureerde opbrengst op ProjectTaken (flowfilter Posting_Date_Filter).
+ * De kolom Opbrengst t/m somt dit veld van taken met type Boeking.
+ * Niet de 800000-planningsregels en niet LVS_Contract_Total_Price_2.
+ */
+const FINANCE_INVOICED_PRICE_FIELD = 'Contract_Invoiced_Price';
 
 /**
  * Taaknummers voor de voorcalculatie-basislijn (LVS_Baseline_Total_Cost).
@@ -82,6 +90,9 @@ const FINANCE_JOB_TASK_LINES_DEADLINE_SECONDS = 300;
  * Versie 3 bewaart snapshots als `.v3.json`. Opbrengst VC komt uit
  * LVS_Contract_Total_Price_2 minus het al getoonde meerwerk. Versie 2 blijft
  * daardoor niet hangen (ticket #1264).
+ * Oudere bestanden blijven staan. De maandlijst herkent v3, v2 en legacy
+ * `.json`. Ontbreekt v3, dan wordt die maand bij openen opnieuw opgebouwd;
+ * lukt dat niet, dan blijft de oude snapshot leesbaar.
  */
 const ARGUS_MONTH_CACHE_VERSION = 3;
 
@@ -460,10 +471,11 @@ function finance_is_contract_revenue_planning_line(array $row): bool
 }
 
 /**
- * Berekent kolomwaarde Opbrengst voor één planningsregel.
+ * Berekent de 800000-planningsom voor één planningsregel (aanneemsom).
  * G/L 800000, geen prognose, met leeg én gevuld LVS_Job_Change_Order_No.
  * Meerwerk blijft in dit totaal; finance_opbrengst_meerwerk_amount is alleen extra informatie.
  * Q002 in Description zonder subordernummer telt gewoon mee.
+ * De kolom Opbrengst t/m leest dit niet; die somt Contract_Invoiced_Price van Boeking-taken.
  */
 function finance_opbrengst_amount(array $row): float
 {
@@ -475,8 +487,9 @@ function finance_opbrengst_amount(array $row): float
 }
 
 /**
- * Berekent de opbrengst/aanneemsom voor één planningsregel.
+ * Berekent de aanneemsom voor één planningsregel.
  * Zelfde totaal als finance_opbrengst_amount: leeg en gevuld subordernummer tellen allebei mee.
+ * Dit is niet de kolom Opbrengst t/m.
  */
 function finance_aanneemsom_amount(array $row): float
 {
@@ -685,7 +698,93 @@ function finance_contract_total_price_amount(array $row, string $projectTotaalTa
 }
 
 /**
- * Bestandssuffix van een maandsnapshot. Oudere bestanden (`.json`, `.v2.json`) worden niet gelezen.
+ * Laatste kalenderdag van een maand (YYYY-MM), of null als de maand ongeldig is.
+ * September 2026 is 2026-09-30. Dat is de peildatum voor Opbrengst t/m.
+ */
+function finance_month_end_date(string $yearMonth): ?string
+{
+    if (preg_match('/^(\d{4})-(\d{2})$/', $yearMonth, $matches) !== 1) {
+        return null;
+    }
+
+    $year = (int) $matches[1];
+    $month = (int) $matches[2];
+    if ($month < 1 || $month > 12) {
+        return null;
+    }
+
+    $start = DateTimeImmutable::createFromFormat('!Y-m-d', sprintf('%04d-%02d-01', $year, $month));
+    if (!$start instanceof DateTimeImmutable) {
+        return null;
+    }
+
+    return $start->format('Y-m-t');
+}
+
+/**
+ * OData-flowfilter voor gefactureerde opbrengst t/m de laatste dag van de maand.
+ * Business Central verwacht Posting_Date_Filter als string tussen quotes, met '..' vóór de datum.
+ * Een le-filter op de boekingsdatum wijst BC af.
+ */
+function finance_posting_date_through_filter(string $yearMonth): string
+{
+    $end = finance_month_end_date($yearMonth);
+    if ($end === null || preg_match('/^\d{4}-\d{2}-\d{2}$/', $end) !== 1) {
+        return '';
+    }
+
+    return "Posting_Date_Filter eq '.." . $end . "'";
+}
+
+/**
+ * Sommeert Contract_Invoiced_Price van de aangeleverde taken.
+ * De aanroeper houdt alleen Boeking-taken over. Kop- en totaaltaken herhalen
+ * die bedragen en mogen niet nog eens meetellen.
+ * Nulregels komen niet in de specificatie; het totaal blijft dan 0.
+ *
+ * @param array<int,mixed> $rows
+ * @return array{amount:float,lines:array<int,array<string,mixed>>}
+ */
+function finance_invoiced_through_from_task_rows(array $rows): array
+{
+    $amount = 0.0;
+    $lines = [];
+
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+
+        if (!array_key_exists(FINANCE_INVOICED_PRICE_FIELD, $row)) {
+            continue;
+        }
+
+        $lineAmount = finance_to_float($row[FINANCE_INVOICED_PRICE_FIELD]);
+        $amount = finance_add_amount($amount, $lineAmount);
+        if ($lineAmount === 0.0) {
+            continue;
+        }
+
+        $lines[] = [
+            'Job_Task_No' => trim((string) ($row['Job_Task_No'] ?? '')),
+            'Line_No' => 0,
+            'Type' => (string) ($row['Job_Task_Type'] ?? FINANCE_BOOKING_TASK_TYPE),
+            'No' => '',
+            'Description' => (string) ($row['Description'] ?? ''),
+            'Line_Amount' => $lineAmount,
+            'Line_Type' => FINANCE_INVOICED_PRICE_FIELD,
+        ];
+    }
+
+    return [
+        'amount' => $amount,
+        'lines' => $lines,
+    ];
+}
+
+/**
+ * Bestandssuffix van een nieuw geschreven maandsnapshot.
+ * Lezen herkent ook `.v2.json` en legacy `.json`; die paden worden niet overschreven.
  */
 function argus_month_cache_suffix(): string
 {
@@ -698,6 +797,382 @@ function argus_month_cache_suffix(): string
 function argus_month_cache_is_current(array $data): bool
 {
     return (int) ($data['cache_version'] ?? 0) === ARGUS_MONTH_CACHE_VERSION;
+}
+
+/**
+ * Bestandsnaam-slug van een bedrijf. Zelfde regels als de bestaande maandcache.
+ */
+function argus_month_company_slug(string $company): string
+{
+    $slug = preg_replace('/[^a-z0-9_-]/i', '_', strtolower(trim($company)));
+
+    return is_string($slug) ? $slug : '';
+}
+
+/**
+ * Bestandsnaam van één snapshotversie. Versie 1 is het ongenummerde `.json`-bestand.
+ */
+function argus_month_snapshot_basename(string $company, string $yearMonth, int $version): ?string
+{
+    $slug = argus_month_company_slug($company);
+    if ($slug === '' || preg_match('/^\d{4}-\d{2}$/', $yearMonth) !== 1) {
+        return null;
+    }
+
+    if ($version === 3) {
+        return $slug . '_' . $yearMonth . '.v3.json';
+    }
+    if ($version === 2) {
+        return $slug . '_' . $yearMonth . '.v2.json';
+    }
+    if ($version === 1) {
+        return $slug . '_' . $yearMonth . '.json';
+    }
+
+    return null;
+}
+
+/**
+ * Leest jaar-maand en versie uit een cachebestandsnaam.
+ * WIP-bestanden en tijdelijke schrijfsels horen niet in de maandlijst.
+ * Voorrang later: v3, dan v2, dan legacy `.json`.
+ *
+ * @return array{year_month:string,version:int}|null
+ */
+function argus_parse_month_snapshot_filename(string $company, string $filename): ?array
+{
+    $slug = argus_month_company_slug($company);
+    if ($slug === '') {
+        return null;
+    }
+
+    $prefix = $slug . '_';
+    if (!str_starts_with($filename, $prefix)) {
+        return null;
+    }
+
+    $rest = substr($filename, strlen($prefix));
+    if (str_starts_with($rest, 'wip_')) {
+        return null;
+    }
+
+    if (preg_match('/^(\d{4}-\d{2})\.v([23])\.json$/', $rest, $matches) === 1) {
+        return [
+            'year_month' => $matches[1],
+            'version' => (int) $matches[2],
+        ];
+    }
+
+    if (preg_match('/^(\d{4}-\d{2})\.json$/', $rest, $matches) === 1) {
+        return [
+            'year_month' => $matches[1],
+            'version' => 1,
+        ];
+    }
+
+    return null;
+}
+
+/**
+ * Unieke opgeslagen maanden, nieuwste eerst. Een maand telt één keer,
+ * ook als v3, v2 én legacy naast elkaar staan.
+ *
+ * @param array<int,mixed> $filenames
+ * @return list<string>
+ */
+function argus_list_saved_months_from_names(string $company, array $filenames): array
+{
+    $found = [];
+    foreach ($filenames as $filename) {
+        if (!is_string($filename)) {
+            continue;
+        }
+
+        $parsed = argus_parse_month_snapshot_filename($company, $filename);
+        if ($parsed === null) {
+            continue;
+        }
+
+        $yearMonth = $parsed['year_month'];
+        $version = $parsed['version'];
+        if (!isset($found[$yearMonth]) || $version > $found[$yearMonth]) {
+            $found[$yearMonth] = $version;
+        }
+    }
+
+    $months = array_keys($found);
+    rsort($months);
+
+    return $months;
+}
+
+/**
+ * Maanden in een cachemap. Alleen echte bestanden; geen WIP en geen mappen.
+ *
+ * @return list<string>
+ */
+function argus_list_saved_months(string $dir, string $company): array
+{
+    if (!is_dir($dir)) {
+        return [];
+    }
+
+    $entries = @scandir($dir);
+    if (!is_array($entries)) {
+        return [];
+    }
+
+    $filenames = [];
+    foreach ($entries as $entry) {
+        if (!is_string($entry) || $entry === '.' || $entry === '..') {
+            continue;
+        }
+        if (!is_file($dir . DIRECTORY_SEPARATOR . $entry)) {
+            continue;
+        }
+        $filenames[] = $entry;
+    }
+
+    return argus_list_saved_months_from_names($company, $filenames);
+}
+
+/**
+ * Leest een snapshotbestand. Ongeldige JSON telt niet als bruikbare maand.
+ */
+function argus_read_month_snapshot_file(string $path): ?array
+{
+    if (!is_file($path)) {
+        return null;
+    }
+
+    $raw = @file_get_contents($path);
+    if (!is_string($raw) || $raw === '') {
+        return null;
+    }
+
+    $data = json_decode($raw, true);
+
+    return is_array($data) ? $data : null;
+}
+
+/**
+ * Hoogste leesbare snapshot voor een maand: v3, anders v2, anders legacy.
+ *
+ * @return array{data:?array,version:int,path:?string}
+ */
+function argus_load_best_month_snapshot(string $dir, string $company, string $yearMonth): array
+{
+    $empty = [
+        'data' => null,
+        'version' => 0,
+        'path' => null,
+    ];
+    if (preg_match('/^\d{4}-\d{2}$/', $yearMonth) !== 1) {
+        return $empty;
+    }
+
+    foreach ([3, 2, 1] as $version) {
+        $basename = argus_month_snapshot_basename($company, $yearMonth, $version);
+        if ($basename === null) {
+            continue;
+        }
+
+        $path = $dir . DIRECTORY_SEPARATOR . $basename;
+        $data = argus_read_month_snapshot_file($path);
+        if ($data === null) {
+            continue;
+        }
+
+        return [
+            'data' => $data,
+            'version' => $version,
+            'path' => $path,
+        ];
+    }
+
+    return $empty;
+}
+
+/**
+ * Peildatum/periode uit een oude snapshot. De bestandsmaand is de reserve.
+ */
+function argus_snapshot_period(array $snapshot, string $fallbackYearMonth): string
+{
+    $yearMonth = trim((string) ($snapshot['year_month'] ?? ''));
+    if (preg_match('/^\d{4}-\d{2}$/', $yearMonth) === 1) {
+        return $yearMonth;
+    }
+
+    return $fallbackYearMonth;
+}
+
+/**
+ * OHW-peildatum die bij de oude snapshot hoort.
+ *
+ * @return array<string,mixed>|null
+ */
+function argus_snapshot_bounds(array $snapshot): ?array
+{
+    $debug = $snapshot['ohw_debug'] ?? null;
+    if (!is_array($debug)) {
+        return null;
+    }
+
+    $bounds = $debug['snapshot_bounds'] ?? null;
+
+    return is_array($bounds) ? $bounds : null;
+}
+
+/**
+ * Melding wanneer herbouw naar v3 niet lukt. De oude snapshot blijft de bron.
+ */
+function argus_month_rebuild_failure_notice(string $reason = ''): string
+{
+    $notice = 'Deze maand kon niet opnieuw worden opgebouwd met de nieuwe Opbrengst VC-berekening. U ziet de eerder opgeslagen snapshot.';
+    $reason = trim($reason);
+    if ($reason !== '') {
+        $notice .= ' ' . $reason;
+    }
+
+    return $notice;
+}
+
+/**
+ * Melding terwijl een oude maand nog naar v3 wordt opgebouwd.
+ */
+function argus_month_rebuild_pending_notice(): string
+{
+    return 'Deze maand wordt opnieuw opgebouwd met de nieuwe Opbrengst VC-berekening, met dezelfde peildatum als de opgeslagen snapshot. Lukt de herbouw niet, dan blijft deze vorige snapshot zichtbaar.';
+}
+
+/**
+ * @return array{data:?array,notice:?string,version:int,rebuilt:bool,period:string,needs_rebuild:bool}
+ */
+function argus_month_snapshot_view(?array $data, int $version, string $period, ?string $notice, bool $rebuilt, bool $needsRebuild): array
+{
+    return [
+        'data' => $data,
+        'notice' => $notice,
+        'version' => $version,
+        'rebuilt' => $rebuilt,
+        'period' => $period,
+        'needs_rebuild' => $needsRebuild,
+    ];
+}
+
+/**
+ * Opent een maand.
+ * Een leesbaar v3-bestand wint. Zonder v3 wordt herbouwd met de peildatum uit
+ * de beste oudere snapshot (v2 boven legacy). De herbouw schrijft alleen `.v3.json`.
+ * Zonder herbouw-callback blijft de oude snapshot staan en mag de aanroeper
+ * de opbouw zelf starten. Een mislukte herbouw toont de oude snapshot met een melding.
+ *
+ * @param callable(string,string,array):array|null $rebuild
+ * @return array{data:?array,notice:?string,version:int,rebuilt:bool,period:string,needs_rebuild:bool}
+ */
+function argus_open_month_snapshot(string $dir, string $company, string $yearMonth, ?callable $rebuild = null): array
+{
+    if (preg_match('/^\d{4}-\d{2}$/', $yearMonth) !== 1) {
+        return argus_month_snapshot_view(null, 0, $yearMonth, 'Ongeldige maand.', false, false);
+    }
+
+    $loaded = argus_load_best_month_snapshot($dir, $company, $yearMonth);
+    if ($loaded['version'] === 3 && is_array($loaded['data'])) {
+        return argus_month_snapshot_view(
+            $loaded['data'],
+            3,
+            argus_snapshot_period($loaded['data'], $yearMonth),
+            null,
+            false,
+            false
+        );
+    }
+
+    $v3Basename = argus_month_snapshot_basename($company, $yearMonth, 3);
+    $v3Path = $v3Basename !== null ? ($dir . DIRECTORY_SEPARATOR . $v3Basename) : '';
+    if ($v3Path !== '' && is_file($v3Path)) {
+        $period = is_array($loaded['data'])
+            ? argus_snapshot_period($loaded['data'], $yearMonth)
+            : $yearMonth;
+
+        return argus_month_snapshot_view(
+            is_array($loaded['data']) ? $loaded['data'] : null,
+            (int) $loaded['version'],
+            $period,
+            argus_month_rebuild_failure_notice('Het v3-bestand is onleesbaar en is niet overschreven.'),
+            false,
+            false
+        );
+    }
+
+    if (!is_array($loaded['data'])) {
+        return argus_month_snapshot_view(null, 0, $yearMonth, null, false, false);
+    }
+
+    $period = argus_snapshot_period($loaded['data'], $yearMonth);
+    $bounds = argus_snapshot_bounds($loaded['data']);
+    if ($rebuild === null) {
+        return argus_month_snapshot_view(
+            $loaded['data'],
+            (int) $loaded['version'],
+            $period,
+            argus_month_rebuild_pending_notice(),
+            false,
+            true
+        );
+    }
+
+    try {
+        $built = $rebuild($company, $period, $loaded['data']);
+    } catch (Throwable $error) {
+        return argus_month_snapshot_view(
+            $loaded['data'],
+            (int) $loaded['version'],
+            $period,
+            argus_month_rebuild_failure_notice($error->getMessage()),
+            false,
+            false
+        );
+    }
+
+    if (!is_array($built)) {
+        return argus_month_snapshot_view(
+            $loaded['data'],
+            (int) $loaded['version'],
+            $period,
+            argus_month_rebuild_failure_notice(''),
+            false,
+            false
+        );
+    }
+
+    $built['cache_version'] = ARGUS_MONTH_CACHE_VERSION;
+    $built['year_month'] = $period;
+    if ($bounds !== null) {
+        if (!isset($built['ohw_debug']) || !is_array($built['ohw_debug'])) {
+            $built['ohw_debug'] = [];
+        }
+        if (!is_array($built['ohw_debug']['snapshot_bounds'] ?? null)) {
+            $built['ohw_debug']['snapshot_bounds'] = $bounds;
+        }
+    }
+
+    if ($v3Path === '' || !argus_publish_snapshot_file(
+        $v3Path,
+        $built,
+        JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT
+    )) {
+        return argus_month_snapshot_view(
+            $loaded['data'],
+            (int) $loaded['version'],
+            $period,
+            argus_month_rebuild_failure_notice('De nieuwe snapshot kon niet worden opgeslagen.'),
+            false,
+            false
+        );
+    }
+
+    return argus_month_snapshot_view($built, 3, $period, null, true, false);
 }
 
 /**
@@ -756,6 +1231,512 @@ function argus_month_refresh_id(string $refreshId): string
     }
 
     return $refreshId;
+}
+
+/**
+ * Refresh-id van het nieuwste WIP-bestand van deze maand.
+ * Leeg betekent dat er nog geen lopende herbouw is.
+ * Legacy-WIP zonder id, tijdelijke bestanden en andere maanden tellen niet mee.
+ */
+function argus_active_month_wip_refresh_id(string $dir, string $company, string $yearMonth): string
+{
+    $slug = argus_month_company_slug($company);
+    $safeYearMonth = preg_replace('/[^0-9-]/', '', $yearMonth);
+    if ($slug === '' || !is_string($safeYearMonth) || preg_match('/^\d{4}-\d{2}$/', $safeYearMonth) !== 1) {
+        return '';
+    }
+
+    if (!is_dir($dir)) {
+        return '';
+    }
+
+    $prefix = $slug . '_wip_' . $safeYearMonth . '_';
+    $suffix = argus_month_cache_suffix();
+    $entries = @scandir($dir);
+    if (!is_array($entries)) {
+        return '';
+    }
+
+    $bestId = '';
+    $bestMtime = -1;
+    foreach ($entries as $entry) {
+        if (!is_string($entry) || !str_starts_with($entry, $prefix) || !str_ends_with($entry, $suffix)) {
+            continue;
+        }
+
+        $refreshId = argus_month_refresh_id(substr($entry, strlen($prefix), -strlen($suffix)));
+        if ($refreshId === '') {
+            continue;
+        }
+
+        $path = $dir . DIRECTORY_SEPARATOR . $entry;
+        if (!is_file($path)) {
+            continue;
+        }
+
+        $mtime = @filemtime($path);
+        $mtime = $mtime === false ? 0 : $mtime;
+        if ($mtime < $bestMtime) {
+            continue;
+        }
+        if ($mtime === $bestMtime && strcmp($refreshId, $bestId) < 0) {
+            continue;
+        }
+
+        $bestMtime = $mtime;
+        $bestId = $refreshId;
+    }
+
+    return $bestId;
+}
+
+/**
+ * Eén OHW- of voorcalculatiestap kan minuten duren. Een kortere grens liet een
+ * tweede tabblad dezelfde maand nog een keer starten terwijl de eerste stap liep.
+ */
+const ARGUS_MONTH_REBUILD_LOCK_TTL_SECONDS = 1200;
+
+/**
+ * Normaliseert de tab-eigenaar van een herbouw. Ongeldige waarden worden leeg.
+ */
+function argus_month_rebuild_owner(string $owner): string
+{
+    $owner = strtolower(trim($owner));
+    if (preg_match('/^[a-f0-9]{8,32}$/', $owner) !== 1) {
+        return '';
+    }
+
+    return $owner;
+}
+
+/**
+ * Lockbestand naast de WIP. Geen snapshot en geen WIP-bestand.
+ */
+function argus_month_wip_lock_path(string $dir, string $company, string $yearMonth): ?string
+{
+    $slug = argus_month_company_slug($company);
+    if ($slug === '' || preg_match('/^\d{4}-\d{2}$/', $yearMonth) !== 1) {
+        return null;
+    }
+
+    return $dir . DIRECTORY_SEPARATOR . $slug . '_wip_' . $yearMonth . '.lock';
+}
+
+function argus_month_wip_refresh_path(string $dir, string $company, string $yearMonth, string $refreshId): ?string
+{
+    $slug = argus_month_company_slug($company);
+    $refreshId = argus_month_refresh_id($refreshId);
+    if ($slug === '' || $refreshId === '' || preg_match('/^\d{4}-\d{2}$/', $yearMonth) !== 1) {
+        return null;
+    }
+
+    return $dir . DIRECTORY_SEPARATOR . $slug . '_wip_' . $yearMonth . '_' . $refreshId . argus_month_cache_suffix();
+}
+
+function argus_month_published_v3_exists(string $dir, string $company, string $yearMonth): bool
+{
+    $basename = argus_month_snapshot_basename($company, $yearMonth, ARGUS_MONTH_CACHE_VERSION);
+    if ($basename === null) {
+        return false;
+    }
+
+    $data = argus_read_month_snapshot_file($dir . DIRECTORY_SEPARATOR . $basename);
+
+    return is_array($data) && argus_month_cache_is_current($data);
+}
+
+/**
+ * @param array<string,mixed> $extra
+ * @return array{ok:bool,refresh_id:string,role:string,resumed:bool,owner:string,published:bool,generation:int,error?:string}
+ */
+function argus_month_rebuild_claim_response(bool $ok, string $refreshId, string $role, bool $resumed, string $owner, bool $published, string $error = '', int $generation = 0): array
+{
+    $response = [
+        'ok' => $ok,
+        'refresh_id' => $refreshId,
+        'role' => $role,
+        'resumed' => $resumed,
+        'owner' => $owner,
+        'published' => $published,
+        'generation' => $generation,
+    ];
+    if ($error !== '') {
+        $response['error'] = $error;
+    }
+
+    return $response;
+}
+
+/**
+ * Claimt de enige herbouw voor dit bedrijf en deze maand.
+ * Een verse lock van een andere tab blijft staan: die aanroep wordt toeschouwer.
+ * Dezelfde tab of een verlopen lock hervat de bestaande WIP. Er wordt niets gewist.
+ * Zonder WIP en met een actuele v3 stopt een automatische herbouw (stopWhenPublished).
+ *
+ * @return array{ok:bool,refresh_id:string,role:string,resumed:bool,owner:string,published:bool,error?:string}
+ */
+function argus_claim_running_month_rebuild(string $dir, string $company, string $yearMonth, string $owner, bool $stopWhenPublished, ?int $now = null, int $ttlSeconds = ARGUS_MONTH_REBUILD_LOCK_TTL_SECONDS): array
+{
+    $failed = argus_month_rebuild_claim_response(false, '', '', false, '', false, 'Ongeldige maand.');
+    $lockPath = argus_month_wip_lock_path($dir, $company, $yearMonth);
+    if ($lockPath === null) {
+        return $failed;
+    }
+
+    if (!is_dir($dir) && !@mkdir($dir, 0777, true) && !is_dir($dir)) {
+        return argus_month_rebuild_claim_response(false, '', '', false, '', false, 'Herbouw-lock kon niet worden gemaakt.');
+    }
+
+    $handle = @fopen($lockPath, 'c+');
+    if ($handle === false) {
+        return argus_month_rebuild_claim_response(false, '', '', false, '', false, 'Herbouw-lock kon niet worden geopend.');
+    }
+
+    try {
+        if (!flock($handle, LOCK_EX)) {
+            return argus_month_rebuild_claim_response(false, '', '', false, '', false, 'Herbouw-lock is bezet.');
+        }
+
+        $now = $now ?? time();
+        $ttlSeconds = max(1, $ttlSeconds);
+        $requestedOwner = argus_month_rebuild_owner($owner);
+        rewind($handle);
+        $raw = stream_get_contents($handle);
+        $state = is_string($raw) && $raw !== '' ? json_decode($raw, true) : null;
+        $existingId = argus_active_month_wip_refresh_id($dir, $company, $yearMonth);
+
+        if ($existingId === '') {
+            if ($stopWhenPublished && argus_month_published_v3_exists($dir, $company, $yearMonth)) {
+                return argus_month_rebuild_claim_response(true, '', 'watcher', true, $requestedOwner, true);
+            }
+
+            $refreshId = bin2hex(random_bytes(8));
+            $workerOwner = $requestedOwner !== '' ? $requestedOwner : bin2hex(random_bytes(8));
+            $wipPath = argus_month_wip_refresh_path($dir, $company, $yearMonth, $refreshId);
+            $wipJson = json_encode([
+                'cache_version' => ARGUS_MONTH_CACHE_VERSION,
+                'refresh_id' => $refreshId,
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            if ($wipPath === null || !is_string($wipJson) || !argus_write_file_atomically($wipPath, $wipJson)) {
+                return argus_month_rebuild_claim_response(false, '', '', false, '', false, 'WIP kon niet worden aangemaakt.');
+            }
+
+            argus_month_rebuild_write_state($handle, $refreshId, $workerOwner, $now, true, 1);
+
+            return argus_month_rebuild_claim_response(true, $refreshId, 'worker', false, $workerOwner, false, '', 1);
+        }
+
+        $storedId = is_array($state) ? argus_month_refresh_id((string) ($state['refresh_id'] ?? '')) : '';
+        $storedOwner = is_array($state) ? argus_month_rebuild_owner((string) ($state['owner'] ?? '')) : '';
+        $age = $now - (int) (is_array($state) ? ($state['updated_at'] ?? 0) : 0);
+        $lockMatchesWip = $storedId === $existingId && $storedOwner !== '';
+        $sameOwner = $lockMatchesWip && $requestedOwner !== '' && hash_equals($storedOwner, $requestedOwner);
+        $fresh = $lockMatchesWip && $age < $ttlSeconds;
+        $busy = $lockMatchesWip && !empty($state['busy']);
+        $storedGeneration = is_array($state) ? (int) ($state['generation'] ?? 0) : 0;
+        if ($storedGeneration < 1) {
+            $storedGeneration = 1;
+        }
+        // Een verse stap, ook van hetzelfde tabblad, mag niet opnieuw starten.
+        // Die schrijft de hele WIP terug en zou nieuwere details of voorcalculatie wissen.
+        if ($fresh && ($busy || !$sameOwner)) {
+            return argus_month_rebuild_claim_response(true, $existingId, 'watcher', true, $storedOwner, false, '', $storedGeneration);
+        }
+
+        $workerOwner = $requestedOwner !== '' ? $requestedOwner : ($storedOwner !== '' ? $storedOwner : bin2hex(random_bytes(8)));
+        $generation = $storedGeneration + 1;
+        argus_month_rebuild_write_state($handle, $existingId, $workerOwner, $now, true, $generation);
+
+        return argus_month_rebuild_claim_response(true, $existingId, 'worker', true, $workerOwner, false, '', $generation);
+    } finally {
+        flock($handle, LOCK_UN);
+        fclose($handle);
+    }
+}
+
+/**
+ * Houdt een lopende herbouw vers. Een andere refresh-id wijzigt de lock niet.
+ */
+function argus_month_rebuild_heartbeat(string $dir, string $company, string $yearMonth, string $refreshId, int $generation, ?int $now = null): bool
+{
+    $refreshId = argus_month_refresh_id($refreshId);
+    $lockPath = argus_month_wip_lock_path($dir, $company, $yearMonth);
+    if ($refreshId === '' || $lockPath === null || !is_file($lockPath)) {
+        return false;
+    }
+
+    $handle = @fopen($lockPath, 'c+');
+    if ($handle === false) {
+        return false;
+    }
+
+    try {
+        if (!flock($handle, LOCK_EX)) {
+            return false;
+        }
+
+        rewind($handle);
+        $raw = stream_get_contents($handle);
+        $state = is_string($raw) && $raw !== '' ? json_decode($raw, true) : null;
+        if (!is_array($state) || argus_month_refresh_id((string) ($state['refresh_id'] ?? '')) !== $refreshId) {
+            return false;
+        }
+
+        $owner = argus_month_rebuild_owner((string) ($state['owner'] ?? ''));
+        $lockedGeneration = (int) ($state['generation'] ?? 0);
+        if ($owner === '' || $generation < 1 || $lockedGeneration !== $generation) {
+            return false;
+        }
+
+        argus_month_rebuild_write_state($handle, $refreshId, $owner, $now ?? time(), true, $lockedGeneration);
+
+        return true;
+    } finally {
+        flock($handle, LOCK_UN);
+        fclose($handle);
+    }
+}
+
+/**
+ * De stap is klaar met schrijven. Hetzelfde tabblad mag daarna verder; een ander tabblad niet.
+ * Een oudere generatie laat de lock van de nieuwe run met rust.
+ */
+function argus_month_rebuild_release(string $dir, string $company, string $yearMonth, string $refreshId, int $generation): bool
+{
+    $refreshId = argus_month_refresh_id($refreshId);
+    $lockPath = argus_month_wip_lock_path($dir, $company, $yearMonth);
+    if ($refreshId === '' || $lockPath === null || !is_file($lockPath)) {
+        return false;
+    }
+
+    $handle = @fopen($lockPath, 'c+');
+    if ($handle === false) {
+        return false;
+    }
+
+    try {
+        if (!flock($handle, LOCK_EX)) {
+            return false;
+        }
+
+        rewind($handle);
+        $raw = stream_get_contents($handle);
+        $state = is_string($raw) && $raw !== '' ? json_decode($raw, true) : null;
+        if (!is_array($state) || argus_month_refresh_id((string) ($state['refresh_id'] ?? '')) !== $refreshId) {
+            return false;
+        }
+
+        $owner = argus_month_rebuild_owner((string) ($state['owner'] ?? ''));
+        $lockedGeneration = (int) ($state['generation'] ?? 0);
+        if ($owner === '' || $generation < 1 || $lockedGeneration !== $generation) {
+            return false;
+        }
+
+        argus_month_rebuild_write_state($handle, $refreshId, $owner, (int) ($state['updated_at'] ?? time()), false, $lockedGeneration);
+
+        return true;
+    } finally {
+        flock($handle, LOCK_UN);
+        fclose($handle);
+    }
+}
+
+/**
+ * Voegt een late WIP-schrijfactie samen met wat er nu op schijf staat.
+ * Lege waarden vervangen geen al opgeslagen details of voorcalculatie.
+ * Geneste lijsten (OHW-rijen, voorcalculatieregels) worden vervangen.
+ * Een lijst op het hoogste niveau, zoals projectnummers, wordt samengevoegd.
+ *
+ * @param array<string,mixed> $base
+ * @param array<string,mixed> $overlay
+ * @return array<string,mixed>
+ */
+function argus_merge_month_wip(array $base, array $overlay, bool $nested = false): array
+{
+    foreach ($overlay as $key => $value) {
+        if (!array_key_exists($key, $base)) {
+            $base[$key] = $value;
+            continue;
+        }
+
+        $current = $base[$key];
+        if (is_array($value) && is_array($current)) {
+            if ($value === []) {
+                continue;
+            }
+            if (array_is_list($value) && array_is_list($current)) {
+                if ($nested) {
+                    // OHW-rijen en voorcalculatieregels zijn de volledige stap.
+                    // Samenvoegen liet oude regels staan en telde Opbrengst VC dubbel.
+                    $base[$key] = $value;
+                    continue;
+                }
+                foreach ($value as $item) {
+                    if (!in_array($item, $current, true)) {
+                        $current[] = $item;
+                    }
+                }
+                $base[$key] = $current;
+                continue;
+            }
+            $base[$key] = argus_merge_month_wip($current, $value, true);
+            continue;
+        }
+
+        if ($value === null || $value === '') {
+            continue;
+        }
+
+        $base[$key] = $value;
+    }
+
+    return $base;
+}
+
+/**
+ * Schrijft WIP zonder nieuwere sleutels van een parallelle stap te wissen.
+ *
+ * @param array<string,mixed> $data
+ */
+function argus_save_month_wip_merged(string $path, array $data): bool
+{
+    $dir = dirname($path);
+    if (!is_dir($dir) && !@mkdir($dir, 0777, true) && !is_dir($dir)) {
+        return false;
+    }
+
+    $lockHandle = @fopen($path . '.merge.lock', 'c');
+    if ($lockHandle === false) {
+        return false;
+    }
+
+    try {
+        if (!flock($lockHandle, LOCK_EX)) {
+            return false;
+        }
+
+        $latest = [];
+        if (is_file($path)) {
+            $raw = @file_get_contents($path);
+            $decoded = is_string($raw) ? json_decode($raw, true) : null;
+            if (is_array($decoded)) {
+                $latest = $decoded;
+            }
+        }
+
+        if ($latest !== []) {
+            $data = argus_merge_month_wip($latest, $data);
+        }
+        $data['cache_version'] = ARGUS_MONTH_CACHE_VERSION;
+        $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if (!is_string($json)) {
+            return false;
+        }
+
+        return argus_write_file_atomically($path, $json);
+    } finally {
+        flock($lockHandle, LOCK_UN);
+        fclose($lockHandle);
+    }
+}
+
+/**
+ * @param resource $handle
+ */
+function argus_month_rebuild_generation_is_current(string $dir, string $company, string $yearMonth, string $refreshId, int $generation): bool
+{
+    $refreshId = argus_month_refresh_id($refreshId);
+    $lockPath = argus_month_wip_lock_path($dir, $company, $yearMonth);
+    if ($refreshId === '' || $generation < 1 || $lockPath === null || !is_file($lockPath)) {
+        return false;
+    }
+
+    $handle = @fopen($lockPath, 'c+');
+    if ($handle === false) {
+        return false;
+    }
+
+    try {
+        if (!flock($handle, LOCK_EX)) {
+            return false;
+        }
+
+        rewind($handle);
+        $raw = stream_get_contents($handle);
+        $state = is_string($raw) && $raw !== '' ? json_decode($raw, true) : null;
+
+        return is_array($state)
+            && argus_month_refresh_id((string) ($state['refresh_id'] ?? '')) === $refreshId
+            && (int) ($state['generation'] ?? 0) === $generation;
+    } finally {
+        flock($handle, LOCK_UN);
+        fclose($handle);
+    }
+}
+
+/**
+ * Schrijft WIP alleen als deze stap nog de huidige generatie is.
+ * Een oudere in-flight request laat het bestand onaangeroerd.
+ *
+ * @param array<string,mixed> $data
+ */
+function argus_save_month_wip_if_current(string $dir, string $company, string $yearMonth, string $refreshId, int $generation, array $data): bool
+{
+    $refreshId = argus_month_refresh_id($refreshId);
+    $lockPath = argus_month_wip_lock_path($dir, $company, $yearMonth);
+    $wipPath = argus_month_wip_refresh_path($dir, $company, $yearMonth, $refreshId);
+    if ($refreshId === '' || $generation < 1 || $lockPath === null || $wipPath === null || !is_file($lockPath)) {
+        return false;
+    }
+
+    $handle = @fopen($lockPath, 'c+');
+    if ($handle === false) {
+        return false;
+    }
+
+    try {
+        if (!flock($handle, LOCK_EX)) {
+            return false;
+        }
+
+        rewind($handle);
+        $raw = stream_get_contents($handle);
+        $state = is_string($raw) && $raw !== '' ? json_decode($raw, true) : null;
+        if (!is_array($state)
+            || argus_month_refresh_id((string) ($state['refresh_id'] ?? '')) !== $refreshId
+            || (int) ($state['generation'] ?? 0) !== $generation) {
+            return false;
+        }
+
+        return argus_save_month_wip_merged($wipPath, $data);
+    } finally {
+        flock($handle, LOCK_UN);
+        fclose($handle);
+    }
+}
+
+/**
+ * @param resource $handle
+ */
+function argus_month_rebuild_write_state($handle, string $refreshId, string $owner, int $now, bool $busy, int $generation): bool
+{
+    $json = json_encode([
+        'refresh_id' => $refreshId,
+        'owner' => $owner,
+        'updated_at' => $now,
+        'busy' => $busy,
+        'generation' => $generation,
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if (!is_string($json)) {
+        return false;
+    }
+
+    rewind($handle);
+    ftruncate($handle, 0);
+    fwrite($handle, $json);
+    fflush($handle);
+
+    return true;
 }
 
 /**
