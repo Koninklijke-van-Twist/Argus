@@ -83,6 +83,9 @@ function argus_month_rebuild_cli_main(string $schedule): void
         }
     );
 
+    if (function_exists('argus_json_discard_preamble')) {
+        argus_json_discard_preamble();
+    }
     if (PHP_SAPI !== 'cli' && !headers_sent()) {
         header('Content-Type: application/json; charset=utf-8');
         header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');

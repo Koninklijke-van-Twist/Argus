@@ -1498,6 +1498,28 @@ function argus_month_rebuild_heartbeat(string $dir, string $company, string $yea
 }
 
 /**
+ * Houdt de lock vers tijdens een lopende server-herbouw.
+ * Elke uitgaande OData-aanroep roept dit aan, zodat één lange stap de lock
+ * niet laat verlopen terwijl een tweede hourly dezelfde maand start.
+ */
+function argus_month_rebuild_note_fetch(?int $now = null): bool
+{
+    $active = $GLOBALS['argus_active_month_rebuild'] ?? null;
+    if (!is_array($active)) {
+        return false;
+    }
+
+    return argus_month_rebuild_heartbeat(
+        (string) ($active['dir'] ?? ''),
+        (string) ($active['company'] ?? ''),
+        (string) ($active['year_month'] ?? ''),
+        (string) ($active['refresh_id'] ?? ''),
+        (int) ($active['generation'] ?? 0),
+        $now
+    );
+}
+
+/**
  * De stap is klaar met schrijven. Hetzelfde tabblad mag daarna verder; een ander tabblad niet.
  * Een oudere generatie laat de lock van de nieuwe run met rust.
  */

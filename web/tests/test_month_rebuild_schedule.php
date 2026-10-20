@@ -261,6 +261,29 @@ assert_true(!str_contains($beginBlock, 'unlink'), 'Verversen verwijdert de oude 
 assert_same('.v3.json', argus_month_cache_suffix(), 'een nieuwe snapshot blijft .v3.json');
 assert_true(str_contains((string) file_get_contents(__DIR__ . '/../month_rebuild_steps.php'), 'collectProjectForecastForProjects'), 'voorcalculatie blijft de bron van Opbrengst t/m');
 
+$fetchDir = temp_cache();
+file_put_contents($fetchDir . '/koninklijke_van_twist_2026-09.v2.json', $v2Bytes);
+$fetchClaim = argus_claim_running_month_rebuild($fetchDir, $company, '2026-09', $owner, true, 3000);
+assert_same(false, argus_month_rebuild_note_fetch(4000), 'zonder lopende server-herbouw blijft de lock staan');
+$GLOBALS['argus_active_month_rebuild'] = [
+    'dir' => $fetchDir,
+    'company' => $company,
+    'year_month' => '2026-09',
+    'refresh_id' => (string) $fetchClaim['refresh_id'],
+    'generation' => (int) $fetchClaim['generation'],
+];
+assert_true(argus_month_rebuild_note_fetch(4500), 'een OData-aanroep ververst de lock van deze generatie');
+$fetchLock = json_decode((string) file_get_contents($fetchDir . '/koninklijke_van_twist_wip_2026-09.lock'), true);
+assert_same(4500, is_array($fetchLock) ? ($fetchLock['updated_at'] ?? null) : null, 'de lock-tijd schuift mee met de fetch');
+$GLOBALS['argus_active_month_rebuild']['generation'] = 99;
+assert_same(false, argus_month_rebuild_note_fetch(4600), 'een oude generatie ververst de lock niet');
+$fetchLockAfter = json_decode((string) file_get_contents($fetchDir . '/koninklijke_van_twist_wip_2026-09.lock'), true);
+assert_same(4500, is_array($fetchLockAfter) ? ($fetchLockAfter['updated_at'] ?? null) : null, 'de lock-tijd van de huidige generatie blijft 4500');
+unset($GLOBALS['argus_active_month_rebuild']);
+$odata = (string) file_get_contents(__DIR__ . '/../odata.php');
+assert_same(2, substr_count($odata, 'argus_month_rebuild_note_fetch();'), 'Mímir- en BC-fetches verversen de lock');
+assert_true(str_contains((string) file_get_contents(__DIR__ . '/../month_rebuild_cli.php'), 'argus_json_discard_preamble'), 'het JSON-verslag gooit losse output weg');
+
 if ($failures > 0) {
     fwrite(STDERR, $failures . " failed\n");
     exit(1);

@@ -108,6 +108,9 @@ function odata_mimir_request(string $method, string $path, ?array $jsonBody = nu
         $opts[CURLOPT_POSTFIELDS] = $payload;
     }
     curl_setopt_array($ch, $opts);
+    if (function_exists('argus_month_rebuild_note_fetch')) {
+        argus_month_rebuild_note_fetch();
+    }
     $raw = curl_exec($ch);
     if ($raw === false) {
         $err = curl_error($ch);
@@ -480,6 +483,9 @@ function odata_get_json(string $url, array $auth): array
     // curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
     // curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
 
+    if (function_exists('argus_month_rebuild_note_fetch')) {
+        argus_month_rebuild_note_fetch();
+    }
     $raw = curl_exec($ch);
     if ($raw === false) {
         throw new Exception("cURL error: " . curl_error($ch));

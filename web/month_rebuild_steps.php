@@ -359,8 +359,17 @@ function maanden_rebuild_build_step(
 function maanden_run_rebuild_pipeline(string $company, string $yearMonth, string $refreshId, int $generation, int $maxAge): array
 {
     $columnKeys = bc_fetch_target_scoped_column_keys();
+    $previous = $GLOBALS['argus_active_month_rebuild'] ?? null;
+    $GLOBALS['argus_active_month_rebuild'] = [
+        'dir' => maanden_cache_dir(),
+        'company' => $company,
+        'year_month' => $yearMonth,
+        'refresh_id' => $refreshId,
+        'generation' => $generation,
+    ];
 
-    return argus_run_month_rebuild_steps(
+    try {
+        return argus_run_month_rebuild_steps(
         $company,
         $yearMonth,
         $refreshId,
@@ -377,4 +386,11 @@ function maanden_run_rebuild_pipeline(string $company, string $yearMonth, string
         },
         $columnKeys
     );
+    } finally {
+        if ($previous === null) {
+            unset($GLOBALS['argus_active_month_rebuild']);
+        } else {
+            $GLOBALS['argus_active_month_rebuild'] = $previous;
+        }
+    }
 }
