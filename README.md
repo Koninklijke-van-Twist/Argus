@@ -58,6 +58,7 @@ Geen `auth.php` in deze repository (staat in `.gitignore`). Lokaal/op de server 
 - `web/project_finance.php` en `web/finance_calculations.php`: de kolom Opbrengst t/m is de som van `ProjectTaken.Contract_Invoiced_Price` tot en met de laatste dag van de gekozen maand. Het OData-filter is `Posting_Date_Filter eq '..YYYY-MM-DD'` (datum als string tussen quotes, met `..` ervoor). Alleen taken met `Job_Task_Type` Boeking uit `JobTaskLines` tellen mee; kop- en totaaltaken niet, anders tel je dubbel. De 800000-planningsregels blijven de aanneemsom en opbrengst meerwerk. Opbrengst VC, Kosten VC en de snapshotversie (`.v3.json`) zijn niet gewijzigd. Dezelfde wijziging kan nodig zijn in andere projecten die dit patroon kopiëren.
 - `web/nightly.php` en `web/hourly.php`: een maand zonder `.v3.json`, of met een open Verversen-WIP, wordt server-side opgebouwd met dezelfde stappen als de browser (OHW, projectdetails, voorcalculatie inclusief Opbrengst t/m, publicatie). Dezelfde lock en generatie gelden. Een verse lock van een browsertabblad blijft van dat tabblad. Nightly-fetches gebruiken max_age 4 uur, hourly 30 minuten. Oude `.json`- en `.v2.json`-bestanden worden niet verwijderd of overschreven. `web/project_finance.php` is hier niet gewijzigd.
 - `web/finance_calculations.php`, `web/maand-detail.js` en `web/maanden.js`: een herbouw-lock zonder generatie, met een tijdstip in de toekomst of in milliseconden, of zonder gestarte stap (geen hartslag) blokkeert de maand niet meer. Legacy-WIP zonder refresh-id wordt opgeruimd; de geldige WIP en oude snapshots blijven staan. De detailbanner en de maandkaart tonen of de pagina wacht, welke stap loopt, of waarom de herbouw faalt. Een fout in de maandtabel slaat de herbouw niet meer over.
+- `web/maanden.php` en `web/month_rebuild_steps.php`: een mislukte voorcalculatie die de ruwe BC-body in de fout zet (vaak geen geldige UTF-8) wordt weer als JSON teruggegeven. `json_encode` zonder die vervanging gaf `false`, de response bleef leeg en de browser toonde HTTP 500 zonder JSON.
 - Voorcalculatie van een maand gaat in stappen van 40 projecten (`VOORCALCULATIE_PROJECT_CHUNK_SIZE`). Eén HTTP-request voor alle projecten werd na 10–15 minuten door de proxy afgekapt (`Netwerkfout`), terwijl de oude snapshot bleef staan. Elke stap vervangt de totalen van die projecten. De snapshot wordt pas gepubliceerd als elk project uit de maandlijst een totaal heeft. `maanden.php` en `maand-detail.php` laten het sessie-lock los en lezen de bedrijfslijst een uur uit `cache/companies/discovery.json`, zodat een andere pagina niet op Mímir wacht zolang een stap bezig is. `web/project_finance.php` is hier niet gewijzigd.
 
 ## Tests
@@ -82,6 +83,7 @@ php web/tests/test_json_guard.php
 php web/tests/test_month_snapshot_fallback.php
 php web/tests/test_month_rebuild_lock.php
 php web/tests/test_month_rebuild_schedule.php
+php web/tests/test_planning_json_error.php
 node web/tests/test_overview_rebuild_action.js
 node web/tests/test_detail_rebuild_notice.js
 ```
