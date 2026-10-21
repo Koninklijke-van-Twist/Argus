@@ -86,7 +86,7 @@ function argus_company_open_wip_months(string $dir, string $company): array
 /**
  * Maanden zonder de actuele snapshot, of met een open Verversen-WIP.
  * Een leesbare of onleesbare actuele snapshot zonder WIP blijft staan.
- * Oudere snapshots (v3, v2, legacy) worden opnieuw opgebouwd.
+ * Oudere snapshots (v4, v3, v2, legacy) worden opnieuw opgebouwd.
  * Elk bedrijfsslug komt één keer voor.
  *
  * @param array<int,mixed> $companies

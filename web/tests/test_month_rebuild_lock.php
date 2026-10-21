@@ -57,17 +57,17 @@ $first = argus_claim_running_month_rebuild($dir, $company, $ym, $ownerA, true, 1
 assert_same(true, $first['ok'], 'eerste claim slaagt');
 assert_same('worker', $first['role'], 'eerste tabblad is de bouwer');
 assert_same(false, $first['resumed'], 'een nieuwe herbouw is geen hervatting');
-assert_same(false, $first['published'], 'zonder v4 is de herbouw niet klaar');
+assert_same(false, $first['published'], 'zonder v5 is de herbouw niet klaar');
 assert_same($ownerA, $first['owner'], 'de lock onthoudt het tabblad');
 assert_same(1, $first['generation'], 'een nieuwe herbouw begint bij generatie 1');
 assert_true(preg_match('/^[a-f0-9]{16}$/', (string) $first['refresh_id']) === 1, 'refresh-id is 16 hex');
 $refreshId = (string) $first['refresh_id'];
-$wipName = 'koninklijke_van_twist_wip_' . $ym . '_' . $refreshId . '.v4.json';
+$wipName = 'koninklijke_van_twist_wip_' . $ym . '_' . $refreshId . '.v5.json';
 assert_true(is_file($dir . '/' . $wipName), 'de claim maakt een WIP-bestand');
 $wipBytes = (string) file_get_contents($dir . '/' . $wipName);
 $wipData = json_decode($wipBytes, true);
-assert_same(4, is_array($wipData) ? ($wipData['cache_version'] ?? null) : null, 'nieuwe WIP hoort bij cacheversie 4');
-file_put_contents($dir . '/' . $wipName, '{"cache_version":4,"progress":1,"refresh_id":"' . $refreshId . '"}');
+assert_same(5, is_array($wipData) ? ($wipData['cache_version'] ?? null) : null, 'nieuwe WIP hoort bij cacheversie 5');
+file_put_contents($dir . '/' . $wipName, '{"cache_version":5,"progress":1,"refresh_id":"' . $refreshId . '"}');
 $wipBytes = (string) file_get_contents($dir . '/' . $wipName);
 
 $watcher = argus_claim_running_month_rebuild($dir, $company, $ym, $ownerB, true, 1005, 10);
@@ -138,27 +138,27 @@ $otherMonth = argus_claim_running_month_rebuild($dir, $company, '2026-08', $owne
 assert_same('worker', $otherMonth['role'], 'een andere maand heeft een eigen herbouw');
 assert_same(false, $otherMonth['refresh_id'] === $refreshId, 'een andere maand krijgt een andere refresh-id');
 
-$currentName = 'koninklijke_van_twist_2026-09.v4.json';
-$currentBytes = '{"year_month":"2026-09","cache_version":4,"label":"v4"}';
+$currentName = 'koninklijke_van_twist_2026-09.v5.json';
+$currentBytes = '{"year_month":"2026-09","cache_version":5,"label":"v5"}';
 file_put_contents($dir . '/' . $currentName, $currentBytes);
 $whileRunning = argus_claim_running_month_rebuild($dir, $company, $ym, $ownerA, true, 2010, 10);
-assert_same(false, $whileRunning['published'], 'een v4 naast lopende WIP stopt de herbouw niet');
-assert_same($refreshId, $whileRunning['refresh_id'], 'een v4 naast WIP houdt de lopende id');
-assert_same($currentBytes, (string) file_get_contents($dir . '/' . $currentName), 'de claim overschrijft de v4 niet');
+assert_same(false, $whileRunning['published'], 'een v5 naast lopende WIP stopt de herbouw niet');
+assert_same($refreshId, $whileRunning['refresh_id'], 'een v5 naast WIP houdt de lopende id');
+assert_same($currentBytes, (string) file_get_contents($dir . '/' . $currentName), 'de claim overschrijft de v5 niet');
 
 unlink($dir . '/' . $wipName);
 $published = argus_claim_running_month_rebuild($dir, $company, $ym, $ownerB, true, 3000, 10);
-assert_same(true, $published['published'], 'automatisch hervatten stopt als de v4 af is');
+assert_same(true, $published['published'], 'automatisch hervatten stopt als de v5 af is');
 assert_same('', $published['refresh_id'], 'een afgeronde herbouw start geen nieuwe refresh-id');
-assert_same(false, is_file($dir . '/koninklijke_van_twist_wip_' . $ym . '_' . $published['refresh_id'] . '.v4.json'), 'een afgeronde herbouw maakt geen WIP');
+assert_same(false, is_file($dir . '/koninklijke_van_twist_wip_' . $ym . '_' . $published['refresh_id'] . '.v5.json'), 'een afgeronde herbouw maakt geen WIP');
 $wipLeft = array_values(array_filter(scandir($dir) ?: [], static function ($entry) use ($ym): bool {
-    return is_string($entry) && str_contains($entry, '_wip_' . $ym . '_') && str_ends_with($entry, '.v4.json');
+    return is_string($entry) && str_contains($entry, '_wip_' . $ym . '_') && str_ends_with($entry, '.v5.json');
 }));
 assert_same([], $wipLeft, 'na publicatie blijft er geen nieuwe WIP achter');
 
 $explicit = argus_claim_running_month_rebuild($dir, $company, $ym, $ownerA, false, 3010, 10);
 assert_same('worker', $explicit['role'], 'Verversen zonder WIP start een nieuwe herbouw');
-assert_same(false, $explicit['published'], 'Verversen gaat door als de v4 al bestaat');
+assert_same(false, $explicit['published'], 'Verversen gaat door als de v5 al bestaat');
 assert_same(false, $explicit['resumed'], 'Verversen zonder WIP is geen hervatting');
 assert_true($explicit['refresh_id'] !== '' && $explicit['refresh_id'] !== $refreshId, 'Verversen zonder WIP krijgt een nieuwe id');
 
@@ -233,10 +233,10 @@ file_put_contents($stuckV2, '{"year_month":"2026-09","cache_version":2,"label":"
 $stuckLegacyBytes = (string) file_get_contents($stuckLegacy);
 $stuckV2Bytes = (string) file_get_contents($stuckV2);
 $stuckRefresh = 'abcdef0123456789';
-$stuckLegacyWip = $stuck . '/koninklijke_van_twist_wip_2026-09.v4.json';
-$stuckLiveWip = $stuck . '/koninklijke_van_twist_wip_2026-09_' . $stuckRefresh . '.v4.json';
-$stuckLiveBytes = '{"cache_version":4,"refresh_id":"' . $stuckRefresh . '","progress":1}';
-file_put_contents($stuckLegacyWip, '{"cache_version":4,"legacy":true}');
+$stuckLegacyWip = $stuck . '/koninklijke_van_twist_wip_2026-09.v5.json';
+$stuckLiveWip = $stuck . '/koninklijke_van_twist_wip_2026-09_' . $stuckRefresh . '.v5.json';
+$stuckLiveBytes = '{"cache_version":5,"refresh_id":"' . $stuckRefresh . '","progress":1}';
+file_put_contents($stuckLegacyWip, '{"cache_version":5,"legacy":true}');
 file_put_contents($stuckLiveWip, $stuckLiveBytes);
 $stuckLock = $stuck . '/koninklijke_van_twist_wip_2026-09.lock';
 $stuckNow = 1760954820;
@@ -255,7 +255,7 @@ assert_same(false, is_file($stuckLegacyWip), 'legacy-WIP zonder refresh-id wordt
 assert_same($stuckLiveBytes, (string) file_get_contents($stuckLiveWip), 'de geldige WIP blijft bytegelijk');
 assert_same($stuckLegacyBytes, (string) file_get_contents($stuckLegacy), 'de legacy-snapshot blijft staan');
 assert_same($stuckV2Bytes, (string) file_get_contents($stuckV2), 'de v2-snapshot blijft staan');
-assert_same(false, is_file($stuck . '/koninklijke_van_twist_2026-09.v4.json'), 'overnemen publiceert nog geen v4');
+assert_same(false, is_file($stuck . '/koninklijke_van_twist_2026-09.v5.json'), 'overnemen publiceert nog geen v5');
 
 file_put_contents($stuckLock, json_encode([
     'refresh_id' => $stuckRefresh,

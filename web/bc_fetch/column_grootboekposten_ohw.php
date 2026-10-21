@@ -259,6 +259,29 @@ function bc_fetch_ohw_breakdown_line_from_row(array $sourceRow): array
 }
 
 /**
+ * Eerste niet-lege afdelingscode (Global_Dimension_1_Code) uit OHW-regels.
+ * Kostenregels gaan voor opbrengstregels. Een lege code slaat de functie over.
+ */
+function bc_fetch_primary_department_from_breakdown(array $breakdown): string
+{
+    foreach (['total_costs_lines', 'total_revenue_lines'] as $lineKey) {
+        $lines = is_array($breakdown[$lineKey] ?? null) ? $breakdown[$lineKey] : [];
+        foreach ($lines as $line) {
+            if (!is_array($line)) {
+                continue;
+            }
+
+            $code = trim((string) ($line['Global_Dimension_1_Code'] ?? ''));
+            if ($code !== '') {
+                return $code;
+            }
+        }
+    }
+
+    return '';
+}
+
+/**
  * Aggregateert OHW-rijen naar projecttotalen (G_L_Account_No 899900/899901).
  */
 function bc_fetch_aggregate_ohw_rows(array $rows): array

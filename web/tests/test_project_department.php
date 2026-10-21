@@ -1,9 +1,8 @@
 <?php
 
 /**
- * Asclepius #1275: de afdeling is Global Dimension 1 op de projectkaart.
- * Grootboekposten (Global_Dimension_1_Code) overschrijven Cost_Center niet,
- * ook niet als die code afwijkt of de kaart leeg is.
+ * Asclepius #1275: een regel toont de afdeling waarop hij geboekt is.
+ * De projectkaart (LVS_Global_Dimension_1_Code) blijft apart beschikbaar.
  */
 if (PHP_SAPI !== 'cli') {
     http_response_code(404);
@@ -55,8 +54,9 @@ try {
         [],
         []
     );
-    assert_same('50', $built['project_summaries'][0]['Cost_Center'] ?? null, 'opbouwen leest de afdeling van de projectkaart');
-    assert_same(4, $built['cache_version'] ?? null, 'een nieuwe maand hoort bij cacheversie 4');
+    assert_same('50', $built['project_summaries'][0]['Cost_Center'] ?? null, 'zonder grootboekpost blijft de projectkaart de getoonde afdeling');
+    assert_same('50', $built['project_summaries'][0]['Project_Department'] ?? null, 'de projectkaart staat apart op de samenvatting');
+    assert_same(5, $built['cache_version'] ?? null, 'een nieuwe maand hoort bij cacheversie 5');
 
     $GLOBALS['demeter_company_environment_map'] = [
         'Koninklijke van Twist' => 'GeenAuth',
@@ -132,11 +132,32 @@ try {
         $byJob[strtolower((string) ($summary['Job_No'] ?? ''))] = $summary;
     }
 
-    assert_same('50', $byJob['prj2608435']['Cost_Center'] ?? null, 'verversen houdt de projectkaart als grootboekposten een andere afdeling hebben');
-    assert_same('', $byJob['prjleeg']['Cost_Center'] ?? null, 'een lege projectkaart blijft leeg en valt niet terug op grootboekposten');
+    assert_same('10', $byJob['prj2608435']['Cost_Center'] ?? null, 'verversen toont de geboekte afdeling, niet de projectkaart');
+    assert_same('50', $byJob['prj2608435']['Project_Department'] ?? null, 'de projectkaart blijft naast de geboekte afdeling staan');
+    assert_same('30', $byJob['prjleeg']['Cost_Center'] ?? null, 'een lege projectkaart toont de geboekte afdeling');
+    assert_same('', $byJob['prjleeg']['Project_Department'] ?? null, 'een lege projectkaart blijft leeg in Project_Department');
     assert_same('10', $snapshot['project_breakdowns']['prj2608435']['total_costs_lines'][0]['Global_Dimension_1_Code'] ?? null, 'de specificatie van een grootboekpost houdt zijn eigen dimensie');
-    assert_same(4, $snapshot['cache_version'] ?? null, 'een verversing schrijft cacheversie 4');
-    assert_same(false, function_exists('bc_fetch_primary_department_from_breakdown'), 'de grootboek-fallback voor de afdeling is weg');
+    assert_same(5, $snapshot['cache_version'] ?? null, 'een verversing schrijft cacheversie 5');
+    assert_same('10', bc_fetch_primary_department_from_breakdown([
+        'total_costs_lines' => [
+            ['Global_Dimension_1_Code' => ''],
+            ['Global_Dimension_1_Code' => '10'],
+        ],
+        'total_revenue_lines' => [
+            ['Global_Dimension_1_Code' => '20'],
+        ],
+    ]), 'kostenregels gaan voor opbrengstregels');
+
+    $fromBuild = maanden_apply_booked_departments($built, [
+        [
+            'Job_No' => 'PRJ2608435',
+            'G_L_Account_No' => '899900',
+            'G_L_Bal_Account_No' => '199900',
+            'Global_Dimension_1_Code' => '10',
+        ],
+    ]);
+    assert_same('10', $fromBuild['project_summaries'][0]['Cost_Center'] ?? null, 'opbouwen zet de geboekte afdeling op de regel');
+    assert_same('50', $fromBuild['project_summaries'][0]['Project_Department'] ?? null, 'opbouwen laat de projectkaart staan');
 } finally {
     if ($createdAuth && is_file($authPath)) {
         unlink($authPath);

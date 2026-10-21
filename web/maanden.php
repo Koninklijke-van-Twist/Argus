@@ -954,8 +954,9 @@ function build_month_rows(
             'Customer_Id' => (string) ($proj['Bill_to_Customer_No'] ?? ''),
             'Customer_Name' => (string) ($proj['Bill_to_Name'] ?? ''),
             'Project_Manager' => (string) ($proj['Project_Manager'] ?? $proj['Person_Responsible'] ?? ''),
-            // Afdeling is Global Dimension 1 op de projectkaart. Grootboekposten overschrijven die niet.
+            // Zonder geboekte dimensie blijft de projectkaart staan. Een grootboekpost overschrijft Cost_Center later.
             'Cost_Center' => (string) ($proj['LVS_Global_Dimension_1_Code'] ?? ''),
+            'Project_Department' => (string) ($proj['LVS_Global_Dimension_1_Code'] ?? ''),
             'Project_Actual_Costs' => (float) ($projectTotals['costs'] ?? 0.0),
             'Project_Actual_Costs_To_Date' => 0.0,
             // Gefactureerd t/m einde van de gekozen maand (Boeking-taken), niet de 800000-som.
@@ -1016,6 +1017,62 @@ function build_month_rows(
         'project_breakdowns' => $projectBreakdowns,
         'workorder_rows' => [],
     ];
+}
+
+/**
+ * Zet Cost_Center op de geboekte afdeling uit grootboekposten.
+ * Project_Department (projectkaart) blijft staan.
+ *
+ * @param array<string,mixed> $data
+ * @param array<int,mixed> $ohwRows
+ * @return array<string,mixed>
+ */
+function maanden_apply_booked_departments(array $data, array $ohwRows): array
+{
+    $costLinesByProject = [];
+    $revenueLinesByProject = [];
+    foreach ($ohwRows as $sourceRow) {
+        if (!is_array($sourceRow) || bc_fetch_ohw_should_ignore_row($sourceRow)) {
+            continue;
+        }
+
+        $normProjectNo = strtolower(trim((string) ($sourceRow['Job_No'] ?? '')));
+        if ($normProjectNo === '') {
+            continue;
+        }
+
+        $kind = bc_fetch_ohw_gl_account_kind((string) ($sourceRow['G_L_Account_No'] ?? ''));
+        if ($kind === 'costs') {
+            $costLinesByProject[$normProjectNo][] = $sourceRow;
+        } elseif ($kind === 'revenue') {
+            $revenueLinesByProject[$normProjectNo][] = $sourceRow;
+        }
+    }
+
+    if (!is_array($data['project_summaries'] ?? null)) {
+        return $data;
+    }
+
+    foreach ($data['project_summaries'] as $summaryIndex => $summaryRow) {
+        if (!is_array($summaryRow)) {
+            continue;
+        }
+
+        $normProjectNo = strtolower(trim((string) ($summaryRow['Job_No'] ?? '')));
+        if ($normProjectNo === '') {
+            continue;
+        }
+
+        $departmentCode = bc_fetch_primary_department_from_breakdown([
+            'total_costs_lines' => $costLinesByProject[$normProjectNo] ?? [],
+            'total_revenue_lines' => $revenueLinesByProject[$normProjectNo] ?? [],
+        ]);
+        if ($departmentCode !== '') {
+            $data['project_summaries'][$summaryIndex]['Cost_Center'] = $departmentCode;
+        }
+    }
+
+    return $data;
 }
 
 function fetch_month_data(string $company, string $yearMonth, array $auth): array
@@ -1125,6 +1182,7 @@ function fetch_month_data(string $company, string $yearMonth, array $auth): arra
         $planningTotalsByJob,
         $planningBreakdownByJob
     );
+    $result = maanden_apply_booked_departments($result, $ohwRows);
 
     $result['ohw_debug'] = [
         'loader_mode' => 'grootboekposten_ohw',
@@ -1158,6 +1216,7 @@ function build_snapshot_from_column_wip(string $company, string $targetYm, array
         ? $wip['planning_breakdown_by_job']
         : [];
     $ohwCostLinesByProject = [];
+    $ohwRevenueLinesByProject = [];
     $columnDataTarget = is_array($wip['column_data_target'] ?? null) ? $wip['column_data_target'] : [];
     $projectNumbers = maanden_wip_sync_project_numbers_from_ohw($wip);
 
@@ -1190,6 +1249,7 @@ function build_snapshot_from_column_wip(string $company, string $targetYm, array
         );
 
         $ohwCostLinesByProject[$normProjectNo] = [];
+        $ohwRevenueLinesByProject[$normProjectNo] = [];
         $sourceRows = is_array($projectValues['rows'] ?? null) ? $projectValues['rows'] : [];
         foreach ($sourceRows as $sourceRow) {
             if (!is_array($sourceRow)) {
@@ -1203,6 +1263,8 @@ function build_snapshot_from_column_wip(string $company, string $targetYm, array
             $kind = bc_fetch_ohw_gl_account_kind((string) ($sourceRow['G_L_Account_No'] ?? ''));
             if ($kind === 'costs') {
                 $ohwCostLinesByProject[$normProjectNo][] = bc_fetch_ohw_breakdown_line_from_row($sourceRow);
+            } elseif ($kind === 'revenue') {
+                $ohwRevenueLinesByProject[$normProjectNo][] = bc_fetch_ohw_breakdown_line_from_row($sourceRow);
             }
         }
     }
@@ -1271,8 +1333,19 @@ function build_snapshot_from_column_wip(string $company, string $targetYm, array
                 continue;
             }
 
-            // Cost_Center blijft LVS_Global_Dimension_1_Code van de projectkaart.
-            // Global_Dimension_1_Code op grootboekposten wijzigt de afdeling niet.
+            // De getoonde afdeling is de geboekte dimensie. De projectkaart blijft in Project_Department.
+            $departmentCode = bc_fetch_primary_department_from_breakdown([
+                'total_costs_lines' => is_array($ohwCostLinesByProject[$normProjectNo] ?? null)
+                    ? $ohwCostLinesByProject[$normProjectNo]
+                    : [],
+                'total_revenue_lines' => is_array($ohwRevenueLinesByProject[$normProjectNo] ?? null)
+                    ? $ohwRevenueLinesByProject[$normProjectNo]
+                    : [],
+            ]);
+            if ($departmentCode !== '') {
+                $data['project_summaries'][$summaryIndex]['Cost_Center'] = $departmentCode;
+            }
+
             $data['project_summaries'][$summaryIndex]['Project_Actual_Costs_To_Date'] = finance_to_float(
                 $costsThroughTodayByProject[$normProjectNo] ?? 0.0
             );

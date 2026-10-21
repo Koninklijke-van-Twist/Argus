@@ -220,8 +220,8 @@ $onlyBookings = finance_invoiced_through_from_task_rows([
 check(money_is($onlyBookings['amount'], 6512.40), 'som van boekingsregels is 6512,40, kreeg ' . $onlyBookings['amount']);
 check(count($onlyBookings['lines']) === 2, 'nulregel komt niet in de specificatie');
 
-check(ARGUS_MONTH_CACHE_VERSION === 4, 'snapshotversie is 4');
-check(argus_month_cache_suffix() === '.v4.json', 'snapshotbestandsnaam is .v4.json');
+check(ARGUS_MONTH_CACHE_VERSION === 5, 'snapshotversie is 5');
+check(argus_month_cache_suffix() === '.v5.json', 'snapshotbestandsnaam is .v5.json');
 
 $ref = new ReflectionClass(ProjectFinanceService::class);
 $service = $ref->newInstanceWithoutConstructor();

@@ -1,3 +1,15 @@
+function argusDepartmentMismatchTitle (booked, projectDepartment)
+{
+    const lineCode = String(booked == null ? '' : booked).trim();
+    const projectCode = String(projectDepartment == null ? '' : projectDepartment).trim();
+    if (lineCode === projectCode)
+    {
+        return '';
+    }
+
+    return 'Regel is op afdeling ' + lineCode + ' geboekt, maar project is afdeling ' + projectCode;
+}
+
 function argusDetailRebuildPhase (claim)
 {
     if (!claim || claim.ok !== true)
@@ -31,7 +43,7 @@ function argusDetailRebuildNotice (phase, request)
         const base = request && request.failure_notice ? String(request.failure_notice) : '';
         return base !== ''
             ? base
-            : 'Deze maand kon niet opnieuw worden opgebouwd met de afdeling van de projectkaart. U ziet de eerder opgeslagen snapshot.';
+            : 'Deze maand kon niet opnieuw worden opgebouwd met de geboekte afdeling naast de projectkaart. U ziet de eerder opgeslagen snapshot.';
     }
     if (phase === 'run')
     {
@@ -283,7 +295,9 @@ function argusRebuildStepFollowup (json)
                 project_manager: formatProjectManagerName(projDetail.Project_Manager || projSummary.Project_Manager || projDetail.Person_Responsible || ''),
                 document_status: toTrimmedString(projDetail.LVS_Document_Status || ''),
                 reason_code: toTrimmedString(projDetail.KVT_Reason_Code || ''),
-                cost_center: toTrimmedString(projDetail.LVS_Global_Dimension_1_Code || projSummary.Cost_Center || ''),
+                cost_center: primaryDepartmentFromBreakdown(breakdown)
+                    || toTrimmedString(projSummary.Cost_Center || projDetail.LVS_Global_Dimension_1_Code || projSummary.Project_Department || ''),
+                project_department: toTrimmedString(projDetail.LVS_Global_Dimension_1_Code || projSummary.Project_Department || ''),
                 project_total_costs: projectTotalCosts,
                 project_total_costs_to_date: parseDecimal(projSummary.Project_Actual_Costs_To_Date || 0),
                 project_total_revenue: projectTotalRevenue,
@@ -349,6 +363,41 @@ function argusRebuildStepFollowup (json)
         return name.trim();
     }
 
+    function primaryDepartmentFromBreakdown (breakdown)
+    {
+        const lineKeys = ['total_costs_lines', 'total_revenue_lines'];
+        for (const lineKey of lineKeys)
+        {
+            const lines = Array.isArray(breakdown[lineKey]) ? breakdown[lineKey] : [];
+            for (const line of lines)
+            {
+                const code = toTrimmedString(line && line.Global_Dimension_1_Code || '');
+                if (code !== '')
+                {
+                    return code;
+                }
+            }
+        }
+
+        return '';
+    }
+
+    function departmentDisplayCell (booked, projectDepartment)
+    {
+        const lineCode = toTrimmedString(booked);
+        const title = argusDepartmentMismatchTitle(lineCode, projectDepartment);
+        if (title === '')
+        {
+            return lineCode;
+        }
+
+        return {
+            text: lineCode,
+            title: title,
+            mismatch: true,
+        };
+    }
+
     function formatJobCompleteLabel (value)
     {
         if (value === true || value === 1 || value === '1' || value === 'true' || value === 'Ja')
@@ -363,7 +412,7 @@ function argusRebuildStepFollowup (json)
         return toTrimmedString(value);
     }
 
-    function mapOhwBreakdownRowToModal (line, preferCost)
+    function mapOhwBreakdownRowToModal (line, preferCost, projectDepartment)
     {
         const amount = preferCost
             ? parseDecimal(line.Total_Cost || line.WIP_Entry_Amount || 0)
@@ -376,7 +425,7 @@ function argusRebuildStepFollowup (json)
             line.G_L_Account_No || '',
             line.WIP_Method_Used || '',
             line.Type || line.Entry_Type || '',
-            line.Global_Dimension_1_Code || '',
+            departmentDisplayCell(line && line.Global_Dimension_1_Code, projectDepartment),
             fmtCurrency(amount),
         ];
     }
@@ -935,7 +984,7 @@ function argusRebuildStepFollowup (json)
             case 'description':
                 return { type: 'bc-field', name: 'Description', source: 'Projecten', filters: baseFilter.replace('Job_No=', 'No=') };
             case 'cost_center':
-                return { type: 'bc-field', name: 'LVS_Global_Dimension_1_Code', source: 'Projecten', filters: baseFilter.replace('Job_No=', 'No=') };
+                return { type: 'bc-field', name: 'Global_Dimension_1_Code', source: 'Grootboekposten_OHW', filters: baseFilter + '; markering als die afwijkt van Projecten.LVS_Global_Dimension_1_Code' };
             case 'expected_revenue':
                 return { type: 'computed-field', formula: 'ProjectTaken.LVS_Contract_Total_Price_2 (Job_Task_No=000, anders 000-000-000, anders som Boeking-taken uit JobTaskLines) - Opbrengst meerwerk' };
             case 'costs_vc':
@@ -1221,7 +1270,7 @@ function argusRebuildStepFollowup (json)
                             {
                                 return breakdown.total_costs_lines.map(function (line)
                                 {
-                                    return mapOhwBreakdownRowToModal(line, true);
+                                    return mapOhwBreakdownRowToModal(line, true, proj.project_department);
                                 });
                             },
                             function (breakdown)
@@ -1270,9 +1319,16 @@ function argusRebuildStepFollowup (json)
                 case 'description':
                     td.textContent = proj.description || '';
                     break;
-                case 'cost_center':
+                case 'cost_center': {
                     td.textContent = proj.cost_center || '';
+                    const departmentTitle = argusDepartmentMismatchTitle(proj.cost_center, proj.project_department);
+                    if (departmentTitle !== '')
+                    {
+                        td.title = departmentTitle;
+                        td.classList.add('dept-mismatch');
+                    }
                     break;
+                }
                 case 'expected_revenue':
                     td.style.textAlign = 'right';
                     td.innerHTML = '<span class="aggregate-source-link amount-neutral">' + escapeHtml(fmtCurrency(computed.expected)) + '</span>';
@@ -1887,7 +1943,23 @@ function argusRebuildStepFollowup (json)
             for (let i = 0; i < safeHeaders.length; i++)
             {
                 const td = document.createElement('td');
-                td.textContent = cells[i] !== undefined && cells[i] !== null ? String(cells[i]) : '';
+                const cell = cells[i];
+                if (cell && typeof cell === 'object')
+                {
+                    td.textContent = cell.text !== undefined && cell.text !== null ? String(cell.text) : '';
+                    if (cell.title)
+                    {
+                        td.title = String(cell.title);
+                    }
+                    if (cell.mismatch)
+                    {
+                        td.classList.add('dept-mismatch');
+                    }
+                }
+                else
+                {
+                    td.textContent = cell !== undefined && cell !== null ? String(cell) : '';
+                }
                 td.style.cssText = 'padding:5px 8px;border-bottom:1px solid #e7edf5;';
                 tr.appendChild(td);
             }

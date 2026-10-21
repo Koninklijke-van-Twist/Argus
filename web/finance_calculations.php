@@ -100,12 +100,15 @@ const FINANCE_JOB_TASK_LINES_DEADLINE_SECONDS = 300;
  * daardoor niet hangen (ticket #1264).
  * Versie 4 bewaart snapshots als `.v4.json`. De afdeling (Cost_Center) komt
  * alleen van de projectkaart (`LVS_Global_Dimension_1_Code`, Global Dimension 1).
- * Grootboekposten overschrijven die niet meer (Asclepius #1275).
- * Oudere bestanden blijven staan. De maandlijst herkent v4, v3, v2 en legacy
- * `.json`. Ontbreekt v4, dan wordt die maand bij openen opnieuw opgebouwd;
+ * Versie 5 bewaart snapshots als `.v5.json`. Cost_Center is weer de geboekte
+ * afdeling uit de grootboekpost (Global_Dimension_1_Code). De projectkaart
+ * staat apart in Project_Department. Wijkt een regel daarvan af, dan markeert
+ * de detailpagina die afdelingscel (Asclepius #1275).
+ * Oudere bestanden blijven staan. De maandlijst herkent v5, v4, v3, v2 en legacy
+ * `.json`. Ontbreekt v5, dan wordt die maand bij openen opnieuw opgebouwd;
  * lukt dat niet, dan blijft de oude snapshot leesbaar.
  */
-const ARGUS_MONTH_CACHE_VERSION = 4;
+const ARGUS_MONTH_CACHE_VERSION = 5;
 
 /**
  * Functies
@@ -795,7 +798,7 @@ function finance_invoiced_through_from_task_rows(array $rows): array
 
 /**
  * Bestandssuffix van een nieuw geschreven maandsnapshot.
- * Lezen herkent ook `.v3.json`, `.v2.json` en legacy `.json`; die paden worden niet overschreven.
+ * Lezen herkent ook `.v4.json`, `.v3.json`, `.v2.json` en legacy `.json`; die paden worden niet overschreven.
  */
 function argus_month_cache_suffix(): string
 {
@@ -888,7 +891,7 @@ function argus_parse_month_snapshot_filename(string $company, string $filename):
 
 /**
  * Unieke opgeslagen maanden, nieuwste eerst. Een maand telt één keer,
- * ook als v4, v3, v2 én legacy naast elkaar staan.
+ * ook als v5, v4, v3, v2 én legacy naast elkaar staan.
  *
  * @param array<int,mixed> $filenames
  * @return list<string>
@@ -1041,7 +1044,7 @@ function argus_snapshot_bounds(array $snapshot): ?array
  */
 function argus_month_rebuild_failure_notice(string $reason = ''): string
 {
-    $notice = 'Deze maand kon niet opnieuw worden opgebouwd met de afdeling van de projectkaart. U ziet de eerder opgeslagen snapshot.';
+    $notice = 'Deze maand kon niet opnieuw worden opgebouwd met de geboekte afdeling naast de projectkaart. U ziet de eerder opgeslagen snapshot.';
     $reason = trim($reason);
     if ($reason !== '') {
         $notice .= ' ' . $reason;
@@ -1055,7 +1058,7 @@ function argus_month_rebuild_failure_notice(string $reason = ''): string
  */
 function argus_month_rebuild_pending_notice(): string
 {
-    return 'Deze maand wordt opnieuw opgebouwd zodat de afdeling van de projectkaart leidend is, met dezelfde peildatum als de opgeslagen snapshot. Lukt de herbouw niet, dan blijft deze vorige snapshot zichtbaar.';
+    return 'Deze maand wordt opnieuw opgebouwd zodat elke regel de geboekte afdeling toont en een afwijking van de projectkaart zichtbaar is, met dezelfde peildatum als de opgeslagen snapshot. Lukt de herbouw niet, dan blijft deze vorige snapshot zichtbaar.';
 }
 
 /**
@@ -1076,7 +1079,7 @@ function argus_month_snapshot_view(?array $data, int $version, string $period, ?
 /**
  * Opent een maand.
  * Een leesbaar bestand van de huidige cacheversie wint. Zonder dat bestand wordt
- * herbouwd met de peildatum uit de beste oudere snapshot (v3 boven v2 boven legacy).
+ * herbouwd met de peildatum uit de beste oudere snapshot (v4 boven v3 boven v2 boven legacy).
  * De herbouw schrijft alleen het bestand van de huidige cacheversie.
  * Zonder herbouw-callback blijft de oude snapshot staan en mag de aanroeper
  * de opbouw zelf starten. Een mislukte herbouw toont de oude snapshot met een melding.
