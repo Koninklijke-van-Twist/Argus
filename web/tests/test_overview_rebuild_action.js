@@ -1,7 +1,7 @@
 /**
  * Het maandoverzicht pakt een lopende verversing weer op.
  * Een bezette stap wordt gevolgd. Na afloop claimt hetzelfde tabblad verder,
- * of de pagina herlaadt als de v3 al af is.
+ * of de pagina herlaadt als de actuele snapshot al af is.
  */
 const fs = require('fs');
 const vm = require('vm');

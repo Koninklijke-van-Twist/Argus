@@ -31,7 +31,7 @@ function argusDetailRebuildNotice (phase, request)
         const base = request && request.failure_notice ? String(request.failure_notice) : '';
         return base !== ''
             ? base
-            : 'Deze maand kon niet opnieuw worden opgebouwd met de nieuwe Opbrengst VC-berekening. U ziet de eerder opgeslagen snapshot.';
+            : 'Deze maand kon niet opnieuw worden opgebouwd met de afdeling van de projectkaart. U ziet de eerder opgeslagen snapshot.';
     }
     if (phase === 'run')
     {
@@ -283,8 +283,7 @@ function argusRebuildStepFollowup (json)
                 project_manager: formatProjectManagerName(projDetail.Project_Manager || projSummary.Project_Manager || projDetail.Person_Responsible || ''),
                 document_status: toTrimmedString(projDetail.LVS_Document_Status || ''),
                 reason_code: toTrimmedString(projDetail.KVT_Reason_Code || ''),
-                cost_center: primaryDepartmentFromBreakdown(breakdown)
-                    || toTrimmedString(projSummary.Cost_Center || projDetail.LVS_Global_Dimension_1_Code || ''),
+                cost_center: toTrimmedString(projDetail.LVS_Global_Dimension_1_Code || projSummary.Cost_Center || ''),
                 project_total_costs: projectTotalCosts,
                 project_total_costs_to_date: parseDecimal(projSummary.Project_Actual_Costs_To_Date || 0),
                 project_total_revenue: projectTotalRevenue,
@@ -348,25 +347,6 @@ function argusRebuildStepFollowup (json)
 
         name = name.replace(/^KVT[\/\\]/i, '');
         return name.trim();
-    }
-
-    function primaryDepartmentFromBreakdown (breakdown)
-    {
-        const lineKeys = ['total_costs_lines', 'total_revenue_lines'];
-        for (const lineKey of lineKeys)
-        {
-            const lines = Array.isArray(breakdown[lineKey]) ? breakdown[lineKey] : [];
-            for (const line of lines)
-            {
-                const code = toTrimmedString(line && line.Global_Dimension_1_Code || '');
-                if (code !== '')
-                {
-                    return code;
-                }
-            }
-        }
-
-        return '';
     }
 
     function formatJobCompleteLabel (value)
@@ -955,7 +935,7 @@ function argusRebuildStepFollowup (json)
             case 'description':
                 return { type: 'bc-field', name: 'Description', source: 'Projecten', filters: baseFilter.replace('Job_No=', 'No=') };
             case 'cost_center':
-                return { type: 'bc-field', name: 'Global_Dimension_1_Code', source: 'Grootboekposten_OHW', filters: baseFilter };
+                return { type: 'bc-field', name: 'LVS_Global_Dimension_1_Code', source: 'Projecten', filters: baseFilter.replace('Job_No=', 'No=') };
             case 'expected_revenue':
                 return { type: 'computed-field', formula: 'ProjectTaken.LVS_Contract_Total_Price_2 (Job_Task_No=000, anders 000-000-000, anders som Boeking-taken uit JobTaskLines) - Opbrengst meerwerk' };
             case 'costs_vc':

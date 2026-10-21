@@ -61,6 +61,7 @@ Geen `auth.php` in deze repository (staat in `.gitignore`). Lokaal/op de server 
 - `web/maanden.php` en `web/month_rebuild_steps.php`: een mislukte voorcalculatie die de ruwe BC-body in de fout zet (vaak geen geldige UTF-8) wordt weer als JSON teruggegeven. `json_encode` zonder die vervanging gaf `false`, de response bleef leeg en de browser toonde HTTP 500 zonder JSON.
 - Voorcalculatie van een maand gaat in stappen van 40 projecten (`VOORCALCULATIE_PROJECT_CHUNK_SIZE`). Eén HTTP-request voor alle projecten werd na 10–15 minuten door de proxy afgekapt (`Netwerkfout`), terwijl de oude snapshot bleef staan. Elke stap vervangt de totalen van die projecten. De snapshot wordt pas gepubliceerd als elk project uit de maandlijst een totaal heeft. `maanden.php` en `maand-detail.php` laten het sessie-lock los en lezen de bedrijfslijst een uur uit `cache/companies/discovery.json`, zodat een andere pagina niet op Mímir wacht zolang een stap bezig is. `web/project_finance.php` is hier niet gewijzigd.
 - Een pagina die laadt, herlaadt of meepolt (`resume=1` of `join=1`) volgt een verse herbouw en verhoogt de generatie niet. Alleen Verversen neemt een verse lock over; de vervangen poging krijgt geen fouttoast maar sluit weer aan. De server hervat wel de eigen vrijgegeven lock. Voorcalculatie gaat in stappen van 8 projecten. Business Central gaf HTTP 500 op een lange `Job_No`-filter of een zware pagina; de proxy maakte daar een lege 500 van (`Server gaf geen geldige JSON terug`). `JobTaskLines` blijft op hoogstens 8 projecten of 480 tekens, elke finance-query zet `$top=100`, HTTP 500 wordt kleiner opnieuw geprobeerd en een timeout niet. OHW en al opgeslagen voorcalculatiechunks blijven staan. Opbrengst t/m is niet gewijzigd.
+- `web/maanden.php`, `web/maand-detail.js`, `web/finance_calculations.php` en `web/bc_fetch/column_grootboekposten_ohw.php`: de afdeling (Global Dimension 1) komt alleen van de projectkaart (`Projecten.LVS_Global_Dimension_1_Code`, opgeslagen als `Cost_Center`). Grootboekposten overschrijven die niet meer, ook niet bij het opbouwen of verversen van een maand en niet in de detailweergave. Maandsnapshots zijn cacheversie 4 (`.v4.json`). Een maand zonder v4 wordt opnieuw opgebouwd; `.v3.json`, `.v2.json` en legacy blijven staan. `web/project_finance.php` is hier niet gewijzigd.
 
 ## Tests
 
@@ -80,6 +81,7 @@ php web/tests/test_voorcalculatie_chunks.php
 php web/tests/test_company_discovery_cache.php
 php web/tests/test_odata_page_guard.php
 php web/tests/test_open_projects.php
+php web/tests/test_project_department.php
 php web/tests/test_json_guard.php
 php web/tests/test_month_snapshot_fallback.php
 php web/tests/test_month_rebuild_lock.php

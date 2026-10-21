@@ -954,6 +954,7 @@ function build_month_rows(
             'Customer_Id' => (string) ($proj['Bill_to_Customer_No'] ?? ''),
             'Customer_Name' => (string) ($proj['Bill_to_Name'] ?? ''),
             'Project_Manager' => (string) ($proj['Project_Manager'] ?? $proj['Person_Responsible'] ?? ''),
+            // Afdeling is Global Dimension 1 op de projectkaart. Grootboekposten overschrijven die niet.
             'Cost_Center' => (string) ($proj['LVS_Global_Dimension_1_Code'] ?? ''),
             'Project_Actual_Costs' => (float) ($projectTotals['costs'] ?? 0.0),
             'Project_Actual_Costs_To_Date' => 0.0,
@@ -1157,7 +1158,6 @@ function build_snapshot_from_column_wip(string $company, string $targetYm, array
         ? $wip['planning_breakdown_by_job']
         : [];
     $ohwCostLinesByProject = [];
-    $ohwRevenueLinesByProject = [];
     $columnDataTarget = is_array($wip['column_data_target'] ?? null) ? $wip['column_data_target'] : [];
     $projectNumbers = maanden_wip_sync_project_numbers_from_ohw($wip);
 
@@ -1190,7 +1190,6 @@ function build_snapshot_from_column_wip(string $company, string $targetYm, array
         );
 
         $ohwCostLinesByProject[$normProjectNo] = [];
-        $ohwRevenueLinesByProject[$normProjectNo] = [];
         $sourceRows = is_array($projectValues['rows'] ?? null) ? $projectValues['rows'] : [];
         foreach ($sourceRows as $sourceRow) {
             if (!is_array($sourceRow)) {
@@ -1204,8 +1203,6 @@ function build_snapshot_from_column_wip(string $company, string $targetYm, array
             $kind = bc_fetch_ohw_gl_account_kind((string) ($sourceRow['G_L_Account_No'] ?? ''));
             if ($kind === 'costs') {
                 $ohwCostLinesByProject[$normProjectNo][] = bc_fetch_ohw_breakdown_line_from_row($sourceRow);
-            } elseif ($kind === 'revenue') {
-                $ohwRevenueLinesByProject[$normProjectNo][] = bc_fetch_ohw_breakdown_line_from_row($sourceRow);
             }
         }
     }
@@ -1274,20 +1271,8 @@ function build_snapshot_from_column_wip(string $company, string $targetYm, array
                 continue;
             }
 
-            // Afd. van OHW-regels wint van de projectkaart. Zonder OHW-post blijft
-            // LVS_Global_Dimension_1_Code van Projecten staan. OHW-bedragen blijven dan 0.
-            $departmentCode = bc_fetch_primary_department_from_breakdown([
-                'total_costs_lines' => is_array($ohwCostLinesByProject[$normProjectNo] ?? null)
-                    ? $ohwCostLinesByProject[$normProjectNo]
-                    : [],
-                'total_revenue_lines' => is_array($ohwRevenueLinesByProject[$normProjectNo] ?? null)
-                    ? $ohwRevenueLinesByProject[$normProjectNo]
-                    : [],
-            ]);
-            if ($departmentCode !== '') {
-                $data['project_summaries'][$summaryIndex]['Cost_Center'] = $departmentCode;
-            }
-
+            // Cost_Center blijft LVS_Global_Dimension_1_Code van de projectkaart.
+            // Global_Dimension_1_Code op grootboekposten wijzigt de afdeling niet.
             $data['project_summaries'][$summaryIndex]['Project_Actual_Costs_To_Date'] = finance_to_float(
                 $costsThroughTodayByProject[$normProjectNo] ?? 0.0
             );
@@ -1796,7 +1781,7 @@ if (($_GET['action'] ?? '') === 'refresh_month') {
 // Per bedrijf en maand loopt hoogstens één herbouw. Een tweede tabblad volgt die.
 // resume=1 of join=1 (pagina laden of pollen) volgt een verse herbouw en neemt
 // die niet over. Alleen Verversen zonder die vlaggen mag een verse lock vervangen.
-// resume=1 of join=1 stopt ook zodra een actuele v3 er is en er geen WIP meer loopt.
+// resume=1 of join=1 stopt ook zodra een actuele snapshot er is en er geen WIP meer loopt.
 if (($_GET['action'] ?? '') === 'begin_month_refresh') {
     header('Content-Type: application/json; charset=utf-8');
 

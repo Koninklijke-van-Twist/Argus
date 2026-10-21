@@ -56,6 +56,8 @@ assertSame('join', followup({ ok: false, stale: true, error: 'Deze herbouw is ve
 assertSame('fail', followup({ ok: false, error: 'HTTP 500' }), 'een echte stapfout blijft een fout');
 assertSame(true, source.indexOf('error.stale') !== -1, 'de detailpagina behandelt een vervangen herbouw niet als fout');
 assertSame(true, source.indexOf('argusDetailRebuildNotice(\'wait\', request)') !== -1, 'na een vervangen poging toont de pagina de wachttekst');
+assertSame(-1, source.indexOf('primaryDepartmentFromBreakdown'), 'de detailpagina leidt de afdeling niet af uit grootboekposten');
+assertSame(true, source.indexOf('LVS_Global_Dimension_1_Code') !== -1, 'de afdeling komt van de projectkaart');
 
 if (failures > 0) {
     console.error(failures + ' assertion(s) failed');

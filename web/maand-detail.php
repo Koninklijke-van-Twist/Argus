@@ -203,7 +203,7 @@ if (($_GET['action'] ?? '') === 'save_user_settings') {
     exit;
 }
 
-// Load month data. Zonder v3 blijft de oude snapshot zichtbaar en start de pagina
+// Load month data. Zonder de actuele snapshot blijft de oude snapshot zichtbaar en start de pagina
 // een herbouw met de peildatum uit dat bestand. Een lopende WIP wordt voortgezet
 // en niet gewist. Oude bestanden worden niet vervangen.
 $monthData = null;

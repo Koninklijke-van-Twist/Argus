@@ -98,11 +98,14 @@ const FINANCE_JOB_TASK_LINES_DEADLINE_SECONDS = 300;
  * Versie 3 bewaart snapshots als `.v3.json`. Opbrengst VC komt uit
  * LVS_Contract_Total_Price_2 minus het al getoonde meerwerk. Versie 2 blijft
  * daardoor niet hangen (ticket #1264).
- * Oudere bestanden blijven staan. De maandlijst herkent v3, v2 en legacy
- * `.json`. Ontbreekt v3, dan wordt die maand bij openen opnieuw opgebouwd;
+ * Versie 4 bewaart snapshots als `.v4.json`. De afdeling (Cost_Center) komt
+ * alleen van de projectkaart (`LVS_Global_Dimension_1_Code`, Global Dimension 1).
+ * Grootboekposten overschrijven die niet meer (Asclepius #1275).
+ * Oudere bestanden blijven staan. De maandlijst herkent v4, v3, v2 en legacy
+ * `.json`. Ontbreekt v4, dan wordt die maand bij openen opnieuw opgebouwd;
  * lukt dat niet, dan blijft de oude snapshot leesbaar.
  */
-const ARGUS_MONTH_CACHE_VERSION = 3;
+const ARGUS_MONTH_CACHE_VERSION = 4;
 
 /**
  * Functies
@@ -792,7 +795,7 @@ function finance_invoiced_through_from_task_rows(array $rows): array
 
 /**
  * Bestandssuffix van een nieuw geschreven maandsnapshot.
- * Lezen herkent ook `.v2.json` en legacy `.json`; die paden worden niet overschreven.
+ * Lezen herkent ook `.v3.json`, `.v2.json` en legacy `.json`; die paden worden niet overschreven.
  */
 function argus_month_cache_suffix(): string
 {
@@ -827,14 +830,11 @@ function argus_month_snapshot_basename(string $company, string $yearMonth, int $
         return null;
     }
 
-    if ($version === 3) {
-        return $slug . '_' . $yearMonth . '.v3.json';
-    }
-    if ($version === 2) {
-        return $slug . '_' . $yearMonth . '.v2.json';
-    }
     if ($version === 1) {
         return $slug . '_' . $yearMonth . '.json';
+    }
+    if ($version >= 2 && $version <= ARGUS_MONTH_CACHE_VERSION) {
+        return $slug . '_' . $yearMonth . '.v' . $version . '.json';
     }
 
     return null;
@@ -843,7 +843,7 @@ function argus_month_snapshot_basename(string $company, string $yearMonth, int $
 /**
  * Leest jaar-maand en versie uit een cachebestandsnaam.
  * WIP-bestanden en tijdelijke schrijfsels horen niet in de maandlijst.
- * Voorrang later: v3, dan v2, dan legacy `.json`.
+ * Voorrang later: huidige cacheversie, dan oudere genummerde snapshots, dan legacy `.json`.
  *
  * @return array{year_month:string,version:int}|null
  */
@@ -864,10 +864,15 @@ function argus_parse_month_snapshot_filename(string $company, string $filename):
         return null;
     }
 
-    if (preg_match('/^(\d{4}-\d{2})\.v([23])\.json$/', $rest, $matches) === 1) {
+    if (preg_match('/^(\d{4}-\d{2})\.v(\d+)\.json$/', $rest, $matches) === 1) {
+        $version = (int) $matches[2];
+        if ($version < 2 || $version > ARGUS_MONTH_CACHE_VERSION) {
+            return null;
+        }
+
         return [
             'year_month' => $matches[1],
-            'version' => (int) $matches[2],
+            'version' => $version,
         ];
     }
 
@@ -883,7 +888,7 @@ function argus_parse_month_snapshot_filename(string $company, string $filename):
 
 /**
  * Unieke opgeslagen maanden, nieuwste eerst. Een maand telt één keer,
- * ook als v3, v2 én legacy naast elkaar staan.
+ * ook als v4, v3, v2 én legacy naast elkaar staan.
  *
  * @param array<int,mixed> $filenames
  * @return list<string>
@@ -964,7 +969,7 @@ function argus_read_month_snapshot_file(string $path): ?array
 }
 
 /**
- * Hoogste leesbare snapshot voor een maand: v3, anders v2, anders legacy.
+ * Hoogste leesbare snapshot voor een maand: huidige versie, anders ouder, anders legacy.
  *
  * @return array{data:?array,version:int,path:?string}
  */
@@ -979,7 +984,7 @@ function argus_load_best_month_snapshot(string $dir, string $company, string $ye
         return $empty;
     }
 
-    foreach ([3, 2, 1] as $version) {
+    for ($version = ARGUS_MONTH_CACHE_VERSION; $version >= 1; $version--) {
         $basename = argus_month_snapshot_basename($company, $yearMonth, $version);
         if ($basename === null) {
             continue;
@@ -1032,11 +1037,11 @@ function argus_snapshot_bounds(array $snapshot): ?array
 }
 
 /**
- * Melding wanneer herbouw naar v3 niet lukt. De oude snapshot blijft de bron.
+ * Melding wanneer herbouw naar de huidige cacheversie niet lukt. De oude snapshot blijft de bron.
  */
 function argus_month_rebuild_failure_notice(string $reason = ''): string
 {
-    $notice = 'Deze maand kon niet opnieuw worden opgebouwd met de nieuwe Opbrengst VC-berekening. U ziet de eerder opgeslagen snapshot.';
+    $notice = 'Deze maand kon niet opnieuw worden opgebouwd met de afdeling van de projectkaart. U ziet de eerder opgeslagen snapshot.';
     $reason = trim($reason);
     if ($reason !== '') {
         $notice .= ' ' . $reason;
@@ -1046,11 +1051,11 @@ function argus_month_rebuild_failure_notice(string $reason = ''): string
 }
 
 /**
- * Melding terwijl een oude maand nog naar v3 wordt opgebouwd.
+ * Melding terwijl een oude maand nog naar de huidige cacheversie wordt opgebouwd.
  */
 function argus_month_rebuild_pending_notice(): string
 {
-    return 'Deze maand wordt opnieuw opgebouwd met de nieuwe Opbrengst VC-berekening, met dezelfde peildatum als de opgeslagen snapshot. Lukt de herbouw niet, dan blijft deze vorige snapshot zichtbaar.';
+    return 'Deze maand wordt opnieuw opgebouwd zodat de afdeling van de projectkaart leidend is, met dezelfde peildatum als de opgeslagen snapshot. Lukt de herbouw niet, dan blijft deze vorige snapshot zichtbaar.';
 }
 
 /**
@@ -1070,8 +1075,9 @@ function argus_month_snapshot_view(?array $data, int $version, string $period, ?
 
 /**
  * Opent een maand.
- * Een leesbaar v3-bestand wint. Zonder v3 wordt herbouwd met de peildatum uit
- * de beste oudere snapshot (v2 boven legacy). De herbouw schrijft alleen `.v3.json`.
+ * Een leesbaar bestand van de huidige cacheversie wint. Zonder dat bestand wordt
+ * herbouwd met de peildatum uit de beste oudere snapshot (v3 boven v2 boven legacy).
+ * De herbouw schrijft alleen het bestand van de huidige cacheversie.
  * Zonder herbouw-callback blijft de oude snapshot staan en mag de aanroeper
  * de opbouw zelf starten. Een mislukte herbouw toont de oude snapshot met een melding.
  *
@@ -1085,10 +1091,10 @@ function argus_open_month_snapshot(string $dir, string $company, string $yearMon
     }
 
     $loaded = argus_load_best_month_snapshot($dir, $company, $yearMonth);
-    if ($loaded['version'] === 3 && is_array($loaded['data'])) {
+    if ($loaded['version'] === ARGUS_MONTH_CACHE_VERSION && is_array($loaded['data'])) {
         return argus_month_snapshot_view(
             $loaded['data'],
-            3,
+            ARGUS_MONTH_CACHE_VERSION,
             argus_snapshot_period($loaded['data'], $yearMonth),
             null,
             false,
@@ -1096,9 +1102,9 @@ function argus_open_month_snapshot(string $dir, string $company, string $yearMon
         );
     }
 
-    $v3Basename = argus_month_snapshot_basename($company, $yearMonth, 3);
-    $v3Path = $v3Basename !== null ? ($dir . DIRECTORY_SEPARATOR . $v3Basename) : '';
-    if ($v3Path !== '' && is_file($v3Path)) {
+    $currentBasename = argus_month_snapshot_basename($company, $yearMonth, ARGUS_MONTH_CACHE_VERSION);
+    $currentPath = $currentBasename !== null ? ($dir . DIRECTORY_SEPARATOR . $currentBasename) : '';
+    if ($currentPath !== '' && is_file($currentPath)) {
         $period = is_array($loaded['data'])
             ? argus_snapshot_period($loaded['data'], $yearMonth)
             : $yearMonth;
@@ -1107,7 +1113,7 @@ function argus_open_month_snapshot(string $dir, string $company, string $yearMon
             is_array($loaded['data']) ? $loaded['data'] : null,
             (int) $loaded['version'],
             $period,
-            argus_month_rebuild_failure_notice('Het v3-bestand is onleesbaar en is niet overschreven.'),
+            argus_month_rebuild_failure_notice('Het v' . ARGUS_MONTH_CACHE_VERSION . '-bestand is onleesbaar en is niet overschreven.'),
             false,
             false
         );
@@ -1165,8 +1171,8 @@ function argus_open_month_snapshot(string $dir, string $company, string $yearMon
         }
     }
 
-    if ($v3Path === '' || !argus_publish_snapshot_file(
-        $v3Path,
+    if ($currentPath === '' || !argus_publish_snapshot_file(
+        $currentPath,
         $built,
         JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT
     )) {
@@ -1180,7 +1186,7 @@ function argus_open_month_snapshot(string $dir, string $company, string $yearMon
         );
     }
 
-    return argus_month_snapshot_view($built, 3, $period, null, true, false);
+    return argus_month_snapshot_view($built, ARGUS_MONTH_CACHE_VERSION, $period, null, true, false);
 }
 
 /**
@@ -1391,7 +1397,7 @@ function argus_month_rebuild_lock_is_fresh(int $updatedAt, int $now, int $ttlSec
 }
 
 /**
- * Verwijdert WIP van vóór de refresh-id. De lopende `{id}.v3.json`, locks en snapshots blijven.
+ * Verwijdert WIP van vóór de refresh-id. De lopende refresh-WIP, locks en snapshots blijven.
  */
 function argus_delete_legacy_month_wip(string $dir, string $company, string $yearMonth): void
 {
@@ -1433,7 +1439,7 @@ function argus_delete_legacy_month_wip(string $dir, string $company, string $yea
  * De server ($watchFresh false en stopWhenPublished) hervat wel de eigen
  * vrijgegeven lock. Een lock zonder generatie, of met een tijdstip dat niet
  * verloopt, wordt overgenomen. Legacy-WIP zonder refresh-id wordt opgeruimd.
- * Snapshots en de geldige WIP blijven staan. Zonder WIP en met een actuele v3
+ * Snapshots en de geldige WIP blijven staan. Zonder WIP en met een actuele snapshot
  * stopt een automatische herbouw (stopWhenPublished).
  *
  * @return array{ok:bool,refresh_id:string,role:string,resumed:bool,owner:string,published:bool,error?:string}
