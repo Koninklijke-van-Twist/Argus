@@ -203,7 +203,7 @@ if (($_GET['action'] ?? '') === 'save_user_settings') {
     exit;
 }
 
-// Load month data. Zonder v3 blijft de oude snapshot zichtbaar en start de pagina
+// Load month data. Zonder de actuele snapshot blijft de oude snapshot zichtbaar en start de pagina
 // een herbouw met de peildatum uit dat bestand. Een lopende WIP wordt voortgezet
 // en niet gewist. Oude bestanden worden niet vervangen.
 $monthData = null;
@@ -800,6 +800,13 @@ $initialData = [
 
         .project-row td {
             background: #f9fafb;
+        }
+
+        .project-row td.dept-mismatch,
+        td.dept-mismatch {
+            background: #fff7ed;
+            color: #9a3412;
+            box-shadow: inset 0 0 0 1px #fdba74;
         }
 
         .project-row-expanded td {

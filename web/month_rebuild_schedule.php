@@ -84,8 +84,9 @@ function argus_company_open_wip_months(string $dir, string $company): array
 }
 
 /**
- * Maanden zonder .v3.json, of met een open Verversen-WIP.
- * Een leesbare of onleesbare v3 zonder WIP blijft staan.
+ * Maanden zonder de actuele snapshot, of met een open Verversen-WIP.
+ * Een leesbare of onleesbare actuele snapshot zonder WIP blijft staan.
+ * Oudere snapshots (v4, v3, v2, legacy) worden opnieuw opgebouwd.
  * Elk bedrijfsslug komt één keer voor.
  *
  * @param array<int,mixed> $companies
@@ -116,8 +117,8 @@ function argus_month_rebuild_candidates(string $dir, array $companies): array
 
         foreach (array_keys($months) as $yearMonth) {
             $openWip = argus_active_month_wip_refresh_id($dir, $company, $yearMonth) !== '';
-            $v3Name = argus_month_snapshot_basename($company, $yearMonth, 3);
-            $hasV3 = $v3Name !== null && is_file($dir . DIRECTORY_SEPARATOR . $v3Name);
+            $currentName = argus_month_snapshot_basename($company, $yearMonth, ARGUS_MONTH_CACHE_VERSION);
+            $hasCurrent = $currentName !== null && is_file($dir . DIRECTORY_SEPARATOR . $currentName);
             if ($openWip) {
                 $jobs[] = [
                     'company' => $company,
@@ -126,11 +127,11 @@ function argus_month_rebuild_candidates(string $dir, array $companies): array
                 ];
                 continue;
             }
-            if (!$hasV3) {
+            if (!$hasCurrent) {
                 $jobs[] = [
                     'company' => $company,
                     'year_month' => $yearMonth,
-                    'reason' => 'missing_v3',
+                    'reason' => 'missing_v' . ARGUS_MONTH_CACHE_VERSION,
                 ];
             }
         }

@@ -56,6 +56,13 @@ assertSame('join', followup({ ok: false, stale: true, error: 'Deze herbouw is ve
 assertSame('fail', followup({ ok: false, error: 'HTTP 500' }), 'een echte stapfout blijft een fout');
 assertSame(true, source.indexOf('error.stale') !== -1, 'de detailpagina behandelt een vervangen herbouw niet als fout');
 assertSame(true, source.indexOf('argusDetailRebuildNotice(\'wait\', request)') !== -1, 'na een vervangen poging toont de pagina de wachttekst');
+assertSame(true, source.indexOf('primaryDepartmentFromBreakdown') !== -1, 'de getoonde afdeling komt weer uit de geboekte regel');
+assertSame(true, source.indexOf('dept-mismatch') !== -1, 'een afwijkende afdeling krijgt een highlightklasse');
+
+const mismatchTitle = loadFunction('argusDepartmentMismatchTitle');
+assertSame('', mismatchTitle('50', '50'), 'gelijke afdeling krijgt geen tooltip');
+assertSame('', mismatchTitle(' 50 ', '50'), 'witruimte telt niet als afwijking');
+assertSame('Regel is op afdeling 10 geboekt, maar project is afdeling 50', mismatchTitle('10', '50'), 'de tooltip noemt de geboekte en de projectafdeling');
 
 if (failures > 0) {
     console.error(failures + ' assertion(s) failed');

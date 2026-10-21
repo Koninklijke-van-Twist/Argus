@@ -1,9 +1,9 @@
 <?php
 
 /**
- * Server-herbouw pakt maanden zonder v3 en open WIP.
+ * Server-herbouw pakt maanden zonder v5 en open WIP.
  * Een verse browserlock blijft van dat tabblad.
- * Publicatie schrijft alleen .v3.json; v2 en legacy blijven byte-identiek.
+ * Publicatie schrijft alleen .v5.json; v4, v3, v2 en legacy blijven byte-identiek.
  */
 if (PHP_SAPI !== 'cli') {
     http_response_code(404);
@@ -57,13 +57,17 @@ $gas = 'KVT Gas';
 $dir = temp_cache();
 $legacyBytes = '{"year_month":"2026-08","label":"legacy"}';
 $v2Bytes = '{"year_month":"2026-09","cache_version":2,"label":"v2"}';
-$augustBytes = '{"year_month":"2026-07","cache_version":3,"label":"augustus"}';
+$augustBytes = '{"year_month":"2026-07","cache_version":5,"label":"augustus"}';
+$oldDepartmentBytes = '{"year_month":"2026-06","cache_version":3,"label":"oude-afdeling"}';
+$v4OnlyBytes = '{"year_month":"2026-05","cache_version":4,"label":"alleen-projectkaart"}';
 $gasBytes = '{"year_month":"2024-02","label":"gas"}';
 file_put_contents($dir . '/koninklijke_van_twist_2026-08.json', $legacyBytes);
 file_put_contents($dir . '/koninklijke_van_twist_2026-09.v2.json', $v2Bytes);
-file_put_contents($dir . '/koninklijke_van_twist_2026-07.v3.json', $augustBytes);
+file_put_contents($dir . '/koninklijke_van_twist_2026-07.v5.json', $augustBytes);
+file_put_contents($dir . '/koninklijke_van_twist_2026-06.v3.json', $oldDepartmentBytes);
+file_put_contents($dir . '/koninklijke_van_twist_2026-05.v4.json', $v4OnlyBytes);
 file_put_contents($dir . '/kvt_gas_2024-02.json', $gasBytes);
-file_put_contents($dir . '/koninklijke_van_twist_2026-11.v3.json', '{');
+file_put_contents($dir . '/koninklijke_van_twist_2026-11.v5.json', '{');
 file_put_contents($dir . '/koninklijke_van_twist_wip_2026-09.lock', '{"not":"a snapshot"}');
 
 $jobs = argus_month_rebuild_candidates($dir, [$company, $gas, $company]);
@@ -71,10 +75,12 @@ $jobKey = static function (array $job): string {
     return $job['company'] . '|' . $job['year_month'] . '|' . $job['reason'];
 };
 assert_same([
-    'Koninklijke van Twist|2026-09|missing_v3',
-    'Koninklijke van Twist|2026-08|missing_v3',
-    'KVT Gas|2024-02|missing_v3',
-], array_map($jobKey, $jobs), 'kandidaten zijn v2/legacy zonder v3, niet een kapotte of gave v3 en niet het lockbestand');
+    'Koninklijke van Twist|2026-09|missing_v5',
+    'Koninklijke van Twist|2026-08|missing_v5',
+    'Koninklijke van Twist|2026-06|missing_v5',
+    'Koninklijke van Twist|2026-05|missing_v5',
+    'KVT Gas|2024-02|missing_v5',
+], array_map($jobKey, $jobs), 'kandidaten zijn v4/v3/v2/legacy zonder v5, niet een kapotte of gave v5 en niet het lockbestand');
 
 $publishDir = temp_cache();
 file_put_contents($publishDir . '/koninklijke_van_twist_2026-09.v2.json', $v2Bytes);
@@ -91,9 +97,9 @@ $report = argus_run_scheduled_month_rebuilds(
         $serverDuring = argus_claim_running_month_rebuild($publishDir, $company, $yearMonth, argus_server_month_rebuild_owner(), true, 5000);
         $during = argus_claim_running_month_rebuild($publishDir, $company, $yearMonth, 'bbbbbbbbbbbbbbbb', true, 5000);
         if ($yearMonth === '2026-09') {
-            $v3 = argus_month_snapshot_basename($company, $yearMonth, 3);
-            argus_publish_snapshot_file($publishDir . '/' . $v3, [
-                'cache_version' => 3,
+            $current = argus_month_snapshot_basename($company, $yearMonth, ARGUS_MONTH_CACHE_VERSION);
+            argus_publish_snapshot_file($publishDir . '/' . $current, [
+                'cache_version' => ARGUS_MONTH_CACHE_VERSION,
                 'year_month' => $yearMonth,
                 'label' => 'nieuw',
             ]);
@@ -114,13 +120,13 @@ assert_same('watcher', is_array($serverDuring) ? ($serverDuring['role'] ?? '') :
 assert_same(1, is_array($serverDuring) ? ($serverDuring['generation'] ?? 0) : 0, 'een tweede server-run verhoogt de generatie niet');
 assert_same($v2Bytes, (string) file_get_contents($publishDir . '/koninklijke_van_twist_2026-09.v2.json'), 'publicatie laat het v2-bestand staan');
 assert_same($legacyBytes, (string) file_get_contents($publishDir . '/koninklijke_van_twist_2026-08.json'), 'publicatie laat het legacy-bestand staan');
-assert_true(is_file($publishDir . '/koninklijke_van_twist_2026-09.v3.json'), 'de herbouw schrijft een v3 naast de v2');
+assert_true(is_file($publishDir . '/koninklijke_van_twist_2026-09.v5.json'), 'de herbouw schrijft een v5 naast de v2');
 
 $browserDir = temp_cache();
 file_put_contents($browserDir . '/koninklijke_van_twist_2026-08.json', $legacyBytes);
 $browser = 'aaaaaaaaaaaaaaaa';
 $held = argus_claim_running_month_rebuild($browserDir, $company, '2026-08', $browser, true, 8000);
-assert_same('worker', $held['role'], 'het browsertabblad start de maand zonder v3');
+assert_same('worker', $held['role'], 'het browsertabblad start de maand zonder v5');
 assert_true(argus_month_rebuild_release($browserDir, $company, '2026-08', (string) $held['refresh_id'], (int) $held['generation']), 'het tabblad maakt de stap vrij');
 $beforeLock = (string) file_get_contents($browserDir . '/koninklijke_van_twist_wip_2026-08.lock');
 $skippedCalls = 0;
@@ -174,13 +180,13 @@ assert_same(false, $resume['ok'], 'een mislukte maand telt als fout');
 assert_same('open_wip', $resume['results'][0]['reason'] ?? '', 'de hervatting volgt de open WIP');
 assert_same($v2Bytes, (string) file_get_contents($resumeDir . '/koninklijke_van_twist_2026-09.v2.json'), 'een mislukte hervatting laat v2 staan');
 
-$wipWithV3 = temp_cache();
-file_put_contents($wipWithV3 . '/koninklijke_van_twist_2026-10.v3.json', '{"cache_version":3,"year_month":"2026-10"}');
-$seed = argus_claim_running_month_rebuild($wipWithV3, $company, '2026-10', $owner, false, 2000);
-assert_same('worker', $seed['role'], 'een verversing naast een v3 maakt WIP');
-argus_month_rebuild_release($wipWithV3, $company, '2026-10', (string) $seed['refresh_id'], (int) $seed['generation']);
-$openKeys = array_map($jobKey, argus_month_rebuild_candidates($wipWithV3, [$company]));
-assert_same(['Koninklijke van Twist|2026-10|open_wip'], $openKeys, 'een v3 met open WIP blijft een kandidaat');
+$wipWithCurrent = temp_cache();
+file_put_contents($wipWithCurrent . '/koninklijke_van_twist_2026-10.v5.json', '{"cache_version":5,"year_month":"2026-10"}');
+$seed = argus_claim_running_month_rebuild($wipWithCurrent, $company, '2026-10', $owner, false, 2000);
+assert_same('worker', $seed['role'], 'een verversing naast een v5 maakt WIP');
+argus_month_rebuild_release($wipWithCurrent, $company, '2026-10', (string) $seed['refresh_id'], (int) $seed['generation']);
+$openKeys = array_map($jobKey, argus_month_rebuild_candidates($wipWithCurrent, [$company]));
+assert_same(['Koninklijke van Twist|2026-10|open_wip'], $openKeys, 'een v5 met open WIP blijft een kandidaat');
 
 $sequence = [];
 $steps = argus_run_month_rebuild_steps(
@@ -262,7 +268,7 @@ assert_true($begin !== false && $delete !== false && $delete > $begin, 'begin_mo
 $beginBlock = substr($maanden, (int) $begin, (int) $delete - (int) $begin);
 assert_true(!str_contains($beginBlock, 'batch_wip_delete_all'), 'Verversen wist geen WIP bij de start');
 assert_true(!str_contains($beginBlock, 'unlink'), 'Verversen verwijdert de oude snapshot niet');
-assert_same('.v3.json', argus_month_cache_suffix(), 'een nieuwe snapshot blijft .v3.json');
+assert_same('.v5.json', argus_month_cache_suffix(), 'een nieuwe snapshot is .v5.json');
 assert_true(str_contains((string) file_get_contents(__DIR__ . '/../month_rebuild_steps.php'), 'collectProjectForecastForProjects'), 'voorcalculatie blijft de bron van Opbrengst t/m');
 
 $fetchDir = temp_cache();

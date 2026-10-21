@@ -259,7 +259,8 @@ function bc_fetch_ohw_breakdown_line_from_row(array $sourceRow): array
 }
 
 /**
- * Eerste niet-lege afdelingscode (Global_Dimension_1_Code) uit OHW-breakdownregels.
+ * Eerste niet-lege afdelingscode (Global_Dimension_1_Code) uit OHW-regels.
+ * Kostenregels gaan voor opbrengstregels. Een lege code slaat de functie over.
  */
 function bc_fetch_primary_department_from_breakdown(array $breakdown): string
 {

@@ -2,7 +2,7 @@
 
 /**
  * Nachtelijke maandherbouw zonder open browser.
- * Maanden zonder .v3.json en maanden met een open Verversen-WIP doorlopen
+ * Maanden zonder de actuele snapshot en maanden met een open Verversen-WIP doorlopen
  * dezelfde stappen als maanden.js: OHW, projectdetails, voorcalculatie
  * (Opbrengst t/m) en publicatie. max_age naar Mímir is 4 uur.
  *

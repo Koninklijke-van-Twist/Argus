@@ -954,7 +954,9 @@ function build_month_rows(
             'Customer_Id' => (string) ($proj['Bill_to_Customer_No'] ?? ''),
             'Customer_Name' => (string) ($proj['Bill_to_Name'] ?? ''),
             'Project_Manager' => (string) ($proj['Project_Manager'] ?? $proj['Person_Responsible'] ?? ''),
+            // Zonder geboekte dimensie blijft de projectkaart staan. Een grootboekpost overschrijft Cost_Center later.
             'Cost_Center' => (string) ($proj['LVS_Global_Dimension_1_Code'] ?? ''),
+            'Project_Department' => (string) ($proj['LVS_Global_Dimension_1_Code'] ?? ''),
             'Project_Actual_Costs' => (float) ($projectTotals['costs'] ?? 0.0),
             'Project_Actual_Costs_To_Date' => 0.0,
             // Gefactureerd t/m einde van de gekozen maand (Boeking-taken), niet de 800000-som.
@@ -1015,6 +1017,62 @@ function build_month_rows(
         'project_breakdowns' => $projectBreakdowns,
         'workorder_rows' => [],
     ];
+}
+
+/**
+ * Zet Cost_Center op de geboekte afdeling uit grootboekposten.
+ * Project_Department (projectkaart) blijft staan.
+ *
+ * @param array<string,mixed> $data
+ * @param array<int,mixed> $ohwRows
+ * @return array<string,mixed>
+ */
+function maanden_apply_booked_departments(array $data, array $ohwRows): array
+{
+    $costLinesByProject = [];
+    $revenueLinesByProject = [];
+    foreach ($ohwRows as $sourceRow) {
+        if (!is_array($sourceRow) || bc_fetch_ohw_should_ignore_row($sourceRow)) {
+            continue;
+        }
+
+        $normProjectNo = strtolower(trim((string) ($sourceRow['Job_No'] ?? '')));
+        if ($normProjectNo === '') {
+            continue;
+        }
+
+        $kind = bc_fetch_ohw_gl_account_kind((string) ($sourceRow['G_L_Account_No'] ?? ''));
+        if ($kind === 'costs') {
+            $costLinesByProject[$normProjectNo][] = $sourceRow;
+        } elseif ($kind === 'revenue') {
+            $revenueLinesByProject[$normProjectNo][] = $sourceRow;
+        }
+    }
+
+    if (!is_array($data['project_summaries'] ?? null)) {
+        return $data;
+    }
+
+    foreach ($data['project_summaries'] as $summaryIndex => $summaryRow) {
+        if (!is_array($summaryRow)) {
+            continue;
+        }
+
+        $normProjectNo = strtolower(trim((string) ($summaryRow['Job_No'] ?? '')));
+        if ($normProjectNo === '') {
+            continue;
+        }
+
+        $departmentCode = bc_fetch_primary_department_from_breakdown([
+            'total_costs_lines' => $costLinesByProject[$normProjectNo] ?? [],
+            'total_revenue_lines' => $revenueLinesByProject[$normProjectNo] ?? [],
+        ]);
+        if ($departmentCode !== '') {
+            $data['project_summaries'][$summaryIndex]['Cost_Center'] = $departmentCode;
+        }
+    }
+
+    return $data;
 }
 
 function fetch_month_data(string $company, string $yearMonth, array $auth): array
@@ -1124,6 +1182,7 @@ function fetch_month_data(string $company, string $yearMonth, array $auth): arra
         $planningTotalsByJob,
         $planningBreakdownByJob
     );
+    $result = maanden_apply_booked_departments($result, $ohwRows);
 
     $result['ohw_debug'] = [
         'loader_mode' => 'grootboekposten_ohw',
@@ -1274,8 +1333,7 @@ function build_snapshot_from_column_wip(string $company, string $targetYm, array
                 continue;
             }
 
-            // Afd. van OHW-regels wint van de projectkaart. Zonder OHW-post blijft
-            // LVS_Global_Dimension_1_Code van Projecten staan. OHW-bedragen blijven dan 0.
+            // De getoonde afdeling is de geboekte dimensie. De projectkaart blijft in Project_Department.
             $departmentCode = bc_fetch_primary_department_from_breakdown([
                 'total_costs_lines' => is_array($ohwCostLinesByProject[$normProjectNo] ?? null)
                     ? $ohwCostLinesByProject[$normProjectNo]
@@ -1796,7 +1854,7 @@ if (($_GET['action'] ?? '') === 'refresh_month') {
 // Per bedrijf en maand loopt hoogstens één herbouw. Een tweede tabblad volgt die.
 // resume=1 of join=1 (pagina laden of pollen) volgt een verse herbouw en neemt
 // die niet over. Alleen Verversen zonder die vlaggen mag een verse lock vervangen.
-// resume=1 of join=1 stopt ook zodra een actuele v3 er is en er geen WIP meer loopt.
+// resume=1 of join=1 stopt ook zodra een actuele snapshot er is en er geen WIP meer loopt.
 if (($_GET['action'] ?? '') === 'begin_month_refresh') {
     header('Content-Type: application/json; charset=utf-8');
 

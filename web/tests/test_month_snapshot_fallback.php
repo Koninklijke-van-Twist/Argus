@@ -1,9 +1,9 @@
 <?php
 
 /**
- * De maandlijst herkent v3, v2 en legacy `.json`.
- * Elke maand komt één keer voor, met voorrang v3 > v2 > legacy.
- * Herbouw schrijft alleen `.v3.json`. Mislukt die, dan blijft de oude snapshot
+ * De maandlijst herkent v5, v4, v3, v2 en legacy `.json`.
+ * Elke maand komt één keer voor, met voorrang v5 > v4 > v3 > v2 > legacy.
+ * Herbouw schrijft alleen `.v5.json`. Mislukt die, dan blijft de oude snapshot
  * staan, inclusief de melding. Oude bestanden worden niet overschreven.
  */
 if (PHP_SAPI !== 'cli') {
@@ -78,6 +78,37 @@ $v3October = [
         ],
     ],
 ];
+$v4October = [
+    'year_month' => '2026-10',
+    'cache_version' => 4,
+    'label' => 'v4',
+    'total_revenue' => 100,
+    'project_summaries' => [
+        ['Job_No' => 'PRJ1', 'Cost_Center' => '50'],
+    ],
+];
+$v5October = [
+    'year_month' => '2026-10',
+    'cache_version' => 5,
+    'label' => 'v5',
+    'total_revenue' => 101,
+    'project_summaries' => [
+        ['Job_No' => 'PRJ1', 'Cost_Center' => '10', 'Project_Department' => '50'],
+    ],
+    'ohw_debug' => [
+        'snapshot_bounds' => [
+            'posting_before' => '2026-11-01',
+            'reverse_after' => '2026-10-31',
+            'blank_reverse' => '0001-01-01',
+        ],
+    ],
+];
+$v3July = [
+    'year_month' => '2026-07',
+    'cache_version' => 3,
+    'label' => 'v3',
+    'total_revenue' => 7,
+];
 $legacyOctober = [
     'year_month' => '2026-10',
     'label' => 'oktober-legacy',
@@ -95,6 +126,9 @@ $files = [
     'koninklijke_van_twist_2026-08.json' => $legacyAugust,
     'koninklijke_van_twist_2026-10.v2.json' => $legacyOctober,
     'koninklijke_van_twist_2026-10.v3.json' => $v3October,
+    'koninklijke_van_twist_2026-10.v4.json' => $v4October,
+    'koninklijke_van_twist_2026-10.v5.json' => $v5October,
+    'koninklijke_van_twist_2026-07.v3.json' => $v3July,
     'hunter_van_twist_2026-01.json' => ['year_month' => '2026-01', 'label' => 'hunter'],
     'kvt_germany_2026-01.json' => ['year_month' => '2026-01', 'label' => 'germany'],
     'kvt_gas_2024-02.json' => ['year_month' => '2024-02', 'label' => 'gas', 'total_revenue' => 4],
@@ -106,14 +140,14 @@ foreach ($files as $name => $payload) {
     file_put_contents($dir . '/' . $name, $json);
 }
 file_put_contents($dir . '/koninklijke_van_twist_wip_2026-07.v2.json', '{"year_month":"2026-07"}');
-file_put_contents($dir . '/koninklijke_van_twist_wip_2026-07_abcdef0123456789.v3.json', '{"year_month":"2026-07"}');
+file_put_contents($dir . '/koninklijke_van_twist_wip_2026-07_abcdef0123456789.v5.json', '{"year_month":"2026-07"}');
 file_put_contents($dir . '/koninklijke_van_twist_2026-06.json.tmp.abcd', '{"year_month":"2026-06"}');
-file_put_contents($dir . '/koninklijke_van_twist_2026-11.v3.json', '{');
+file_put_contents($dir . '/koninklijke_van_twist_2026-11.v5.json', '{');
 
 $listed = argus_list_saved_months($dir, $company);
-assert_same(['2026-11', '2026-10', '2026-09', '2026-08'], $listed, 'elke maand één keer, nieuwste eerst; ook een onleesbaar v3-bestand telt mee');
+assert_same(['2026-11', '2026-10', '2026-09', '2026-08', '2026-07'], $listed, 'elke maand één keer, nieuwste eerst; ook een onleesbaar v5-bestand telt mee');
 assert_same(
-    ['2026-10', '2026-09', '2026-08'],
+    ['2026-10', '2026-09', '2026-08', '2026-07'],
     argus_list_saved_months_from_names($company, array_keys($files)),
     'dubbele 2026-09 valt samen'
 );
@@ -123,8 +157,13 @@ assert_same(2, $bestSeptember['version'], '2026-09 kiest v2 boven legacy');
 assert_same('v2', $bestSeptember['data']['label'] ?? '', 'de v2-inhoud wint van het oudere json-bestand');
 
 $bestOctober = argus_load_best_month_snapshot($dir, $company, '2026-10');
-assert_same(3, $bestOctober['version'], '2026-10 kiest v3 boven v2');
-assert_same('v3', $bestOctober['data']['label'] ?? '', 'v3-inhoud wint');
+assert_same(5, $bestOctober['version'], '2026-10 kiest v5 boven v4, v3 en v2');
+assert_same('v5', $bestOctober['data']['label'] ?? '', 'v5-inhoud wint');
+assert_same('10', $bestOctober['data']['project_summaries'][0]['Cost_Center'] ?? '', 'de actuele snapshot houdt de geboekte afdeling');
+assert_same('50', $bestOctober['data']['project_summaries'][0]['Project_Department'] ?? '', 'de actuele snapshot houdt de projectkaart ernaast');
+
+$bestJuly = argus_load_best_month_snapshot($dir, $company, '2026-07');
+assert_same(3, $bestJuly['version'], '2026-07 blijft leesbaar als v3 zolang v5 ontbreekt');
 
 assert_same([], argus_list_saved_months($dir . '-ontbreekt', 'KVT Gas'), 'een ontbrekende map is een lege lijst');
 $gasOnlyOthers = argus_list_saved_months($dir, 'KVT Gas');
@@ -139,11 +178,11 @@ assert_same([], argus_list_saved_months($emptyGas, 'KVT Gas'), 'KVT Gas zonder e
 
 $calls = 0;
 $pending = argus_open_month_snapshot($dir, $company, '2026-09', null);
-assert_same(true, $pending['needs_rebuild'], 'zonder v3 mag de pagina herbouwen');
+assert_same(true, $pending['needs_rebuild'], 'zonder v5 mag de pagina herbouwen');
 assert_same(false, $pending['rebuilt'], 'zonder callback wordt er niet geschreven');
 assert_same('v2', $pending['data']['label'] ?? '', 'in afwachting blijft de v2-snapshot zichtbaar');
 assert_same('2026-09', $pending['period'], 'peildatum komt uit de oude snapshot');
-assert_same(false, is_file($dir . '/koninklijke_van_twist_2026-09.v3.json'), 'wachten maakt nog geen v3-bestand');
+assert_same(false, is_file($dir . '/koninklijke_van_twist_2026-09.v5.json'), 'wachten maakt nog geen v5-bestand');
 assert_true(str_contains((string) $pending['notice'], 'opnieuw opgebouwd'), 'de gebruiker ziet dat herbouw loopt');
 
 $failed = argus_open_month_snapshot(
@@ -172,7 +211,7 @@ assert_true(
     str_contains((string) $failed['notice'], 'Business Central reageert niet'),
     'de oorzaak staat in de melding'
 );
-assert_same(false, is_file($dir . '/koninklijke_van_twist_2026-09.v3.json'), 'mislukking laat geen v3-bestand achter');
+assert_same(false, is_file($dir . '/koninklijke_van_twist_2026-09.v5.json'), 'mislukking laat geen v5-bestand achter');
 foreach ($raw as $name => $json) {
     assert_same($json, file_get_contents($dir . '/' . $name), 'mislukte herbouw laat ' . $name . ' ongemoeid');
 }
@@ -194,19 +233,20 @@ $opened = argus_open_month_snapshot(
     }
 );
 assert_same('v2', $rebuiltLabel, 'geslaagde herbouw leest de v2-snapshot als bron');
-assert_same(true, $opened['rebuilt'], 'herbouw publiceert v3');
-assert_same(3, $opened['version'], 'geopende maand is daarna versie 3');
-assert_same('nieuw', $opened['data']['label'] ?? '', 'de nieuwe Opbrengst VC-snapshot wordt getoond');
+assert_same(true, $opened['rebuilt'], 'herbouw publiceert v5');
+assert_same(5, $opened['version'], 'geopende maand is daarna versie 5');
+assert_same('nieuw', $opened['data']['label'] ?? '', 'de nieuwe snapshot wordt getoond');
 assert_same('2026-09', $opened['data']['year_month'] ?? '', 'de nieuwe snapshot houdt de oude periode');
-assert_same($boundsV2, $opened['data']['ohw_debug']['snapshot_bounds'] ?? null, 'de oude peildatum blijft op de v3-snapshot');
-assert_same(3, $opened['data']['cache_version'] ?? null, 'cacheversie is 3');
-assert_true(is_file($dir . '/koninklijke_van_twist_2026-09.v3.json'), 'alleen een v3-bestand is toegevoegd');
+assert_same($boundsV2, $opened['data']['ohw_debug']['snapshot_bounds'] ?? null, 'de oude peildatum blijft op de v5-snapshot');
+assert_same(5, $opened['data']['cache_version'] ?? null, 'cacheversie is 5');
+assert_true(is_file($dir . '/koninklijke_van_twist_2026-09.v5.json'), 'alleen een v5-bestand is toegevoegd');
+assert_same(false, is_file($dir . '/koninklijke_van_twist_2026-09.v4.json'), 'herbouw schrijft geen v4 over de oude berekening');
 foreach ($raw as $name => $json) {
     assert_same($json, file_get_contents($dir . '/' . $name), 'geslaagde herbouw overschrijft ' . $name . ' niet');
 }
-$stored = json_decode((string) file_get_contents($dir . '/koninklijke_van_twist_2026-09.v3.json'), true);
-assert_same(685000, $stored['total_revenue'] ?? null, 'v3-bestand bevat de nieuwe totalen');
-assert_same($boundsV2, $stored['ohw_debug']['snapshot_bounds'] ?? null, 'v3-bestand bewaart de peildatum');
+$stored = json_decode((string) file_get_contents($dir . '/koninklijke_van_twist_2026-09.v5.json'), true);
+assert_same(685000, $stored['total_revenue'] ?? null, 'v5-bestand bevat de nieuwe totalen');
+assert_same($boundsV2, $stored['ohw_debug']['snapshot_bounds'] ?? null, 'v5-bestand bewaart de peildatum');
 
 $augustCalls = 0;
 $august = argus_open_month_snapshot(
@@ -220,7 +260,7 @@ $august = argus_open_month_snapshot(
 );
 assert_same(1, $augustCalls, 'een maand met alleen legacy probeert herbouw');
 assert_same('augustus', $august['data']['label'] ?? '', 'lege herbouw valt terug op legacy');
-assert_same(false, is_file($dir . '/koninklijke_van_twist_2026-08.v3.json'), 'lege herbouw schrijft geen v3');
+assert_same(false, is_file($dir . '/koninklijke_van_twist_2026-08.v5.json'), 'lege herbouw schrijft geen v5');
 assert_same($raw['koninklijke_van_twist_2026-08.json'], file_get_contents($dir . '/koninklijke_van_twist_2026-08.json'), 'legacy augustus blijft bytegelijk');
 
 $skipped = 0;
@@ -233,11 +273,19 @@ $current = argus_open_month_snapshot(
         return ['label' => 'mag-niet'];
     }
 );
-assert_same(0, $skipped, 'een bestaande v3 wordt niet opnieuw opgebouwd');
-assert_same('v3', $current['data']['label'] ?? '', 'openen toont de v3-snapshot');
-assert_same($raw['koninklijke_van_twist_2026-10.v2.json'], file_get_contents($dir . '/koninklijke_van_twist_2026-10.v2.json'), 'v2 naast v3 blijft staan');
+assert_same(0, $skipped, 'een bestaande v5 wordt niet opnieuw opgebouwd');
+assert_same('v5', $current['data']['label'] ?? '', 'openen toont de v5-snapshot');
+assert_same($raw['koninklijke_van_twist_2026-10.v4.json'], file_get_contents($dir . '/koninklijke_van_twist_2026-10.v4.json'), 'v4 naast v5 blijft staan');
+assert_same($raw['koninklijke_van_twist_2026-10.v5.json'], file_get_contents($dir . '/koninklijke_van_twist_2026-10.v5.json'), 'v5 blijft staan');
+assert_same($raw['koninklijke_van_twist_2026-10.v3.json'], file_get_contents($dir . '/koninklijke_van_twist_2026-10.v3.json'), 'v3 naast v5 blijft staan');
+assert_same($raw['koninklijke_van_twist_2026-10.v2.json'], file_get_contents($dir . '/koninklijke_van_twist_2026-10.v2.json'), 'v2 naast v5 blijft staan');
 
-$brokenBefore = file_get_contents($dir . '/koninklijke_van_twist_2026-11.v3.json');
+$julyPending = argus_open_month_snapshot($dir, $company, '2026-07', null);
+assert_same(true, $julyPending['needs_rebuild'], 'een v3-snapshot wordt opnieuw opgebouwd');
+assert_same('v3', $julyPending['data']['label'] ?? '', 'tot de herbouw blijft de v3 zichtbaar');
+assert_same(false, is_file($dir . '/koninklijke_van_twist_2026-07.v5.json'), 'wachten op een v3 maakt nog geen v5');
+
+$brokenBefore = file_get_contents($dir . '/koninklijke_van_twist_2026-11.v5.json');
 $broken = argus_open_month_snapshot(
     $dir,
     $company,
@@ -246,34 +294,34 @@ $broken = argus_open_month_snapshot(
         return ['label' => 'overschrijf-niet'];
     }
 );
-assert_same(false, $broken['rebuilt'], 'onleesbaar v3 wordt niet overschreven');
+assert_same(false, $broken['rebuilt'], 'onleesbaar v5 wordt niet overschreven');
 assert_same(null, $broken['data'], 'zonder oudere snapshot is er niets om te tonen');
-assert_true(str_contains((string) $broken['notice'], 'niet overschreven'), 'de melding noemt het onleesbare v3-bestand');
-assert_same($brokenBefore, file_get_contents($dir . '/koninklijke_van_twist_2026-11.v3.json'), 'het kapotte v3-bestand blijft bytegelijk');
+assert_true(str_contains((string) $broken['notice'], 'niet overschreven'), 'de melding noemt het onleesbare v5-bestand');
+assert_same($brokenBefore, file_get_contents($dir . '/koninklijke_van_twist_2026-11.v5.json'), 'het kapotte v5-bestand blijft bytegelijk');
 
 $names = scandir($dir);
-$v3Names = [];
+$v5Names = [];
 foreach ($names as $name) {
-    if (is_string($name) && str_ends_with($name, '.v3.json') && !str_contains($name, 'wip_') && !str_contains($name, '.tmp.')) {
-        $v3Names[] = $name;
+    if (is_string($name) && str_ends_with($name, '.v5.json') && !str_contains($name, 'wip_') && !str_contains($name, '.tmp.')) {
+        $v5Names[] = $name;
     }
 }
-sort($v3Names);
+sort($v5Names);
 assert_same(
-    ['koninklijke_van_twist_2026-09.v3.json', 'koninklijke_van_twist_2026-10.v3.json', 'koninklijke_van_twist_2026-11.v3.json'],
-    $v3Names,
-    'herbouw voegt alleen het ontbrekende v3-bestand toe'
+    ['koninklijke_van_twist_2026-09.v5.json', 'koninklijke_van_twist_2026-10.v5.json', 'koninklijke_van_twist_2026-11.v5.json'],
+    $v5Names,
+    'herbouw voegt alleen het ontbrekende v5-bestand toe'
 );
 
 $wipDir = sys_get_temp_dir() . '/argus-wip-' . bin2hex(random_bytes(4));
 mkdir($wipDir);
-file_put_contents($wipDir . '/koninklijke_van_twist_wip_2026-09.v3.json', '{}');
-file_put_contents($wipDir . '/koninklijke_van_twist_wip_2026-09_aaaaaaaaaaaaaaaa.v3.json', '{}');
-file_put_contents($wipDir . '/koninklijke_van_twist_wip_2026-09_bbbbbbbbbbbbbbbb.v3.json', '{}');
-file_put_contents($wipDir . '/koninklijke_van_twist_wip_2026-08_cccccccccccccccc.v3.json', '{}');
+file_put_contents($wipDir . '/koninklijke_van_twist_wip_2026-09.v5.json', '{}');
+file_put_contents($wipDir . '/koninklijke_van_twist_wip_2026-09_aaaaaaaaaaaaaaaa.v5.json', '{}');
+file_put_contents($wipDir . '/koninklijke_van_twist_wip_2026-09_bbbbbbbbbbbbbbbb.v5.json', '{}');
+file_put_contents($wipDir . '/koninklijke_van_twist_wip_2026-08_cccccccccccccccc.v5.json', '{}');
 file_put_contents($wipDir . '/koninklijke_van_twist_wip_2026-09_abcdef0123456789.v2.json', '{}');
-touch($wipDir . '/koninklijke_van_twist_wip_2026-09_aaaaaaaaaaaaaaaa.v3.json', time() - 100);
-touch($wipDir . '/koninklijke_van_twist_wip_2026-09_bbbbbbbbbbbbbbbb.v3.json', time() - 10);
+touch($wipDir . '/koninklijke_van_twist_wip_2026-09_aaaaaaaaaaaaaaaa.v5.json', time() - 100);
+touch($wipDir . '/koninklijke_van_twist_wip_2026-09_bbbbbbbbbbbbbbbb.v5.json', time() - 10);
 assert_same(
     'bbbbbbbbbbbbbbbb',
     argus_active_month_wip_refresh_id($wipDir, $company, '2026-09'),
