@@ -400,11 +400,11 @@ function argusRebuildStepFollowup (json)
 
     function formatJobCompleteLabel (value)
     {
-        if (value === true || value === 1 || value === '1' || value === 'true' || value === 'Ja')
+        if (value === true || value === 1 || value === '1' || value === 'true' || value === 'Ja' || value === 'Yes' || value === 'yes')
         {
             return 'Ja';
         }
-        if (value === false || value === 0 || value === '0' || value === 'false' || value === 'Nee')
+        if (value === false || value === 0 || value === '0' || value === 'false' || value === 'Nee' || value === 'No' || value === 'no' || value === 'Nein')
         {
             return 'Nee';
         }
@@ -990,7 +990,7 @@ function argusRebuildStepFollowup (json)
             case 'costs_vc':
                 return { type: 'bc-field', name: 'LVS_Baseline_Total_Cost', source: 'ProjectTaken', filters: baseFilter + ',Job_Task_No=000, anders 000-000-000, anders som Boeking-taken (JobTaskLines)' };
             case 'extra_work':
-                return { type: 'bc-field', name: 'Line_Amount_LCY', source: 'FactureerbareProjectPlanningsRegels', filters: baseFilter + ',Type=GB-rekening|Grootboekrekening|GLAccount,No=800000,Line_Type!=Prognose,LVS_Job_Change_Order_No=gevuld' };
+                return { type: 'bc-field', name: 'Line_Amount_LCY', source: 'FactureerbareProjectPlanningsRegels', filters: baseFilter + ',Type=GB-rekening|Grootboekrekening|G/L Account|GLAccount,No=800000,Line_Type!=Prognose,LVS_Job_Change_Order_No=gevuld' };
             case 'margin_total':
                 return { type: 'computed-field', formula: 'Opbrengst VC (LVS_Contract_Total_Price_2 min Opbrengst meerwerk) - Kosten VC (taak 000, anders 000-000-000, anders som Boeking-taken uit JobTaskLines)' };
             case 'pct_ready':
