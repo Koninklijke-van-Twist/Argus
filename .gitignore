@@ -1,7 +1,30 @@
 
 web/auth.php
 
-web/cache/
+web/cache/*
+!web/cache/.htaccess
+!web/cache/index.html
+!web/cache/index.php
+!web/cache/odata/
+web/cache/odata/*
+!web/cache/odata/.htaccess
+!web/cache/odata/index.html
+!web/cache/odata/index.php
+!web/cache/usersettings/
+web/cache/usersettings/*
+!web/cache/usersettings/.htaccess
+!web/cache/usersettings/index.html
+!web/cache/usersettings/index.php
+!web/cache/companies/
+web/cache/companies/*
+!web/cache/companies/.htaccess
+!web/cache/companies/index.html
+!web/cache/companies/index.php
+
+web/data/*
+!web/data/.htaccess
+!web/data/index.html
+!web/data/index.php
 
 BC Webservices.txt
 

@@ -1,4 +1,7 @@
 <?php
+if (is_file(__DIR__ . '/../kvt_protect_dirs.php')) {
+    require_once __DIR__ . '/../kvt_protect_dirs.php';
+}
 
 /**
  * Includes/requires

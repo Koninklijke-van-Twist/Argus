@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/kvt_protect_dirs.php';
 
 /**
  * JSON-endpoints (alles met ?action=...) mogen nooit HTML-warnings of andere
@@ -15,8 +16,13 @@
 function argus_is_json_request(): bool
 {
     $action = $_GET['action'] ?? '';
+    if (is_string($action) && $action !== '') {
+        return true;
+    }
 
-    return is_string($action) && $action !== '';
+    $script = basename((string) ($_SERVER['SCRIPT_FILENAME'] ?? ''));
+
+    return $script === 'nightly.php' || $script === 'hourly.php';
 }
 
 /**

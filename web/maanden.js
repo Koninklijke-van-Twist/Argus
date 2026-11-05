@@ -1,3 +1,59 @@
+function argusOverviewRebuildAction (claim)
+{
+    if (!claim || claim.ok !== true)
+    {
+        return 'error';
+    }
+    if (claim.published === true)
+    {
+        return 'reload';
+    }
+    if (claim.role === 'watcher')
+    {
+        return 'poll';
+    }
+    if (!claim.refresh_id || !claim.generation)
+    {
+        return 'error';
+    }
+
+    return 'run';
+}
+
+function argusOverviewRebuildStatusText (action, monthLabel, errorText)
+{
+    const label = monthLabel || 'Deze maand';
+    if (action === 'poll')
+    {
+        return label + ' wordt opnieuw opgebouwd. Er loopt al een herbouw; dit scherm wacht en probeert het zo opnieuw.';
+    }
+    if (action === 'run')
+    {
+        return label + ' wordt opnieuw opgebouwd...';
+    }
+    if (action === 'error')
+    {
+        const extra = errorText ? String(errorText) : 'Onbekende fout';
+        return label + ' kon niet opnieuw worden opgebouwd. ' + extra;
+    }
+
+    return '';
+}
+
+function argusRebuildStepFollowup (json)
+{
+    if (json && json.stale === true)
+    {
+        return 'join';
+    }
+    if (!json || json.ok !== true)
+    {
+        return 'fail';
+    }
+
+    return 'continue';
+}
+
 (function ()
 {
     /**
@@ -881,7 +937,7 @@
         }).catch(function () {});
     }
 
-    function runMonthBuildFlow (ym, successMessage, refreshId)
+    function runMonthBuildFlow (ym, successMessage, refreshId, generation)
     {
         const effectiveTargetColumnSteps = targetColumnSteps.length > 0
             ? targetColumnSteps
@@ -999,8 +1055,9 @@
             totalSteps += newItems.length;
         }
 
-        function runVoorcalculatieStep ()
+        function runVoorcalculatieStep (attempt)
         {
+            const tries = Number(attempt) || 0;
             const chunkIndex = voorcalculatieChunkIndex;
             const progressKey = 'planning::voorcalculatie::' + chunkIndex;
             markProgressLoading(progressState, progressKey, totalSteps, completedSteps);
@@ -1019,6 +1076,7 @@
                 target_month: ym,
                 company: selectedCompany,
                 refresh_id: refreshId,
+                wip_generation: String(generation),
                 chunk_index: String(chunkIndex),
             });
             const stepLabel = voorcalculatieTotalChunks > 1
@@ -1028,8 +1086,19 @@
             fetchJsonWithRetry(subPlanningUrl, { method: 'POST', body: body })
                 .then(function (json)
                 {
-                    if (!json.ok)
+                    const followup = argusRebuildStepFollowup(json);
+                    if (followup === 'join')
                     {
+                        beginMonthBuild(ym, successMessage, true);
+                        return;
+                    }
+                    if (followup === 'fail')
+                    {
+                        if (tries < 1)
+                        {
+                            runVoorcalculatieStep(tries + 1);
+                            return;
+                        }
                         hideLoader();
                         toast('Fout bij voorcalculatie voor ' + formatMonth(ym) + ': ' + (json.error || 'Onbekende fout'), true, errorContext(ym, stepLabel));
                         return;
@@ -1061,6 +1130,11 @@
                 })
                 .catch(function (err)
                 {
+                    if (tries < 1)
+                    {
+                        runVoorcalculatieStep(tries + 1);
+                        return;
+                    }
                     hideLoader();
                     toast('Netwerkfout bij voorcalculatie voor ' + formatMonth(ym) + ': ' + err.message, true, errorContext(ym, stepLabel, err));
                 });
@@ -1100,6 +1174,7 @@
                 company: selectedCompany,
                 column_key: step.key,
                 refresh_id: refreshId,
+                wip_generation: String(generation),
             });
             if (isProjectDetails)
             {
@@ -1113,7 +1188,13 @@
             fetchJsonWithRetry(columnBatchUrl, { method: 'POST', body: body })
                 .then(function (json)
                 {
-                    if (!json.ok)
+                    const followup = argusRebuildStepFollowup(json);
+                    if (followup === 'join')
+                    {
+                        beginMonthBuild(ym, successMessage, true);
+                        return;
+                    }
+                    if (followup === 'fail')
                     {
                         hideLoader();
                         toast('Fout bij ' + step.label.toLowerCase() + ' voor ' + formatMonth(ym) + ': ' + (json.error || 'Onbekende fout'), true, errorContext(ym, stepLabel));
@@ -1165,11 +1246,21 @@
 
         function buildSnapshot ()
         {
-            const body = new URLSearchParams({ target_month: ym, company: selectedCompany, refresh_id: refreshId });
+            const body = new URLSearchParams({
+                target_month: ym,
+                company: selectedCompany,
+                refresh_id: refreshId,
+                wip_generation: String(generation),
+            });
             fetch('maanden.php?action=build_month_snapshot', { method: 'POST', body: body })
                 .then(parseFetchResponse)
                 .then(function (json)
                 {
+                    if (argusRebuildStepFollowup(json) === 'join')
+                    {
+                        beginMonthBuild(ym, successMessage, true);
+                        return;
+                    }
                     hideLoader();
                     if (!json.ok)
                     {
@@ -1194,27 +1285,125 @@
         runTargetColumnStep();
     }
 
-    function beginMonthBuild (ym, successMessage)
+    function monthRebuildOwner ()
+    {
+        const key = 'argusMonthRebuildOwner';
+        try
+        {
+            const existing = window.sessionStorage.getItem(key);
+            if (existing && /^[a-f0-9]{16}$/.test(existing))
+            {
+                return existing;
+            }
+            const bytes = new Uint8Array(8);
+            if (window.crypto && window.crypto.getRandomValues)
+            {
+                window.crypto.getRandomValues(bytes);
+            }
+            else
+            {
+                for (let i = 0; i < bytes.length; i++)
+                {
+                    bytes[i] = Math.floor(Math.random() * 256);
+                }
+            }
+            const owner = Array.from(bytes).map(function (value)
+            {
+                return value.toString(16).padStart(2, '0');
+            }).join('');
+            window.sessionStorage.setItem(key, owner);
+            return owner;
+        }
+        catch (error)
+        {
+            return '';
+        }
+    }
+
+    function beginMonthBuild (ym, successMessage, joinRunning)
     {
         showLoader('Bezig met ophalen...');
 
-        const body = new URLSearchParams({ year_month: ym, company: selectedCompany });
+        function showMonthCardStatus (statusText)
+        {
+            if (!monthGrid || !statusText)
+            {
+                return;
+            }
+            const card = monthGrid.querySelector('.month-card[data-ym="' + ym + '"]');
+            if (!card)
+            {
+                return;
+            }
+            let status = card.querySelector('.month-card-rebuild');
+            if (!status)
+            {
+                status = document.createElement('div');
+                status.className = 'month-card-fetched month-card-rebuild';
+                const actions = card.querySelector('.month-card-actions');
+                if (actions)
+                {
+                    card.insertBefore(status, actions);
+                }
+                else
+                {
+                    card.appendChild(status);
+                }
+            }
+            status.textContent = statusText;
+        }
+
+        const body = new URLSearchParams({
+            year_month: ym,
+            company: selectedCompany,
+            owner: monthRebuildOwner(),
+        });
+        if (joinRunning)
+        {
+            body.set('join', '1');
+        }
         fetch(beginRefreshUrl, { method: 'POST', body: body })
             .then(parseFetchResponse)
             .then(function (json)
             {
-                if (!json.ok || !json.refresh_id)
+                const action = argusOverviewRebuildAction(json);
+                const monthLabel = formatMonth(ym);
+                if (action === 'error')
                 {
                     hideLoader();
-                    toast('Fout bij starten van ' + formatMonth(ym) + ': ' + (json.error || 'Onbekende fout'), true, errorContext(ym, 'Maand verversen'));
+                    const reason = (json && json.error) || 'Onbekende fout';
+                    showMonthCardStatus(argusOverviewRebuildStatusText('error', monthLabel, reason));
+                    toast('Fout bij starten van ' + monthLabel + ': ' + reason, true, errorContext(ym, 'Maand verversen'));
+                    return;
+                }
+                if (action === 'reload')
+                {
+                    hideLoader();
+                    window.location.reload();
+                    return;
+                }
+                if (action === 'poll')
+                {
+                    const waiting = argusOverviewRebuildStatusText('poll', monthLabel, '');
+                    if (pageLoaderText)
+                    {
+                        pageLoaderText.textContent = waiting;
+                    }
+                    showMonthCardStatus(waiting);
+                    window.setTimeout(function ()
+                    {
+                        beginMonthBuild(ym, successMessage, true);
+                    }, 3000);
                     return;
                 }
 
-                runMonthBuildFlow(ym, successMessage, String(json.refresh_id));
+                showMonthCardStatus(argusOverviewRebuildStatusText('run', monthLabel, ''));
+                runMonthBuildFlow(ym, successMessage, String(json.refresh_id), Number(json.generation));
             })
             .catch(function (err)
             {
                 hideLoader();
+                showMonthCardStatus(argusOverviewRebuildStatusText('error', formatMonth(ym), err.message));
                 toast('Netwerkfout bij starten van ' + formatMonth(ym) + ': ' + err.message, true, errorContext(ym, 'Maand verversen', err));
             });
     }

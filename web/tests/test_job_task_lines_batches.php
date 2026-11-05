@@ -29,7 +29,7 @@ for ($i = 0; $i < 30; $i++) {
 $normal[] = 'PRJ0000000';
 $normal[] = '  ';
 $chunks = finance_job_task_lines_chunks($normal);
-check(count($chunks) === 2, '30 projecten en een duplicaat worden twee batches, kreeg ' . count($chunks));
+check(count($chunks) === 4, '30 projecten en een duplicaat worden vier batches, kreeg ' . count($chunks));
 $seen = [];
 foreach ($chunks as $chunk) {
     $filter = finance_job_task_lines_filter($chunk);

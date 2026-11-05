@@ -21,6 +21,7 @@ function bc_fetch_empty_planning_project(): array
             'extra_work' => 0.0,
             'aanneemsom' => 0.0,
             'contract_total_price' => 0.0,
+            'invoiced_through' => 0.0,
         ],
         'breakdown' => [
             'expected_revenue_lines' => [],
@@ -28,6 +29,7 @@ function bc_fetch_empty_planning_project(): array
             'extra_work_lines' => [],
             'aanneemsom_lines' => [],
             'contract_total_price_lines' => [],
+            'invoiced_through_lines' => [],
         ],
     ];
 }
@@ -35,7 +37,7 @@ function bc_fetch_empty_planning_project(): array
 /**
  * Haalt planning op voor 1 projectnummer.
  */
-function bc_fetch_column_planning_project(string $company, string $projectNumber, int $ttl): array
+function bc_fetch_column_planning_project(string $company, string $projectNumber, int $ttl, string $yearMonth = ''): array
 {
     $projectNo = trim($projectNumber);
     if ($projectNo === '') {
@@ -45,7 +47,7 @@ function bc_fetch_column_planning_project(string $company, string $projectNumber
     require_once __DIR__ . '/../auth_helper.php';
     $environment = auth_get_environment_for_company($company, 300);
     $financeService = new ProjectFinanceService($company, $environment);
-    $forecast = $financeService->collectProjectForecastForProjects([$projectNo], $ttl);
+    $forecast = $financeService->collectProjectForecastForProjects([$projectNo], $ttl, $yearMonth);
 
     $normalizedProjectNo = bc_fetch_normalize_project_no($projectNo);
     $totalsByProject = is_array($forecast['forecast_totals_by_job'] ?? null)
@@ -68,6 +70,7 @@ function bc_fetch_column_planning_project(string $company, string $projectNumber
     $result['totals']['extra_work'] = bc_fetch_float_value($totals, 'extra_work');
     $result['totals']['aanneemsom'] = bc_fetch_float_value($totals, 'aanneemsom');
     $result['totals']['contract_total_price'] = bc_fetch_float_value($totals, 'contract_total_price');
+    $result['totals']['invoiced_through'] = bc_fetch_float_value($totals, 'invoiced_through');
     $result['breakdown']['expected_revenue_lines'] = is_array($breakdown['expected_revenue_lines'] ?? null)
         ? $breakdown['expected_revenue_lines']
         : [];
@@ -82,6 +85,9 @@ function bc_fetch_column_planning_project(string $company, string $projectNumber
         : [];
     $result['breakdown']['contract_total_price_lines'] = is_array($breakdown['contract_total_price_lines'] ?? null)
         ? $breakdown['contract_total_price_lines']
+        : [];
+    $result['breakdown']['invoiced_through_lines'] = is_array($breakdown['invoiced_through_lines'] ?? null)
+        ? $breakdown['invoiced_through_lines']
         : [];
     $forecastWarning = $forecast['warning'] ?? null;
     $result['warning'] = is_string($forecastWarning) && trim($forecastWarning) !== ''
@@ -114,7 +120,7 @@ function bc_fetch_column_planning(string $company, string $yearMonth, array $pro
             }
 
             $normProjectNo = bc_fetch_normalize_project_no($projectNo);
-            $projectData = bc_fetch_column_planning_project($company, $projectNo, $ttl);
+            $projectData = bc_fetch_column_planning_project($company, $projectNo, $ttl, $yearMonth);
             $projectWarning = $projectData['warning'] ?? null;
             unset($projectData['warning']);
             $dictionary[$normProjectNo] = $projectData;

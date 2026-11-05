@@ -14,6 +14,7 @@ $GLOBALS['odata_calls'] = 0;
 $GLOBALS['jobtask_calls'] = 0;
 $GLOBALS['jobtask_filters'] = [];
 $GLOBALS['projecttaken_selects'] = [];
+$GLOBALS['odata_tops'] = [];
 $GLOBALS['jobtask_mode'] = 'ok';
 
 /**
@@ -59,6 +60,7 @@ function odata_get_all(string $url, array $auth, int $ttl): array
     parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
     $select = (string) ($query['$select'] ?? '');
     $filter = (string) ($query['$filter'] ?? '');
+    $GLOBALS['odata_tops'][] = (string) ($query['$top'] ?? '');
 
     if ($entity === 'ProjectTaken') {
         $GLOBALS['projecttaken_selects'][] = $select;
@@ -68,7 +70,7 @@ function odata_get_all(string $url, array $auth, int $ttl): array
             );
         }
 
-        if (in_array($GLOBALS['jobtask_mode'], ['many', 'fail-many', 'timeout-many'], true)) {
+        if (in_array($GLOBALS['jobtask_mode'], ['many', 'fail-many', 'timeout-many', 'http500-split', 'http500-single'], true)) {
             preg_match_all("/Job_No eq '([^']+)'/", $filter, $matches);
             $rows = [];
             foreach ($matches[1] as $job) {
@@ -116,6 +118,16 @@ function odata_get_all(string $url, array $auth, int $ttl): array
     if ($entity === 'JobTaskLines') {
         $GLOBALS['jobtask_calls']++;
         $GLOBALS['jobtask_filters'][] = $filter;
+        if ($GLOBALS['jobtask_mode'] === 'http500-single') {
+            throw new RuntimeException(
+                'HTTP 500 from OData: {"error":{"code":"Internal_ServerError","message":"filter te lang"}}'
+            );
+        }
+        if ($GLOBALS['jobtask_mode'] === 'http500-split' && str_contains($filter, ' or ')) {
+            throw new RuntimeException(
+                'HTTP 500 from OData: {"error":{"code":"Internal_ServerError","message":"filter te lang"}}'
+            );
+        }
         if ($GLOBALS['jobtask_mode'] === 'fail' || $GLOBALS['jobtask_mode'] === 'fail-many') {
             throw new RuntimeException(
                 'HTTP 400 from OData: {"error":{"code":"BadRequest","message":"JobTaskLines query failed.  CorrelationId:  deadbeef."}}'
@@ -129,7 +141,7 @@ function odata_get_all(string $url, array $auth, int $ttl): array
                 ['Description' => 'zonder sleutel', 'Job_Task_Type' => 'Boeking'],
             ];
         }
-        if ($GLOBALS['jobtask_mode'] === 'many') {
+        if ($GLOBALS['jobtask_mode'] === 'many' || $GLOBALS['jobtask_mode'] === 'http500-split') {
             preg_match_all("/Job_No eq '([^']+)'/", $filter, $matches);
             $rows = [];
             foreach ($matches[1] as $job) {
@@ -201,6 +213,7 @@ check($r['warning'] === null, 'geen melding als JobTaskLines het type levert: ' 
 check(empty($r['task_type_error']), 'geslaagde query blokkeert de snapshot niet');
 check($GLOBALS['jobtask_calls'] === 1, 'één fallback-project blijft één JobTaskLines-query, kreeg ' . $GLOBALS['jobtask_calls']);
 check($GLOBALS['odata_calls'] === 3, 'twee ProjectTaken-chunks plus één JobTaskLines, niet per project, kreeg ' . $GLOBALS['odata_calls']);
+check($GLOBALS['odata_tops'] !== [] && count(array_unique($GLOBALS['odata_tops'])) === 1 && $GLOBALS['odata_tops'][0] === '100', 'elke voorcalculatiepagina vraagt $top=100, kreeg ' . var_export($GLOBALS['odata_tops'], true));
 $jobFilter = (string) ($GLOBALS['jobtask_filters'][0] ?? '');
 check(str_contains($jobFilter, "Job_Task_Type eq 'Boeking'"), 'filter op Boeking: ' . $jobFilter);
 check(str_contains($jobFilter, '153390'), 'JobTaskLines beperkt tot fallback-projecten');
@@ -251,7 +264,7 @@ $GLOBALS['jobtask_mode'] = 'many';
 $GLOBALS['jobtask_calls'] = 0;
 $GLOBALS['jobtask_filters'] = [];
 $batched = $method->invoke($service, $many, 60);
-check($GLOBALS['jobtask_calls'] === 2, '40 fallback-projecten worden twee JobTaskLines-batches, kreeg ' . $GLOBALS['jobtask_calls']);
+check($GLOBALS['jobtask_calls'] === 5, '40 fallback-projecten worden vijf JobTaskLines-batches, kreeg ' . $GLOBALS['jobtask_calls']);
 check(empty($batched['task_type_error']), 'gebatchte query slaagt');
 $covered = [];
 foreach ($GLOBALS['jobtask_filters'] as $batchedFilter) {
@@ -276,6 +289,20 @@ $GLOBALS['jobtask_mode'] = 'timeout-many';
 $GLOBALS['jobtask_calls'] = 0;
 $method->invoke($service, $many, 60);
 check($GLOBALS['jobtask_calls'] === 1, 'een timeout stopt de rest, kreeg ' . $GLOBALS['jobtask_calls']);
+
+$GLOBALS['jobtask_mode'] = 'http500-split';
+$GLOBALS['jobtask_calls'] = 0;
+$split = $method->invoke($service, ['150000', '150001'], 60);
+check($GLOBALS['jobtask_calls'] === 3, 'HTTP 500 op een OR-filter splitst tot één project per query, kreeg ' . $GLOBALS['jobtask_calls']);
+check(empty($split['task_type_error']), 'gesplitste HTTP 500 levert alsnog de types');
+check(($split['totals']['150000'] ?? null) === 10.0, 'eerste project na de split houdt het bedrag');
+check(($split['totals']['150001'] ?? null) === 10.0, 'tweede project na de split houdt het bedrag');
+
+$GLOBALS['jobtask_mode'] = 'http500-single';
+$GLOBALS['jobtask_calls'] = 0;
+$singleFailed = $method->invoke($service, ['150000'], 60);
+check($GLOBALS['jobtask_calls'] === 2, 'HTTP 500 op één project wordt één keer opnieuw geprobeerd, kreeg ' . $GLOBALS['jobtask_calls']);
+check(!empty($singleFailed['task_type_error']), 'een blijvende HTTP 500 blokkeert de snapshot');
 
 if ($failures > 0) {
     fwrite(STDERR, "{$failures} assertion(s) failed\n");

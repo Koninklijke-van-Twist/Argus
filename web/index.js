@@ -2076,7 +2076,14 @@
 
     function normalizeStatus (value)
     {
-        const normalized = String(value || '').trim().toLowerCase();
+        // BC levert optieteksten in de taal van de BC-gebruiker (NL/EN/DE), soms met
+        // nummerprefix ('02 IN PROGRESS') of underscores ('In_Progress').
+        const normalized = String(value || '')
+            .trim()
+            .toLowerCase()
+            .replace(/_/g, ' ')
+            .replace(/\s+/g, ' ')
+            .replace(/^\d+\s+/, '');
         const aliases = {
             'open': 'open',
             'afgesloten': 'closed',
@@ -2085,7 +2092,26 @@
             'gepland': 'planned',
             'onderhanden': 'in-progress',
             'ondertekend': 'signed',
-            'uitgevoerd': 'completed'
+            'uitgevoerd': 'completed',
+            'closed': 'closed',
+            'cancelled': 'cancelled',
+            'canceled': 'cancelled',
+            'checked': 'checked',
+            'planned': 'planned',
+            'in progress': 'in-progress',
+            'signed': 'signed',
+            'completed': 'completed',
+            'offen': 'open',
+            'geschlossen': 'closed',
+            'abgeschlossen': 'closed',
+            'storniert': 'cancelled',
+            'kontrolliert': 'checked',
+            'geprüft': 'checked',
+            'geplant': 'planned',
+            'in bearbeitung': 'in-progress',
+            'unterschrieben': 'signed',
+            'ausgeführt': 'completed',
+            'erledigt': 'completed'
         };
 
         if (aliases[normalized])

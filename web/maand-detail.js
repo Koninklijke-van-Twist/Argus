@@ -1,3 +1,94 @@
+function argusDepartmentMismatchTitle (booked, projectDepartment)
+{
+    const lineCode = String(booked == null ? '' : booked).trim();
+    const projectCode = String(projectDepartment == null ? '' : projectDepartment).trim();
+    if (lineCode === projectCode)
+    {
+        return '';
+    }
+
+    return 'Regel is op afdeling ' + lineCode + ' geboekt, maar project is afdeling ' + projectCode;
+}
+
+function argusDetailRebuildPhase (claim)
+{
+    if (!claim || claim.ok !== true)
+    {
+        return 'error';
+    }
+    if (claim.published === true)
+    {
+        return 'reload';
+    }
+    if (claim.role === 'watcher')
+    {
+        return 'wait';
+    }
+    if (!claim.refresh_id || !claim.generation)
+    {
+        return 'error';
+    }
+
+    return 'run';
+}
+
+function argusDetailRebuildNotice (phase, request)
+{
+    if (phase === 'wait')
+    {
+        return 'Deze maand wordt opnieuw opgebouwd. Er loopt al een herbouw; deze pagina wacht en probeert het zo opnieuw. Lukt de herbouw niet, dan blijft de vorige snapshot zichtbaar.';
+    }
+    if (phase === 'error')
+    {
+        const base = request && request.failure_notice ? String(request.failure_notice) : '';
+        return base !== ''
+            ? base
+            : 'Deze maand kon niet opnieuw worden opgebouwd met de geboekte afdeling naast de projectkaart. U ziet de eerder opgeslagen snapshot.';
+    }
+    if (phase === 'run')
+    {
+        return 'Deze maand wordt opnieuw opgebouwd. OHW ophalen...';
+    }
+
+    return '';
+}
+
+function argusDetailRebuildStepNotice (stepKey)
+{
+    if (stepKey === 'grootboekposten_ohw')
+    {
+        return 'OHW ophalen...';
+    }
+    if (stepKey === 'project_details')
+    {
+        return 'Projectdetails ophalen...';
+    }
+    if (stepKey === 'planning')
+    {
+        return 'Voorcalculatie ophalen...';
+    }
+    if (stepKey === 'build')
+    {
+        return 'Snapshot opslaan...';
+    }
+
+    return 'Bezig met opnieuw opbouwen...';
+}
+
+function argusRebuildStepFollowup (json)
+{
+    if (json && json.stale === true)
+    {
+        return 'join';
+    }
+    if (!json || json.ok !== true)
+    {
+        return 'fail';
+    }
+
+    return 'continue';
+}
+
 (function ()
 {
     /**
@@ -207,7 +298,8 @@
                 document_status: toTrimmedString(projDetail.LVS_Document_Status || ''),
                 reason_code: toTrimmedString(projDetail.KVT_Reason_Code || ''),
                 cost_center: primaryDepartmentFromBreakdown(breakdown)
-                    || toTrimmedString(projSummary.Cost_Center || projDetail.LVS_Global_Dimension_1_Code || ''),
+                    || toTrimmedString(projSummary.Cost_Center || projDetail.LVS_Global_Dimension_1_Code || projSummary.Project_Department || ''),
+                project_department: toTrimmedString(projDetail.LVS_Global_Dimension_1_Code || projSummary.Project_Department || ''),
                 project_total_costs: projectTotalCosts,
                 project_total_costs_to_date: parseDecimal(projSummary.Project_Actual_Costs_To_Date || 0),
                 project_total_revenue: projectTotalRevenue,
@@ -309,13 +401,29 @@
         return '';
     }
 
+    function departmentDisplayCell (booked, projectDepartment)
+    {
+        const lineCode = toTrimmedString(booked);
+        const title = argusDepartmentMismatchTitle(lineCode, projectDepartment);
+        if (title === '')
+        {
+            return lineCode;
+        }
+
+        return {
+            text: lineCode,
+            title: title,
+            mismatch: true,
+        };
+    }
+
     function formatJobCompleteLabel (value)
     {
-        if (value === true || value === 1 || value === '1' || value === 'true' || value === 'Ja')
+        if (value === true || value === 1 || value === '1' || value === 'true' || value === 'Ja' || value === 'Yes' || value === 'yes')
         {
             return 'Ja';
         }
-        if (value === false || value === 0 || value === '0' || value === 'false' || value === 'Nee')
+        if (value === false || value === 0 || value === '0' || value === 'false' || value === 'Nee' || value === 'No' || value === 'no' || value === 'Nein')
         {
             return 'Nee';
         }
@@ -323,7 +431,7 @@
         return toTrimmedString(value);
     }
 
-    function mapOhwBreakdownRowToModal (line, preferCost)
+    function mapOhwBreakdownRowToModal (line, preferCost, projectDepartment)
     {
         const amount = preferCost
             ? parseDecimal(line.Total_Cost || line.WIP_Entry_Amount || 0)
@@ -336,7 +444,7 @@
             line.G_L_Account_No || '',
             line.WIP_Method_Used || '',
             line.Type || line.Entry_Type || '',
-            line.Global_Dimension_1_Code || '',
+            departmentDisplayCell(line && line.Global_Dimension_1_Code, projectDepartment),
             fmtCurrency(amount),
         ];
     }
@@ -893,21 +1001,21 @@
             case 'costs_to_date':
                 return { type: 'bc-field', name: 'WIP_Entry_Amount', source: 'Grootboekposten_OHW', filters: baseFilter + ',G_L_Account_No=899900,as_of=today' };
             case 'total_revenue':
-                return { type: 'bc-field', name: 'Line_Amount_LCY', source: 'FactureerbareProjectPlanningsRegels', filters: baseFilter + ',Type=GB-rekening|Grootboekrekening|GLAccount,No=800000,Line_Type!=Prognose' };
+                return { type: 'bc-field', name: 'Contract_Invoiced_Price', source: 'ProjectTaken', filters: baseFilter + ",Posting_Date_Filter eq '..einde-maand',Job_Task_Type=Boeking (JobTaskLines)" };
             case 'customer':
                 return { type: 'bc-field', name: 'Bill_to_Customer_No,Bill_to_Name', source: 'Projecten', filters: baseFilter.replace('Job_No=', 'No=') };
             case 'description':
                 return { type: 'bc-field', name: 'Description', source: 'Projecten', filters: baseFilter.replace('Job_No=', 'No=') };
             case 'cost_center':
-                return { type: 'bc-field', name: 'Global_Dimension_1_Code', source: 'Grootboekposten_OHW', filters: baseFilter };
+                return { type: 'bc-field', name: 'Global_Dimension_1_Code', source: 'Grootboekposten_OHW', filters: baseFilter + '; markering als die afwijkt van Projecten.LVS_Global_Dimension_1_Code' };
             case 'expected_revenue':
-                return { type: 'bc-field', name: 'LVS_Schedule_Total_Price_2', source: 'ProjectTaken', filters: baseFilter + ',Job_Task_No=000' };
+                return { type: 'computed-field', formula: 'ProjectTaken.LVS_Contract_Total_Price_2 (Job_Task_No=000, anders 000-000-000, anders som Boeking-taken uit JobTaskLines) - Opbrengst meerwerk' };
             case 'costs_vc':
                 return { type: 'bc-field', name: 'LVS_Baseline_Total_Cost', source: 'ProjectTaken', filters: baseFilter + ',Job_Task_No=000, anders 000-000-000, anders som Boeking-taken (JobTaskLines)' };
             case 'extra_work':
-                return { type: 'bc-field', name: 'Line_Amount_LCY', source: 'FactureerbareProjectPlanningsRegels', filters: baseFilter + ',Type=GB-rekening|Grootboekrekening|GLAccount,No=800000,Line_Type!=Prognose,LVS_Job_Change_Order_No=gevuld' };
+                return { type: 'bc-field', name: 'Line_Amount_LCY', source: 'FactureerbareProjectPlanningsRegels', filters: baseFilter + ',Type=GB-rekening|Grootboekrekening|G/L Account|GLAccount,No=800000,Line_Type!=Prognose,LVS_Job_Change_Order_No=gevuld' };
             case 'margin_total':
-                return { type: 'computed-field', formula: 'ProjectTaken.LVS_Schedule_Total_Price_2 (Job_Task_No=000) - Kosten VC (taak 000, anders 000-000-000, anders som Boeking-taken uit JobTaskLines)' };
+                return { type: 'computed-field', formula: 'Opbrengst VC (LVS_Contract_Total_Price_2 min Opbrengst meerwerk) - Kosten VC (taak 000, anders 000-000-000, anders som Boeking-taken uit JobTaskLines)' };
             case 'pct_ready':
                 return { type: 'computed-field', formula: 'Kosten t/m periode / Kosten VC' };
             case 'winst_ohw':
@@ -1192,7 +1300,7 @@
                             {
                                 return breakdown.total_costs_lines.map(function (line)
                                 {
-                                    return mapOhwBreakdownRowToModal(line, true);
+                                    return mapOhwBreakdownRowToModal(line, true, proj.project_department);
                                 });
                             },
                             function (breakdown)
@@ -1241,9 +1349,16 @@
                 case 'description':
                     td.textContent = proj.description || '';
                     break;
-                case 'cost_center':
+                case 'cost_center': {
                     td.textContent = proj.cost_center || '';
+                    const departmentTitle = argusDepartmentMismatchTitle(proj.cost_center, proj.project_department);
+                    if (departmentTitle !== '')
+                    {
+                        td.title = departmentTitle;
+                        td.classList.add('dept-mismatch');
+                    }
                     break;
+                }
                 case 'expected_revenue':
                     td.style.textAlign = 'right';
                     td.innerHTML = '<span class="aggregate-source-link amount-neutral">' + escapeHtml(fmtCurrency(computed.expected)) + '</span>';
@@ -1862,7 +1977,23 @@
             for (let i = 0; i < safeHeaders.length; i++)
             {
                 const td = document.createElement('td');
-                td.textContent = cells[i] !== undefined && cells[i] !== null ? String(cells[i]) : '';
+                const cell = cells[i];
+                if (cell && typeof cell === 'object')
+                {
+                    td.textContent = cell.text !== undefined && cell.text !== null ? String(cell.text) : '';
+                    if (cell.title)
+                    {
+                        td.title = String(cell.title);
+                    }
+                    if (cell.mismatch)
+                    {
+                        td.classList.add('dept-mismatch');
+                    }
+                }
+                else
+                {
+                    td.textContent = cell !== undefined && cell !== null ? String(cell) : '';
+                }
                 td.style.cssText = 'padding:5px 8px;border-bottom:1px solid #e7edf5;';
                 tr.appendChild(td);
             }
@@ -2238,20 +2369,336 @@
         if (tableScrollWrap) { syncTableHeight(tableScrollWrap); }
     }, { passive: true });
 
-    // Initial render
-    const hasRenderableProjects = Object.keys(projectMap).length > 0;
-    if (appEl && hasRenderableProjects)
+    function postSnapshotForm (url, params)
     {
-        renderDepartmentFilterBar();
-        renderTable();
-        updateSummary();
+        return fetch(url, { method: 'POST', body: new URLSearchParams(params) })
+            .then(function (res)
+            {
+                return res.text();
+            })
+            .then(function (rawText)
+            {
+                let json = null;
+                if (rawText !== '')
+                {
+                    try
+                    {
+                        json = JSON.parse(rawText);
+                    }
+                    catch (parseError)
+                    {
+                        json = null;
+                    }
+                }
+                if (!json || typeof json !== 'object')
+                {
+                    throw new Error('Server gaf geen geldige JSON terug.');
+                }
+                return json;
+            });
     }
-    else if (appEl && !appEl.querySelector('.error-box'))
+
+    function showRebuildProgress (text)
     {
-        const empty = document.createElement('div');
-        empty.className = 'empty';
-        empty.textContent = monthData ? 'Geen projecten gevonden voor deze maand.' : 'Geen maanddata geladen.';
-        appEl.appendChild(empty);
-        if (summaryBar) { summaryBar.style.display = 'none'; }
+        const notice = document.getElementById('snapshotNotice');
+        if (!notice)
+        {
+            return;
+        }
+        notice.className = 'notice-box';
+        notice.textContent = text;
+    }
+
+    function showRebuildFailure (request, reason)
+    {
+        const notice = document.getElementById('snapshotNotice');
+        if (!notice)
+        {
+            return;
+        }
+        notice.className = 'error-box';
+        const base = String(request.failure_notice || '');
+        const extra = String(reason || '').trim();
+        notice.textContent = extra !== '' && base.indexOf(extra) === -1
+            ? (base + ' ' + extra)
+            : (base || extra);
+    }
+
+    function runColumnChunks (request, refreshId, columnKey, generation)
+    {
+        const period = String(request.period || request.year_month || '');
+
+        function step (chunkIndex)
+        {
+            showRebuildProgress('Deze maand wordt opnieuw opgebouwd. ' + argusDetailRebuildStepNotice(columnKey));
+            const body = {
+                target_month: period,
+                batch_month: period,
+                company: String(request.company || ''),
+                column_key: columnKey,
+                refresh_id: refreshId,
+                wip_generation: String(generation),
+            };
+            if (columnKey === 'project_details')
+            {
+                body.chunk_index = String(chunkIndex);
+            }
+
+            return postSnapshotForm(request.column_url, body).then(function (json)
+            {
+                const followup = argusRebuildStepFollowup(json);
+                if (followup === 'join')
+                {
+                    const staleError = new Error(json.error || 'Deze herbouw is vervangen door een nieuwere poging.');
+                    staleError.stale = true;
+                    throw staleError;
+                }
+                if (followup === 'fail')
+                {
+                    throw new Error(json.error || 'Kolom ophalen mislukt.');
+                }
+                if (columnKey !== 'project_details')
+                {
+                    return json;
+                }
+                const total = Math.max(1, Number(json.total_chunks || 1));
+                if (json.chunks_complete || (chunkIndex + 1) >= total || chunkIndex >= 99)
+                {
+                    return json;
+                }
+                return step(chunkIndex + 1);
+            });
+        }
+
+        return step(0);
+    }
+
+    function runPlanningChunks (request, refreshId, generation)
+    {
+        const period = String(request.period || request.year_month || '');
+
+        function step (chunkIndex, attempt)
+        {
+            const tries = Number(attempt) || 0;
+            showRebuildProgress('Deze maand wordt opnieuw opgebouwd. ' + argusDetailRebuildStepNotice('planning'));
+            return postSnapshotForm(request.planning_url, {
+                target_month: period,
+                company: String(request.company || ''),
+                refresh_id: refreshId,
+                wip_generation: String(generation),
+                chunk_index: String(chunkIndex),
+            }).then(function (json)
+            {
+                const followup = argusRebuildStepFollowup(json);
+                if (followup === 'join')
+                {
+                    const staleError = new Error(json.error || 'Deze herbouw is vervangen door een nieuwere poging.');
+                    staleError.stale = true;
+                    throw staleError;
+                }
+                if (followup === 'fail')
+                {
+                    const failed = new Error(json.error || 'Voorcalculatie mislukt.');
+                    failed.retry = true;
+                    throw failed;
+                }
+                const total = Math.max(1, Number(json.total_chunks || 1));
+                if (json.chunks_complete || (chunkIndex + 1) >= total || chunkIndex >= 199)
+                {
+                    return json;
+                }
+                return step(chunkIndex + 1, 0);
+            }).catch(function (error)
+            {
+                if (error && error.stale)
+                {
+                    throw error;
+                }
+                if (tries < 1)
+                {
+                    return step(chunkIndex, tries + 1);
+                }
+                throw error;
+            });
+        }
+
+        return step(0, 0);
+    }
+
+    function monthRebuildOwner ()
+    {
+        const key = 'argusMonthRebuildOwner';
+        try
+        {
+            const existing = window.sessionStorage.getItem(key);
+            if (existing && /^[a-f0-9]{16}$/.test(existing))
+            {
+                return existing;
+            }
+            const bytes = new Uint8Array(8);
+            if (window.crypto && window.crypto.getRandomValues)
+            {
+                window.crypto.getRandomValues(bytes);
+            }
+            else
+            {
+                for (let i = 0; i < bytes.length; i++)
+                {
+                    bytes[i] = Math.floor(Math.random() * 256);
+                }
+            }
+            const owner = Array.from(bytes).map(function (value)
+            {
+                return value.toString(16).padStart(2, '0');
+            }).join('');
+            window.sessionStorage.setItem(key, owner);
+            return owner;
+        }
+        catch (error)
+        {
+            return '';
+        }
+    }
+
+    function runRebuildSteps (request, refreshId, generation)
+    {
+        const period = String(request.period || request.year_month || '');
+        const columns = Array.isArray(request.columns) && request.columns.length > 0
+            ? request.columns
+            : ['grootboekposten_ohw', 'project_details'];
+        let chain = Promise.resolve();
+        columns.forEach(function (columnKey)
+        {
+            chain = chain.then(function ()
+            {
+                return runColumnChunks(request, refreshId, String(columnKey), generation);
+            });
+        });
+        return chain.then(function ()
+        {
+            return runPlanningChunks(request, refreshId, generation);
+        }).then(function ()
+        {
+            showRebuildProgress('Deze maand wordt opnieuw opgebouwd. ' + argusDetailRebuildStepNotice('build'));
+            return postSnapshotForm(request.build_url, {
+                target_month: period,
+                company: String(request.company || ''),
+                refresh_id: refreshId,
+                wip_generation: String(generation),
+            });
+        }).then(function (built)
+        {
+            if (argusRebuildStepFollowup(built) === 'join')
+            {
+                const staleError = new Error((built && built.error) || 'Deze herbouw is vervangen door een nieuwere poging.');
+                staleError.stale = true;
+                throw staleError;
+            }
+            if (!built || !built.ok)
+            {
+                throw new Error((built && built.error) || 'Snapshot opslaan mislukt.');
+            }
+            window.location.reload();
+        });
+    }
+
+    function rebuildLegacyMonth (request)
+    {
+        const period = String(request.period || request.year_month || '');
+        const owner = monthRebuildOwner();
+
+        function claim ()
+        {
+            const beginParams = {
+                year_month: period,
+                company: String(request.company || ''),
+                owner: owner,
+            };
+            if (request.resume)
+            {
+                beginParams.resume = '1';
+            }
+            return postSnapshotForm(request.begin_url, beginParams);
+        }
+
+        function handleClaim (started)
+        {
+            const phase = argusDetailRebuildPhase(started);
+            if (phase === 'error')
+            {
+                throw new Error((started && started.error) || 'Herbouw starten mislukt.');
+            }
+            if (phase === 'reload')
+            {
+                window.location.reload();
+                return;
+            }
+            if (phase === 'wait')
+            {
+                showRebuildProgress(argusDetailRebuildNotice('wait', request));
+                window.setTimeout(function ()
+                {
+                    claim().then(handleClaim).catch(fail);
+                }, 3000);
+                return;
+            }
+            showRebuildProgress(argusDetailRebuildNotice('run', request));
+            return runRebuildSteps(request, String(started.refresh_id), Number(started.generation));
+        }
+
+        function fail (error)
+        {
+            if (error && error.stale)
+            {
+                showRebuildProgress(argusDetailRebuildNotice('wait', request));
+                window.setTimeout(function ()
+                {
+                    claim().then(handleClaim).catch(fail);
+                }, 3000);
+                return;
+            }
+            const reason = error && error.message ? error.message : '';
+            showRebuildFailure(request, reason);
+        }
+
+        claim()
+            .then(handleClaim)
+            .catch(fail);
+    }
+
+    // Initial render. Een fout in de tabel mag de herbouw niet overslaan:
+    // anders blijft de banner staan zonder dat er een stap wordt geclaimd.
+    const rebuildRequest = payload.rebuild && typeof payload.rebuild === 'object' ? payload.rebuild : null;
+    try
+    {
+        const hasRenderableProjects = Object.keys(projectMap).length > 0;
+        if (appEl && hasRenderableProjects)
+        {
+            renderDepartmentFilterBar();
+            renderTable();
+            updateSummary();
+        }
+        else if (appEl && !appEl.querySelector('.error-box'))
+        {
+            const empty = document.createElement('div');
+            empty.className = 'empty';
+            empty.textContent = monthData ? 'Geen projecten gevonden voor deze maand.' : 'Geen maanddata geladen.';
+            appEl.appendChild(empty);
+            if (summaryBar) { summaryBar.style.display = 'none'; }
+        }
+    }
+    catch (renderError)
+    {
+        if (!(rebuildRequest && monthData))
+        {
+            showRebuildFailure(
+                { failure_notice: 'De maandweergave stopte door een fout.' },
+                renderError && renderError.message ? renderError.message : ''
+            );
+        }
+    }
+    if (rebuildRequest && monthData)
+    {
+        rebuildLegacyMonth(rebuildRequest);
     }
 })();

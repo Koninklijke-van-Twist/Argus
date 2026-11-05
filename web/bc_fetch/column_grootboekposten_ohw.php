@@ -169,7 +169,7 @@ function bc_fetch_ohw_job_complete_label($value): string
  * Grootboekrekeningen voor OHW-kosten en -opbrengst.
  * 899900 voedt Kosten t/m periode. 899901 blijft in de classificatie zodat
  * projecten met alleen opbrengstregels in de snapshot blijven. De kolom
- * Opbrengst leest die OHW-regels niet; die somt planningsregels met No 800000.
+ * Opbrengst t/m leest die OHW-regels niet; die somt Contract_Invoiced_Price van Boeking-taken.
  * Projecten zonder OHW-post komen apart uit de open projectkaarten.
  */
 const OHW_GL_ACCOUNT_COSTS = '899900';
@@ -272,7 +272,8 @@ function bc_fetch_ohw_breakdown_line_from_row(array $sourceRow): array
 }
 
 /**
- * Eerste niet-lege afdelingscode (Global_Dimension_1_Code) uit OHW-breakdownregels.
+ * Eerste niet-lege afdelingscode (Global_Dimension_1_Code) uit OHW-regels.
+ * Kostenregels gaan voor opbrengstregels. Een lege code slaat de functie over.
  */
 function bc_fetch_primary_department_from_breakdown(array $breakdown): string
 {

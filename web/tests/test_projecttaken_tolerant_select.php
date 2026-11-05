@@ -1,9 +1,9 @@
 <?php
 
 /**
- * Ticket #1170: een ontbrekend prijsveld op ProjectTaken mag de andere kolom niet breken.
- * Opbrengst VC (schedule) en Opbrengst t/m (contract) delen één fetch; valt één veld weg,
- * dan blijft de ander staan en komt er één melding.
+ * Ticket #1170 / #1264: een ontbrekend prijsveld op ProjectTaken maakt Opbrengst VC leeg
+ * met één melding, niet een fout per project. Opbrengst VC en het bewaarde contracttotaal
+ * lezen allebei LVS_Contract_Total_Price_2.
  */
 if (PHP_SAPI !== 'cli') {
     http_response_code(404);
@@ -16,9 +16,9 @@ $GLOBALS['odata_calls'] = 0;
 function odata_get_all(string $url, array $auth, int $ttl): array
 {
     $GLOBALS['odata_calls']++;
-    $select = '';
     parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
     $select = (string) ($query['$select'] ?? '');
+    $filter = (string) ($query['$filter'] ?? '');
     $missing = $GLOBALS['missing_field'];
     if ($missing !== '' && in_array($missing, explode(',', $select), true)) {
         throw new RuntimeException(
@@ -27,13 +27,14 @@ function odata_get_all(string $url, array $auth, int $ttl): array
     }
 
     $rows = [];
-    foreach (['PRJ2606162' => [12700, 9000], 'PRJ2607918' => [108830, 0]] as $job => [$contract, $schedule]) {
+    foreach (['PRJ2606162' => 12700, 'PRJ2607918' => 108830] as $job => $contract) {
+        if (!str_contains($filter, $job)) {
+            continue;
+        }
         $row = ['Job_No' => $job, 'Job_Task_No' => '000', 'Description' => 'Project TOTAAL'];
         foreach (explode(',', $select) as $field) {
             if ($field === 'LVS_Contract_Total_Price_2') {
                 $row[$field] = $contract;
-            } elseif ($field === 'LVS_Schedule_Total_Price_2') {
-                $row[$field] = $schedule;
             }
         }
         $rows[] = $row;
@@ -70,27 +71,24 @@ for ($i = 0; $i < 30; $i++) {
 $projects[] = 'PRJ2606162';
 $projects[] = 'PRJ2607918';
 
-// Alles bestaat: beide kolommen gevuld, geen melding.
+// Veld bestaat: Opbrengst VC en het bewaarde contracttotaal komen uit taak 000.
 $r = $method->invoke($service, $projects, 60);
 check(($r['contract_totals']['prj2606162'] ?? null) === 12700.0, 'contract total from LVS_Contract_Total_Price_2');
-check(($r['totals']['prj2606162'] ?? null) === 9000.0, 'Opbrengst VC from schedule field');
-check($r['warning'] === null, 'no warning when all fields exist');
+check(($r['totals']['prj2606162'] ?? null) === 12700.0, 'Opbrengst VC from contract field');
+check(($r['contract_totals']['prj2607918'] ?? null) === 108830.0, 'tweede project houdt zijn contracttotaal');
+check(($r['totals']['prj2607918'] ?? null) === 108830.0, 'Opbrengst VC volgt het contracttotaal, niet de schedule-prijs');
+check($r['warning'] === null, 'no warning when the field exists');
+check(empty($r['task_type_error']), 'taak 000 heeft geen JobTaskLines nodig');
 
-// Contractveld ontbreekt: Opbrengst VC blijft, één melding, geen per-project-storm.
+// Contractveld ontbreekt: Opbrengst VC blijft leeg, één melding, geen per-project-storm.
 $GLOBALS['missing_field'] = 'LVS_Contract_Total_Price_2';
 $GLOBALS['odata_calls'] = 0;
 $r = $method->invoke($service, $projects, 60);
-check(($r['totals']['prj2606162'] ?? null) === 9000.0, 'Opbrengst VC survives missing contract field');
-check($r['contract_totals'] === [], 'contract column empty when its field is missing');
+check($r['totals'] === [], 'Opbrengst VC empty when its field is missing');
+check($r['contract_totals'] === [], 'contract total empty when its field is missing');
 check(substr_count((string) $r['warning'], 'LVS_Contract_Total_Price_2') <= 2 && substr_count((string) $r['warning'], ' | ') <= 1, 'one warning: ' . $r['warning']);
 check(!str_contains((string) $r['warning'], 'CorrelationId'), 'no CorrelationId');
-check($GLOBALS['odata_calls'] === 1 + 4, 'one failing request plus one pass over 4 chunks, got ' . $GLOBALS['odata_calls']);
-
-// Scheduleveld ontbreekt: Opbrengst t/m blijft.
-$GLOBALS['missing_field'] = 'LVS_Schedule_Total_Price_2';
-$r = $method->invoke($service, $projects, 60);
-check(($r['contract_totals']['prj2607918'] ?? null) === 108830.0, 'contract total survives missing schedule field');
-check($r['totals'] === [], 'Opbrengst VC empty when its field is missing');
+check($GLOBALS['odata_calls'] === 1, 'één falende request, niet per chunk, kreeg ' . $GLOBALS['odata_calls']);
 
 if ($failures > 0) {
     fwrite(STDERR, "{$failures} assertion(s) failed\n");
