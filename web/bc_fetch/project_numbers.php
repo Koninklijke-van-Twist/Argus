@@ -69,18 +69,32 @@ function bc_fetch_open_projects_document_status_filter(): string
 }
 
 /**
- * Bepaalt of een projectkaart open is: BC-status Open, of documentstatus Open.
+ * Bepaalt of een projectkaart in de maand hoort.
+ * Status Open telt. Zonder Status-veld (reserve-query) telt documentstatus Open.
+ * Een gevulde Status die niet Open is blijft buiten de maand, ook als
+ * LVS_Document_Status Open is. Anders houdt een ongefilterde Projecten-payload
+ * elk document-open project vast: de telling en de aanneemsom stijgen,
+ * de OHW-kosten blijven gelijk.
  */
 function bc_fetch_project_is_open(array $row): bool
 {
     $status = strtolower(trim((string) ($row['Status'] ?? '')));
-    if ($status === 'open') {
-        return true;
+    if ($status !== '') {
+        return $status === 'open';
     }
 
     $documentStatus = strtolower(trim((string) ($row['LVS_Document_Status'] ?? '')));
 
     return $documentStatus === 'open';
+}
+
+/**
+ * De reserve-query op documentstatus is alleen voor een schemafout op Status.
+ * Een timeout of HTTP-fout mag niet overschakelen naar een bredere populatie.
+ */
+function bc_fetch_open_projects_use_document_status_fallback(Throwable $error): bool
+{
+    return finance_is_odata_schema_error($error->getMessage());
 }
 
 /**
@@ -116,7 +130,8 @@ function bc_fetch_union_project_numbers(array $primaryNumbers, array $extraNumbe
 
 /**
  * Haalt alle open projecten van één bedrijf in één Projecten-query op.
- * Geen query per project. Mislukt Status, dan één keer documentstatus Open.
+ * Geen query per project. Alleen als Status niet op Projecten bestaat,
+ * één keer documentstatus Open.
  *
  * @return array{numbers:array<int,string>,rows_by_norm:array<string,array<string,mixed>>,warning:?string}
  */
@@ -162,9 +177,11 @@ function bc_fetch_open_projects(string $company, array $auth, int $ttl): array
             ];
         } catch (Throwable $error) {
             $lastError = $error;
-            if ($index === 0) {
+            if ($index === 0 && bc_fetch_open_projects_use_document_status_fallback($error)) {
                 continue;
             }
+
+            break;
         }
     }
 
@@ -206,4 +223,27 @@ function bc_fetch_parse_open_project_rows(array $rows): array
         'numbers' => $numbers,
         'rows_by_norm' => $rowsByNorm,
     ];
+}
+
+/**
+ * Maandleden: OHW-projectnummers plus kaarten die bc_fetch_project_is_open doorlaten.
+ * Opgeslagen rijen worden opnieuw beoordeeld, zodat een eerdere wijde lijst
+ * niet blijft hangen in project_numbers.
+ *
+ * @param array<int,mixed> $ohwProjectNumbers
+ * @param array<string,mixed> $openProjectRows
+ * @return array<string,true>
+ */
+function bc_fetch_month_member_keys(array $ohwProjectNumbers, array $openProjectRows): array
+{
+    $keys = bc_fetch_project_key_set($ohwProjectNumbers);
+    $parsed = bc_fetch_parse_open_project_rows(array_values($openProjectRows));
+    foreach ($parsed['numbers'] as $projectNo) {
+        $key = bc_fetch_normalize_project_no($projectNo);
+        if ($key !== '') {
+            $keys[$key] = true;
+        }
+    }
+
+    return $keys;
 }

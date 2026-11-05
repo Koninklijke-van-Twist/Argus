@@ -63,6 +63,8 @@ Geen `auth.php` in deze repository (staat in `.gitignore`). Lokaal/op de server 
 - Een pagina die laadt, herlaadt of meepolt (`resume=1` of `join=1`) volgt een verse herbouw en verhoogt de generatie niet. Alleen Verversen neemt een verse lock over; de vervangen poging krijgt geen fouttoast maar sluit weer aan. De server hervat wel de eigen vrijgegeven lock. Voorcalculatie gaat in stappen van 8 projecten. Business Central gaf HTTP 500 op een lange `Job_No`-filter of een zware pagina; de proxy maakte daar een lege 500 van (`Server gaf geen geldige JSON terug`). `JobTaskLines` blijft op hoogstens 8 projecten of 480 tekens, elke finance-query zet `$top=100`, HTTP 500 wordt kleiner opnieuw geprobeerd en een timeout niet. OHW en al opgeslagen voorcalculatiechunks blijven staan. Opbrengst t/m is niet gewijzigd.
 - `web/maanden.php`, `web/maand-detail.js`, `web/finance_calculations.php` en `web/bc_fetch/column_grootboekposten_ohw.php`: de afdeling (Global Dimension 1) komt alleen van de projectkaart (`Projecten.LVS_Global_Dimension_1_Code`, opgeslagen als `Cost_Center`). Grootboekposten overschrijven die niet meer, ook niet bij het opbouwen of verversen van een maand en niet in de detailweergave. Maandsnapshots zijn cacheversie 4 (`.v4.json`). Een maand zonder v4 wordt opnieuw opgebouwd; `.v3.json`, `.v2.json` en legacy blijven staan. `web/project_finance.php` is hier niet gewijzigd.
 - `web/maanden.php`, `web/maand-detail.js`, `web/maand-detail.php` en `web/bc_fetch/column_grootboekposten_ohw.php`: een regel toont weer de afdeling waarop hij geboekt is (`Global_Dimension_1_Code` op de grootboekpost). De projectkaart (`LVS_Global_Dimension_1_Code`) staat apart in `Project_Department`. Wijkt die af, dan krijgt de afdelingscel een oranje achtergrond en de tooltip `Regel is op afdeling X geboekt, maar project is afdeling Y`. Maandsnapshots zijn cacheversie 5 (`.v5.json`). Een maand zonder v5 wordt opnieuw opgebouwd; oudere snapshots blijven staan. `web/project_finance.php` is hier niet gewijzigd.
+- De maandlijst is dezelfde bij toevoegen en verversen: OHW-saldo op 899900/899901 (ook een ouder, niet teruggedraaid document zoals OHW260629, ook als G/L-rekening en balansrekening gelijk zijn) plus kaarten met Status Open. Een gevulde Status die niet Open is telt niet mee via documentstatus. Omzet is de aanneemsom (planningsregels 800000) van die lijst; kosten zijn alleen het OHW-saldo 899900. Een Projecten- of voorcalculatie-antwoord met extra projecten verhoogt die totalen niet.
+- Maanddetail heeft de kolom Status (nu). Die leest het bestaande projectveld `Status` (huidige kaart in BC, niet de status op de peildatum). Ontbreekt dat veld (HTTP 400), dan gaan de projectdetail-queries één keer opnieuw zonder `Status`; de kolom toont dan —. Kosten en OHW-saldo blijven 899900/899901; 399900/399901 worden niet gebruikt.
 
 ## Tests
 
@@ -83,6 +85,7 @@ php web/tests/test_company_discovery_cache.php
 php web/tests/test_odata_page_guard.php
 php web/tests/test_open_projects.php
 php web/tests/test_project_department.php
+php web/tests/test_month_status_column.php
 php web/tests/test_json_guard.php
 php web/tests/test_month_snapshot_fallback.php
 php web/tests/test_month_rebuild_lock.php

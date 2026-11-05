@@ -786,7 +786,15 @@ function maanden_wip_project_numbers_from_ohw(array $wip): array
 function maanden_wip_sync_project_numbers_from_ohw(array &$wip): array
 {
     $ohwNumbers = maanden_wip_project_numbers_from_ohw($wip);
-    $openNumbers = is_array($wip['open_project_numbers'] ?? null) ? $wip['open_project_numbers'] : [];
+    $openRows = is_array($wip['open_project_rows'] ?? null) ? $wip['open_project_rows'] : [];
+    if ($openRows !== []) {
+        $parsed = bc_fetch_parse_open_project_rows(array_values($openRows));
+        $openNumbers = $parsed['numbers'];
+        $wip['open_project_numbers'] = $openNumbers;
+        $wip['open_project_rows'] = $parsed['rows_by_norm'];
+    } else {
+        $openNumbers = is_array($wip['open_project_numbers'] ?? null) ? $wip['open_project_numbers'] : [];
+    }
     $projectNumbers = bc_fetch_union_project_numbers($ohwNumbers, $openNumbers);
     $wip['project_numbers'] = $projectNumbers;
     $wip['planning_project_numbers'] = $projectNumbers;
@@ -1130,16 +1138,13 @@ function fetch_month_data(string $company, string $yearMonth, array $auth): arra
         $missingProjectNumbers[] = $projectNo;
     }
     $projectChunks = array_chunk($missingProjectNumbers, 20);
+    $omitProjectStatus = false;
 
     foreach ($projectChunks as $chunk) {
         $filterParts = array_map(fn($no) => "No eq '" . str_replace("'", "''", $no) . "'", $chunk);
         $filter = implode(' or ', $filterParts);
         try {
-            $projectUrl = company_entity_url_with_query($baseUrl, $environmentForCompany, $company, 'Projecten', [
-                '$select' => 'No,Description,Bill_to_Customer_No,Bill_to_Name,Person_Responsible,Project_Manager,LVS_Global_Dimension_1_Code,LVS_Document_Status,Percent_Completed,Total_WIP_Sales_Amount,Recog_Sales_Amount,Calc_Recog_Sales_Amount',
-                '$filter' => $filter,
-            ]);
-            $batchProjects = odata_get_all($projectUrl, $auth, odata_ttl_for_month($yearMonth));
+            $batchProjects = bc_fetch_projecten_rows($company, $filter, $auth, odata_ttl_for_month($yearMonth), $omitProjectStatus);
         } catch (Throwable $e) {
             continue;
         }
@@ -1173,6 +1178,12 @@ function fetch_month_data(string $company, string $yearMonth, array $auth): arra
             ? $projectForecast['forecast_breakdown_by_job']
             : [];
     }
+
+    $memberKeys = bc_fetch_project_key_set($projectNumbers);
+    $projectTotalsByJob = bc_fetch_filter_keyed_to_members($projectTotalsByJob, $memberKeys);
+    $projectDetails = bc_fetch_filter_keyed_to_members($projectDetails, $memberKeys);
+    $planningTotalsByJob = bc_fetch_filter_keyed_to_members($planningTotalsByJob, $memberKeys);
+    $planningBreakdownByJob = bc_fetch_filter_keyed_to_members($planningBreakdownByJob, $memberKeys);
 
     $result = build_month_rows(
         $company,
@@ -1277,6 +1288,12 @@ function build_snapshot_from_column_wip(string $company, string $targetYm, array
             $projectDetails[$normProjectNo] = $row;
         }
     }
+
+    $memberKeys = bc_fetch_project_key_set($projectNumbers);
+    $projectTotalsByJob = bc_fetch_filter_keyed_to_members($projectTotalsByJob, $memberKeys);
+    $projectDetails = bc_fetch_filter_keyed_to_members($projectDetails, $memberKeys);
+    $planningTotalsByJob = bc_fetch_filter_keyed_to_members($planningTotalsByJob, $memberKeys);
+    $planningBreakdownByJob = bc_fetch_filter_keyed_to_members($planningBreakdownByJob, $memberKeys);
 
     $data = build_month_rows(
         $company,
@@ -1713,16 +1730,13 @@ if (($_GET['action'] ?? '') === 'fetch_sub_projects') {
         $projectNumbers = is_array($wip['project_numbers'] ?? null) ? $wip['project_numbers'] : [];
         $projectDetails = [];
         $projectChunks = array_chunk(array_unique($projectNumbers), 20);
+        $omitProjectStatus = false;
 
         foreach ($projectChunks as $chunk) {
             $filterParts = array_map(fn($no) => "No eq '" . str_replace("'", "''", $no) . "'", $chunk);
             $filter = implode(' or ', $filterParts);
             try {
-                $projectUrl = company_entity_url_with_query($baseUrl, $environmentForCompany, $company, 'Projecten', [
-                    '$select' => 'No,Description,Bill_to_Customer_No,Bill_to_Name,Person_Responsible,Project_Manager,LVS_Global_Dimension_1_Code,LVS_Document_Status,Percent_Completed,Total_WIP_Sales_Amount,Recog_Sales_Amount,Calc_Recog_Sales_Amount',
-                    '$filter' => $filter,
-                ]);
-                $batchProjects = odata_get_all($projectUrl, $auth, $ttl);
+                $batchProjects = bc_fetch_projecten_rows($company, $filter, $auth, $ttl, $omitProjectStatus);
             } catch (Throwable $e) {
                 continue;
             }

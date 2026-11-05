@@ -70,6 +70,10 @@ function maanden_rebuild_column_step(
             $columnDataTarget[$columnKey] = $columnResult;
             $wip['column_data_target'] = $columnDataTarget;
             $openProjects = bc_fetch_open_projects($company, $auth, $ttl);
+            $openWarning = $openProjects['warning'] ?? null;
+            if (is_string($openWarning) && trim($openWarning) !== '') {
+                throw new RuntimeException($openWarning);
+            }
             $wip['open_project_numbers'] = $openProjects['numbers'];
             $wip['open_project_rows'] = $openProjects['rows_by_norm'];
             maanden_wip_sync_project_numbers_from_ohw($wip);
@@ -324,6 +328,12 @@ function maanden_rebuild_build_step(
         $planningTotalsByJob = is_array($wip['planning_totals_by_job'] ?? null) ? $wip['planning_totals_by_job'] : [];
         $planningBreakdownByJob = is_array($wip['planning_breakdown_by_job'] ?? null) ? $wip['planning_breakdown_by_job'] : [];
         $projectTotalsByJob = is_array($projectFinance['project_totals_by_job'] ?? null) ? $projectFinance['project_totals_by_job'] : [];
+        $memberKeys = bc_fetch_project_key_set($planningProjects);
+        $projectTotalsByJob = bc_fetch_filter_keyed_to_members($projectTotalsByJob, $memberKeys);
+        $projectDetails = bc_fetch_filter_keyed_to_members($projectDetails, $memberKeys);
+        $planningTotalsByJob = bc_fetch_filter_keyed_to_members($planningTotalsByJob, $memberKeys);
+        $planningBreakdownByJob = bc_fetch_filter_keyed_to_members($planningBreakdownByJob, $memberKeys);
+
         $data = build_month_rows(
             $company,
             $targetYm,

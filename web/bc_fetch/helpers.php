@@ -33,6 +33,51 @@ function bc_fetch_add(float $left, float $right): float
 }
 
 /**
+ * Genormaliseerde projectnummers als set.
+ *
+ * @param array<int,mixed> $projectNumbers
+ * @return array<string,true>
+ */
+function bc_fetch_project_key_set(array $projectNumbers): array
+{
+    $keys = [];
+    foreach ($projectNumbers as $projectNo) {
+        $key = bc_fetch_normalize_project_no((string) $projectNo);
+        if ($key === '') {
+            continue;
+        }
+
+        $keys[$key] = true;
+    }
+
+    return $keys;
+}
+
+/**
+ * Houdt alleen dictionary-keys die in de maandset zitten.
+ * Een voorcalculatie- of Projecten-antwoord met extra Job_No's
+ * mag omzet en het aantal projecten niet verhogen.
+ *
+ * @param array<string,mixed> $keyed
+ * @param array<string,true> $memberKeys
+ * @return array<string,mixed>
+ */
+function bc_fetch_filter_keyed_to_members(array $keyed, array $memberKeys): array
+{
+    $filtered = [];
+    foreach ($keyed as $key => $value) {
+        $norm = bc_fetch_normalize_project_no((string) $key);
+        if ($norm === '' || !isset($memberKeys[$norm])) {
+            continue;
+        }
+
+        $filtered[$norm] = $value;
+    }
+
+    return $filtered;
+}
+
+/**
  * Bouwt een dictionary met lege projectkeys voor alle aangeleverde projectnummers.
  */
 function bc_fetch_seed_project_dictionary(array $projectNumbers): array

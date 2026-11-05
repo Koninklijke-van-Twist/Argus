@@ -194,14 +194,27 @@ function bc_fetch_ohw_gl_account_kind(string $glAccountNo): ?string
 }
 
 /**
- * Regels waarbij G/L-rekening gelijk is aan balansrekening worden overgeslagen.
+ * Slaat een OHW-regel over die geen saldoregel is.
+ * G/L-rekening gelijk aan balansrekening én géén 899900/899901: dat is geen
+ * maand-saldo. Een afgerond project kan nog wel onteruggedraaid saldo hebben
+ * op 899900/899901 (bijvoorbeeld document OHW260629, nooit teruggedraaid).
+ * Die regels blijven meetellen, ook als beide rekeningvelden gelijk zijn.
  */
 function bc_fetch_ohw_should_ignore_row(array $row): bool
 {
     $glAccount = preg_replace('/\s+/', '', trim((string) ($row['G_L_Account_No'] ?? '')));
     $glBalAccount = preg_replace('/\s+/', '', trim((string) ($row['G_L_Bal_Account_No'] ?? '')));
+    $glAccount = is_string($glAccount) ? $glAccount : '';
+    $glBalAccount = is_string($glBalAccount) ? $glBalAccount : '';
+    if ($glAccount === '' || $glBalAccount === '' || $glAccount !== $glBalAccount) {
+        return false;
+    }
 
-    return $glAccount !== '' && $glBalAccount !== '' && $glAccount === $glBalAccount;
+    if (bc_fetch_ohw_gl_account_kind($glAccount) === null) {
+        return true;
+    }
+
+    return bc_fetch_float_value($row, 'WIP_Entry_Amount') === 0.0;
 }
 
 /**
